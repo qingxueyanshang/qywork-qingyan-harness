@@ -33,7 +33,8 @@ import {
   openLinkInPanel,
   setAccountOpen,
 } from '../../lib/store/index.ts'
-import { IconBell, IconHome, IconLogOut, IconX } from '../Icons.tsx'
+import { openSupport, supportOpen, supportUnread } from '../../lib/store/support.ts'
+import { IconBell, IconHeadset, IconHome, IconLogOut, IconX } from '../Icons.tsx'
 import PairPanel from '../PairPanel.tsx'
 import { config, configBusy, ensureConfig, replaceConfig } from '../settings/configStore.ts'
 import { DefaultToggle, withoutActive, withoutMediaDefault } from '../settings/DefaultToggle.tsx'
@@ -45,6 +46,7 @@ import { durationRange, formatCredits, formatRatio, formatUnitPrice } from './fo
 import { LoginForm } from './LoginForm.tsx'
 import { NameEdit } from './NameEdit.tsx'
 import RechargeDialog from './RechargeDialog.tsx'
+import SupportDialog from './SupportDialog.tsx'
 
 /** 使用记录每页条数，与服务端 `/api/cloud/requests` 相同：返回不足一页即没有更早的记录。 */
 const PAGE = 50
@@ -57,7 +59,8 @@ type SignedIn = Extract<CloudState, { state: 'signed_in' }>
 const close = () => setAccountOpen(false)
 
 /**
- * 账号弹窗：已登录时显示账号（头像、可修改的用户名、邮箱）、充值入口、统计、Token 活动与使用记录，数据全部取自云端；未登录时显示登录表单。
+ * 账号弹窗：已登录时显示账号（头像、可修改的用户名、邮箱）、联系客服与充值入口、统计、Token 活动与使用记录，数据全部取自云端；
+ * 未登录时显示登录表单。
  * 两种状态各为固定尺寸（B9），内容在弹窗内滚动。未登录时是窄的登录框（`.signin`）：尺寸只在登录成功、
  * 内容整体换成账号页时改变一次，此时登录表单的按钮已不存在，不会移动用户正在瞄准的目标。
  */
@@ -67,7 +70,7 @@ export default function AccountDialog(props: { retryMs?: number }) {
   if (cloudState()?.state !== 'signed_in') void refreshCloudState().catch(() => {})
 
   createEffect(() => {
-    // 上层有打开的窗口（公告、充值，均为模态 `<dialog>`）时，Escape 由该窗口的 cancel 事件关闭，本窗口保留。
+    // 上层有打开的窗口（公告、联系客服、充值，均为模态 `<dialog>`）时，Escape 由该窗口的 cancel 事件关闭，本窗口保留。
     // 不能依靠上层窗口在 keydown 中阻止冒泡：焦点所在的按钮被禁用后焦点落到 body，keydown 不经过上层窗口。
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !document.querySelector('dialog[open]')) {
@@ -246,6 +249,22 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
             <IconLogOut size={16} stroke={1.8} />
           </button>
         </div>
+        {/* 联系客服在充值左侧，打开在本窗口之上；有未读的回复时带圆点，侧栏的账号入口同时带圆点。云端未开通时不显示（B5）。 */}
+        <Show when={props.signed.support}>
+          <button
+            type="button"
+            class="icon-btn account-support"
+            aria-label="联系客服"
+            aria-haspopup="dialog"
+            data-tip="联系客服"
+            onClick={openSupport}
+          >
+            <IconHeadset size={16} stroke={1.8} />
+            <Show when={supportUnread()}>
+              <span class="account-bell-dot" role="img" aria-label="有新消息" />
+            </Show>
+          </button>
+        </Show>
         {/* 云端未开通充值时不显示（B5）。 */}
         <Show when={props.signed.recharge}>
           <button
@@ -260,6 +279,9 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
       </header>
       <Show when={recharging()}>
         <RechargeDialog onClose={() => setRecharging(false)} />
+      </Show>
+      <Show when={supportOpen()}>
+        <SupportDialog />
       </Show>
       {/* 头部在滚动区外：滚动条从头部下方开始，不经过关闭按钮。 */}
       <div class="account-scroll">

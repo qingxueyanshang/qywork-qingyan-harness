@@ -17,6 +17,7 @@ import type {
   ConversationId,
   EventEnvelope,
   HelloFrame,
+  TunnelPush,
 } from '@qywork/core'
 import {
   ART_MENTION,
@@ -138,7 +139,7 @@ export interface ServeOptions {
   /** 电源状态的同步间隔，毫秒。理由同 `schedulerTickMs`，仅用于回归测试。 */
   powerTickMs?: number
   /**
-   * 是否按配置连接云端隧道（远程访问）。只有 `qy serve` 传入 true。
+   * 是否连接云端隧道（推送通道与远程访问）。只有 `qy serve` 传入 true。
    *
    * 缺省不连接：测试与脚本启动的服务常读取用户的真实配置，设备密钥与桌面端相同，
    * 连接后云端会关闭桌面端正在使用的隧道（同一设备只保留一条）。
@@ -522,10 +523,21 @@ export function serve(opts: ServeOptions) {
     listener: remoteListener,
     pairing: () => ({ token: pairing.token, deviceName: pairing.deviceName }),
     onRevoked: () => cloud?.revoked() ?? Promise.resolve(),
-    // 隔道也是云端型号清单变更的推送通道（`cloud/account.ts`）。
-    onPushChannel: (online) => cloud?.setPushChannel(online),
-    onCatalogChanged: () => void cloud?.catalogChanged(),
+    // 隧道是云端的推送通道（`PUSH`）。重新连上时界面重新读取公告与客服对话：断开期间的变化没有推送。
+    onPushChannel: (online) => {
+      cloud?.setPushChannel(online)
+      if (!online) return
+      bus.publish({ type: 'announcements.changed' })
+      bus.publish({ type: 'support.changed' })
+    },
+    onPush: (type) => PUSH[type](),
   })
+  /** 云端推送帧的处理：型号清单由账号同步写入配置（`cloud/account.ts`），公告与客服消息由界面重新读取。 */
+  const PUSH: Record<TunnelPush, () => void> = {
+    'catalog.changed': () => void cloud?.catalogChanged(),
+    'support.changed': () => bus.publish({ type: 'support.changed' }),
+    'announcements.changed': () => bus.publish({ type: 'announcements.changed' }),
+  }
   // 一轮结束时经隧道上送通知；隧道未连接时不发送。
   const offRunNotify = watchRunEnds(bus, opts.store, (event, conversationId, title) =>
     remote.notify(event, conversationId, title),

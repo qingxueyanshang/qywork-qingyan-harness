@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`，`api/cloud.ts` 的错误返回、充值、本版说明与公告列表，
+ * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`、`cloud/support.ts`，`api/cloud.ts` 的错误返回、充值、本版说明、公告列表与客服对话，
  * `api/conversations.ts` 的 `/api/models` 中云端型号的显示名称。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
@@ -103,6 +103,10 @@ const cloud = {
   /** 账号的用户名；未设置时为空字符串。 */
   name: '',
   announcementSeen: null as string | null,
+  /** 客服回复中未读的条数。 */
+  supportUnread: 0,
+  /** 云端收到的客服消息表单。 */
+  supportForms: [] as Awaited<ReturnType<Request['formData']>>[],
   /** 云端收到的版本公告查询次数。 */
   notesQueries: 0,
   /** claude-sonnet-5-5 的售价倍率，后台可随时调整。 */
@@ -191,6 +195,59 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         avatar: cloud.avatar,
         recharge: true,
         announcementSeen: cloud.announcementSeen,
+        support: true,
+        supportUnread: cloud.supportUnread,
+      })
+    }
+    if (path === '/v1/support' && req.method === 'GET' && authed) {
+      return Response.json([
+        {
+          id: '1',
+          fromAdmin: true,
+          body: '请提供截图',
+          attachments: [],
+          createdAt: '2026-11-24T01:00:00.000Z',
+        },
+      ])
+    }
+    if (path === '/v1/support' && req.method === 'POST' && authed) {
+      const form = await req.formData()
+      cloud.supportForms.push(form)
+      if (form.get('body') === '' && form.getAll('files').length === 0) {
+        return Response.json(
+          { type: 'error', error: { code: 'invalid_request', message: '消息不能为空' } },
+          { status: 400 },
+        )
+      }
+      const files = form.getAll('files').filter((f) => typeof f !== 'string')
+      return Response.json(
+        {
+          id: '2',
+          fromAdmin: false,
+          body: form.get('body'),
+          attachments: files.map((f, i) => ({
+            id: String(10 + i),
+            name: f.name,
+            mime: f.type,
+            size: f.size,
+          })),
+          createdAt: '2026-11-24T02:00:00.000Z',
+        },
+        { status: 201 },
+      )
+    }
+    if (path === '/v1/support/read' && req.method === 'PUT' && authed) {
+      cloud.supportUnread = 0
+      return new Response(null, { status: 204 })
+    }
+    if (path === '/v1/support/files/10' && authed) {
+      return new Response('png', {
+        headers: {
+          'content-type': 'image/png',
+          'content-disposition': 'inline',
+          'x-content-type-options': 'nosniff',
+          'set-cookie': 'a=b',
+        },
       })
     }
     if (path === '/v1/recharge' && req.method === 'POST' && authed) {
@@ -389,6 +446,8 @@ beforeEach(async () => {
     avatar: null,
     name: '',
     announcementSeen: null,
+    supportUnread: 0,
+    supportForms: [],
     notesQueries: 0,
     sonnetRatio: 0.5,
     catalogReads: 0,
@@ -414,6 +473,8 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
     origin,
     recharge: true,
     announcementSeen: null,
+    support: true,
+    supportUnread: 0,
   })
   const provider = live.providers[CLOUD_PROVIDER]!
   expect(provider).toMatchObject({ baseUrl: origin, apiKey: 'qyd_device_key' })
@@ -647,6 +708,56 @@ test('本版说明接口：未配置云端时为 null；版本号无效时以 40
   const bad = await get(account, 'latest')
   expect(bad?.status).toBe(400)
   expect(await bad?.json()).toEqual({ error: 'cloud', message: '版本号无效：latest' })
+})
+
+test('客服对话：读取、发送（附上本机版本与附件）、记为已读后未读数清零、附件只转交内容相关的响应头；云端拒绝时以 400 返回原因', async () => {
+  await account.login('me@example.com', PASSWORD)
+  cloud.supportUnread = 1
+  expect(await account.state()).toMatchObject({ support: true, supportUnread: 1 })
+  const deps = { cloud: account } as unknown as ApiRequestDeps
+  const call = (path: string, init?: RequestInit) =>
+    handleCloudApi(new URL(`http://x${path}`), new Request(`http://x${path}`, init), deps)
+
+  const thread = await call('/api/cloud/support')
+  expect(await thread?.json()).toMatchObject([{ id: '1', fromAdmin: true, body: '请提供截图' }])
+
+  const form = new FormData()
+  form.set('body', '无法发送')
+  form.append('files', new File(['png'], 'shot.png', { type: 'image/png' }))
+  const sent = await call('/api/cloud/support', { method: 'POST', body: form })
+  expect(await sent?.json()).toMatchObject({
+    id: '2',
+    body: '无法发送',
+    attachments: [{ name: 'shot.png', mime: 'image/png', size: 3 }],
+  })
+  expect(cloud.supportForms[0]?.get('appVersion')).toBe(
+    JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')).version,
+  )
+
+  const read = await call('/api/cloud/support/read', {
+    method: 'POST',
+    body: JSON.stringify({ id: '1' }),
+  })
+  expect(await read?.json()).toMatchObject({ state: 'signed_in', supportUnread: 0 })
+
+  const file = await call('/api/cloud/support/files/10')
+  expect(file?.headers.get('content-type')).toBe('image/png')
+  expect(file?.headers.get('x-content-type-options')).toBe('nosniff')
+  expect(file?.headers.get('set-cookie')).toBeNull()
+  expect(await file?.text()).toBe('png')
+
+  const empty = new FormData()
+  empty.set('body', '')
+  const refused = await call('/api/cloud/support', { method: 'POST', body: empty })
+  expect(refused?.status).toBe(400)
+  expect(await refused?.json()).toEqual({
+    error: 'cloud',
+    message: '账号服务返回 400：消息不能为空',
+  })
+
+  // 云端暂时无法访问：不显示入口，未读数为 0。
+  cloud.me = 'down'
+  expect(await account.state()).toMatchObject({ support: false, supportUnread: 0 })
 })
 
 test('公告列表：未登录也可读取，原样返回云端的顺序；未配置云端时接口返回空数组', async () => {

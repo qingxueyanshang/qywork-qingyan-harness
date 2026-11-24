@@ -7,7 +7,7 @@
  * - 设备密钥只保存在配置的云端接口（`CLOUD_PROVIDER`，地址为网关）中，没有第二份。
  * - 配置只经 `writeConfig` 写入；退出与「设备已被移除」使用同一个删除函数，`active` 与 `mediaDefaults` 指向它时一并删除。
  * - 只有网关或隧道明确返回「设备已被移除」时才删除本地接口；其他失败（断网、云端故障）不删除，避免误清空配置。
- * - 写入或删除云端接口后调用 `onChange`：远程访问据此启停隧道。
+ * - 写入或删除云端接口后调用 `onChange`：隧道据此按登录状态启停。
  * - 云端型号清单（`/v1/catalog`）中带规格的型号，规格写入模型库覆盖层（`catalog`），只写本机模型库没有的型号，
  *   写入的条目带 `cloud` 标记；覆盖层仍是模型库之上唯一的一层，所有权规则见 `withSpecs`。
  * - 每个型号的显示名称写入云端接口下该型号的条目（`displayName`），不写入覆盖层：覆盖层为所有接口共用，
@@ -220,6 +220,8 @@ interface MeReply {
   avatar?: string | null
   recharge?: boolean
   announcementSeen?: string | null
+  support?: boolean
+  supportUnread?: number
 }
 
 type Me = Required<Omit<MeReply, 'avatar' | 'announcementSeen'>> & {
@@ -235,6 +237,8 @@ function meOf(me: MeReply): Me {
     avatar: me.avatar ?? null,
     recharge: me.recharge === true,
     announcementSeen: me.announcementSeen ?? null,
+    support: me.support === true,
+    supportUnread: me.supportUnread ?? 0,
   }
 }
 
@@ -404,6 +408,8 @@ export class CloudAccount {
       origin: this.origin,
       recharge: false,
       ...(this.seen?.key === provider.apiKey ? { announcementSeen: this.seen.id } : {}),
+      support: false,
+      supportUnread: 0,
     }
   }
 
@@ -425,6 +431,8 @@ export class CloudAccount {
       origin: this.origin,
       recharge: me.recharge,
       announcementSeen: me.announcementSeen,
+      support: me.support,
+      supportUnread: me.supportUnread,
     }
   }
 
@@ -636,8 +644,11 @@ export class CloudAccount {
     return this.state()
   }
 
-  /** 以设备密钥调用云端接口；204 返回 undefined。云端答复设备已被移除时删除本地接口。 */
-  private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
+  /**
+   * 以设备密钥调用云端接口，返回成功的原始响应（附件等非 JSON 内容）。失败时抛出 `CloudAccountError`；
+   * 云端答复设备已被移除时删除本地接口。
+   */
+  async request(path: string, init: RequestInit = {}): Promise<Response> {
     const provider = cloudProviderOf(this.live, this.origin)
     if (!provider?.apiKey) throw new CloudAccountError('未登录')
     let res: Response
@@ -653,8 +664,7 @@ export class CloudAccount {
     } catch (err) {
       throw unreachable(err)
     }
-    if (res.status === 204) return undefined as T
-    if (res.ok) return (await res.json()) as T
+    if (res.ok) return res
     const body = (await res.json().catch(() => null)) as {
       error?: { code?: string; message?: string }
     } | null
@@ -665,6 +675,13 @@ export class CloudAccount {
     throw new CloudAccountError(
       `账号服务返回 ${res.status}${body?.error?.message ? `：${body.error.message}` : ''}`,
     )
+  }
+
+  /** 以设备密钥调用云端接口并解析 JSON；204 返回 undefined。失败的处理同 `request`。 */
+  async call<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const res = await this.request(path, init)
+    if (res.status === 204) return undefined as T
+    return (await res.json()) as T
   }
 
   /** 登录完成：以设备密钥写入云端接口与型号。 */
@@ -712,7 +729,7 @@ export class CloudAccount {
   }
 
   /**
-   * 推送通道（远程访问的隧道）连上或断开。连上时立即同步一次：断开期间云端的改动没有推送到本机。
+   * 推送通道（隧道，登录后连接）连上或断开。连上时立即同步一次：断开期间云端的改动没有推送到本机。
    * 云端重新部署后隧道重连，内置模型库随部署更新的规格也由这次同步取得。
    */
   setPushChannel(online: boolean): void {

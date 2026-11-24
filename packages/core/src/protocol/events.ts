@@ -89,6 +89,8 @@ export type AgentEvent =
   | PersonalizationChangedEvent
   | PetsChangedEvent
   | ConfigChangedEvent
+  | SupportChangedEvent
+  | AnnouncementsChangedEvent
   // ── 多智能体 ──
   | TeamMemberEvent
   | TeamOutputEvent
@@ -681,6 +683,22 @@ export interface PetsChangedEvent {
  */
 export interface ConfigChangedEvent {
   type: 'config.changed'
+}
+
+/**
+ * 本账号的客服对话可能已变化：云端推送了新消息，或隧道重新连上（断开期间的消息没有推送）。本机级事件，所有客户端都能收到。
+ * 不携带内容：各屏幕经 `/api/cloud/state`（未读数）与 `/api/cloud/support`（对话）重新读取。
+ */
+export interface SupportChangedEvent {
+  type: 'support.changed'
+}
+
+/**
+ * 云端的公告可能已变化：已发布、修改、撤回或删除，或隧道重新连上（断开期间的变化没有推送）。本机级事件，所有客户端都能收到。
+ * 不携带内容：各屏幕经 `/api/cloud/announcements` 重新读取。
+ */
+export interface AnnouncementsChangedEvent {
+  type: 'announcements.changed'
 }
 
 export interface GitStateEvent {

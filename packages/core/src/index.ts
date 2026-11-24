@@ -451,6 +451,8 @@ export type {
   ReleaseNotes,
   RequestItem,
   RequestItemsResponse,
+  SupportAttachment,
+  SupportMessage,
   ToolCallTotal,
   UsageResponse,
 } from './protocol/http.ts'
@@ -555,6 +557,7 @@ export {
   type TunnelHeaders,
   TunnelInbound,
   type TunnelNotifyEvent,
+  type TunnelPush,
   type TunnelSender,
   tunnelHeaders,
 } from './protocol/tunnel.ts'

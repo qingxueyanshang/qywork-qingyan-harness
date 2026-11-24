@@ -73,6 +73,8 @@ beforeEach(async () => {
     origin: 'https://qywork.io',
     recharge: false,
     announcementSeen: null,
+    support: false,
+    supportUnread: 0,
   }
   stateReply = null
   feed.closeAnnouncements()

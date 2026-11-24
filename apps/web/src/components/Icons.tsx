@@ -224,6 +224,16 @@ export const IconBell = (p: IconProps) => (
   </Svg>
 )
 
+/** 客服耳麦：头梁、两侧耳罩与麦克风。 */
+export const IconHeadset = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4.6 14.2V12a7.4 7.4 0 0 1 14.8 0v2.2" />
+    <rect x="3.6" y="13.2" width="3.8" height="5.4" rx="1.6" />
+    <rect x="16.6" y="13.2" width="3.8" height="5.4" rx="1.6" />
+    <path d="M18.5 18.6v.3a2.4 2.4 0 0 1-2.4 2.4h-3" />
+  </Svg>
+)
+
 export const IconPackage = (p: IconProps) => (
   <Svg {...p}>
     <path d="M20 8.4v7.2a2 2 0 0 1-1.05 1.76l-6 3.2a2 2 0 0 1-1.9 0l-6-3.2A2 2 0 0 1 4 15.6V8.4a2 2 0 0 1 1.05-1.76l6-3.2a2 2 0 0 1 1.9 0l6 3.2A2 2 0 0 1 20 8.4z" />

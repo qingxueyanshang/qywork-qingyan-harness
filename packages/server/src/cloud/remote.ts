@@ -1,18 +1,19 @@
 /**
- * 远程访问：配置 `remote` 为 true 且已登录云端账号时，运行远程监听器与隧道；任一条件不满足时两者都停止。
+ * 云端隧道与远程访问：已登录云端账号时连接隧道（云端的推送通道）；配置 `remote` 为 true 时另运行远程监听器，
+ * 隧道转发设备页面的请求。开关只决定是否应答设备页面，不决定隧道是否连接。
  *
  * 不变量：
  * - 开关只保存在配置中（经 `writeConfig` 写入）；隧道与监听器的启停只由 `sync` 按配置与登录状态决定。
- *   登录、退出与开关变化后都调用 `sync`。
+ *   登录、退出与开关变化后都调用 `sync`；开关变化时隧道重新连接，`hello.remote` 随之更新。
  * - 停止时关闭远程监听器的全部连接，手机上已打开的页面立即断开。
  * - 隧道以「设备已被移除」关闭时，经 `onRevoked` 删除本地的云端接口，与网关返回 `device_revoked` 的处理相同。
  * - `tunnel` 为 false 时从不连接云端，理由见 `ServeOptions.remote`。
  * - 隧道被同一设备的另一条连接替换后不自动重连（见 `tunnel.ts`），由用户经 `reconnect` 重新连接。
- * - 隧道同时是云端的推送通道：连上与断开、停止经 `onPushChannel` 告知账号，云端推送的 `catalog.changed`
- *   经 `onCatalogChanged` 转交。
+ * - 连上与断开、停止经 `onPushChannel` 告知账号，云端的推送帧经 `onPush` 转交。
+ * - 一轮结束的通知（`notify`）只在开启远程访问时上送：手机上的通知打开设备页面。
  */
 
-import { log } from '@qywork/core'
+import { log, type TunnelPush } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import { writeConfig } from '../api/config.ts'
 import { cloudProviderOf } from './account.ts'
@@ -28,7 +29,7 @@ export interface RemoteSnapshot {
   /** 已登录云端账号。为 false 时界面不显示远程访问。 */
   available: boolean
   enabled: boolean
-  /** 隧道状态；未开启或未登录时为 null。 */
+  /** 隧道状态；未开启远程访问或未登录时为 null。 */
   tunnel: TunnelStatus | null
 }
 
@@ -42,22 +43,25 @@ export interface RemoteAccessDeps {
   onRevoked: () => Promise<void>
   /** 推送通道连上（true）或断开、停止（false）。 */
   onPushChannel?: (online: boolean) => void
-  onCatalogChanged?: () => void
+  onPush?: (type: TunnelPush) => void
   backoffMs?: TunnelClientOptions['backoffMs']
 }
 
 export class RemoteAccess {
   private tunnel: TunnelClient | null = null
   private key: string | null = null
+  /** 当前隧道连接时的开关取值。 */
+  private remote = false
   private status: TunnelStatus | null = null
 
   constructor(private readonly deps: RemoteAccessDeps) {}
 
   snapshot(): RemoteSnapshot {
+    const enabled = this.deps.config.remote === true
     return {
       available: this.deviceKey() !== null,
-      enabled: this.deps.config.remote === true,
-      tunnel: this.status,
+      enabled,
+      tunnel: enabled ? this.status : null,
     }
   }
 
@@ -75,16 +79,18 @@ export class RemoteAccess {
 
   sync(): void {
     const key = this.deviceKey()
-    const want = this.deps.tunnel && key !== null && this.deps.config.remote === true
-    if (want && this.tunnel && this.key === key) return
+    const remote = this.deps.config.remote === true
+    const want = this.deps.tunnel && key !== null
+    if (want && this.tunnel && this.key === key && this.remote === remote) return
     this.halt()
     if (!want || !this.deps.origin) return
     this.key = key
+    this.remote = remote
     this.status = { state: 'connecting' }
     const tunnel = new TunnelClient({
       apiOrigin: this.deps.origin,
       key,
-      localPort: this.deps.listener.start(),
+      localPort: remote ? this.deps.listener.start() : null,
       pairing: this.deps.pairing,
       onStatus: (status) => {
         if (this.tunnel !== tunnel) return
@@ -102,7 +108,7 @@ export class RemoteAccess {
           )
         }
       },
-      ...(this.deps.onCatalogChanged ? { onCatalogChanged: this.deps.onCatalogChanged } : {}),
+      ...(this.deps.onPush ? { onPush: this.deps.onPush } : {}),
       ...(this.deps.backoffMs ? { backoffMs: this.deps.backoffMs } : {}),
     })
     this.tunnel = tunnel
@@ -115,9 +121,9 @@ export class RemoteAccess {
     this.sync()
   }
 
-  /** 上送一轮结束的通知；隧道未连接时不发送。 */
+  /** 上送一轮结束的通知；未开启远程访问或隧道未连接时不发送。 */
   notify(...args: Parameters<TunnelClient['notify']>): void {
-    this.tunnel?.notify(...args)
+    if (this.remote) this.tunnel?.notify(...args)
   }
 
   stop(): void {
@@ -129,6 +135,7 @@ export class RemoteAccess {
     this.tunnel?.stop()
     this.tunnel = null
     this.key = null
+    this.remote = false
     this.status = null
     this.deps.listener.stop()
   }

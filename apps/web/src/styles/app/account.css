@@ -179,7 +179,7 @@
   flex: none;
   gap: 2px;
 }
-/* 公告按钮：最新一条未读时右上角带圆点，颜色与「系统设置」的新版本圆点相同。 */
+/* 公告与联系客服按钮：有未读时右上角带圆点，颜色与「系统设置」的新版本圆点相同。 */
 .account-bell {
   position: relative;
 }
@@ -197,6 +197,11 @@
   font-size: var(--fs-sm);
   color: var(--danger);
 }
+/* 联系客服在充值左侧，两者一起靠行尾；云端未开通充值时它自身在行尾。 */
+.account-support {
+  position: relative;
+  margin-left: auto;
+}
 /* 充值按钮在头部行尾，右缘与下方内容对齐；高度与图标按钮相近。
    上移 2px：带底色的按钮与线条图标按几何中心对齐时，视觉上偏下。 */
 .account-recharge {
@@ -207,6 +212,9 @@
   height: 24px;
   padding: 0 var(--s-3);
   font-size: var(--fs-xs);
+}
+.account-support + .account-recharge {
+  margin-left: 0;
 }
 
 /* ── 充值窗口 ──
@@ -426,6 +434,199 @@
   min-width: 96px;
   height: 34px;
   justify-content: center;
+}
+
+/* ── 联系客服窗口 ──
+ * 尺寸固定（B9），对话在 `.support-list` 内滚动。待发送附件的一行固定高度：添加或移除附件时输入框与按钮不移动。 */
+.support-dialog {
+  position: relative;
+  width: min(560px, calc(100vw - 32px));
+  height: min(640px, calc(100vh - 48px));
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+/* 只在打开时改为纵向排列：写在未打开的 dialog 上会覆盖浏览器的 `display: none`。 */
+.support-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.support-dialog::backdrop {
+  background: var(--scrim);
+}
+.support-head {
+  flex: none;
+  padding: var(--s-4) var(--s-5) var(--s-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.support-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.support-close {
+  position: absolute;
+  top: var(--dialog-close-inset);
+  right: var(--dialog-close-inset);
+}
+.support-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-5);
+}
+/* 客服的回复靠左，自己发送的靠右。 */
+.support-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.support-msg.mine {
+  align-items: flex-end;
+}
+.support-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  max-width: 78%;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--bg-active);
+}
+.support-msg.mine .support-bubble {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.support-text {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 附件是按钮（点击下载）：去掉按钮的默认外观，只显示缩略图或文件名。 */
+.support-image,
+.support-file {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.support-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: var(--r-sm);
+  object-fit: contain;
+}
+.support-file {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+}
+.support-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: underline;
+}
+.support-file-size,
+.support-time {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.support-compose {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-5) var(--s-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.support-pending {
+  display: flex;
+  gap: var(--s-2);
+  height: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.support-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  max-width: 180px;
+  height: 24px;
+  padding: 0 var(--s-1) 0 var(--s-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+}
+.support-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.support-chip-remove {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+}
+.support-chip-remove:hover {
+  color: var(--text-primary);
+}
+.support-input {
+  box-sizing: border-box;
+  height: 72px;
+  min-height: 72px;
+  max-height: 72px;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  resize: none;
+  outline: none;
+}
+.support-input:focus {
+  border-color: var(--border-strong);
+}
+.support-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+/* 错误一行，固定高度，出现与消失时按钮不移动。 */
+.support-error {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--danger);
 }
 
 /* 四个统计并排等宽，铺满整行。 */

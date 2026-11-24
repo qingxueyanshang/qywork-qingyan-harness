@@ -2,13 +2,15 @@
  * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`、`name`，账号界面的 `account`（一次取得全部内容）
  * 与 `requests`（使用记录的后续分页），
  * 充值的 `recharge`（下单）与 `recharge/:orderNo`（状态），
- * 不需要登录的本版说明 `release-notes` 与公告列表 `announcements`，以及公告已读位置的写入 `announcements/seen`。
+ * 不需要登录的本版说明 `release-notes` 与公告列表 `announcements`，以及公告已读位置的写入 `announcements/seen`，
+ * 客服对话的 `support`（读取与发送）、`support/read`（已读位置）与 `support/files/:id`（附件）。
  *
  * 账号对象由 `server.ts` 按进程创建一个。未配置云端地址时（`cloud/origin.ts`）为 null，只回答 `unavailable`，
  * 界面据此不显示账号入口。登录、注册与读取失败以 400 返回可直接显示的原因。
  */
 
 import { CloudAccountError } from '../cloud/account.ts'
+import { markSupportRead, sendSupport, supportFile, supportThread } from '../cloud/support.ts'
 import { type ApiHandler, json } from './types.ts'
 
 /** 使用记录每页条数，账号概览中的第一页条数相同。 */
@@ -92,6 +94,23 @@ export const handleCloudApi: ApiHandler = async (url, req, d) => {
     if (order && req.method === 'GET') {
       return json({ status: await account.rechargeStatus(decodeURIComponent(order)) })
     }
+    if (p === '/api/cloud/support' && req.method === 'GET')
+      return json(await supportThread(account))
+    if (p === '/api/cloud/support' && req.method === 'POST') {
+      const form = await req.formData().catch(() => null)
+      if (!form)
+        return json({ error: 'invalid_request', message: '请求体须为 multipart/form-data' }, 400)
+      return json(await sendSupport(account, form))
+    }
+    if (p === '/api/cloud/support/read' && req.method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as { id?: unknown }
+      if (typeof body.id !== 'string') {
+        return json({ error: 'invalid_request', message: '缺少消息 id' }, 400)
+      }
+      return json(await markSupportRead(account, body.id))
+    }
+    const file = /^\/api\/cloud\/support\/files\/([^/]+)$/.exec(p)?.[1]
+    if (file && req.method === 'GET') return supportFile(account, decodeURIComponent(file))
   } catch (err) {
     if (err instanceof CloudAccountError) {
       return json({ error: 'cloud', message: err.message }, 400)

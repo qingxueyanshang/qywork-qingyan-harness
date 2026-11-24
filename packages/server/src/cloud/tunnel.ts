@@ -1,7 +1,10 @@
 /**
- * 隧道客户端：以设备密钥连接云端 `/tunnel`，把设备页面的 HTTP 请求与 WebSocket 转发给本机的远程监听器。
+ * 隧道客户端：以设备密钥连接云端 `/tunnel`，接收云端的推送，开启远程访问时把设备页面的 HTTP 请求与 WebSocket
+ * 转发给本机的远程监听器。
  *
  * 不变量：
+ * - 未开启远程访问（`localPort` 为 null）时 `hello.remote` 为 false，云端不登记设备页面；仍收到的 `http.open` 与 `ws.open`
+ *   以 `close` 应答，不转发。
  * - 本模块不做鉴权：请求原样交给远程监听器，令牌由本机服务校验（`Pairing.verify`）。云端只能经 `pair.request` 取得当前令牌。
  * - `deviceRevoked` 与 `outdated` 是终态，不再重连；前者交由调用方删除本地的云端接口。
  *   `replaced` 也不再重连：同一份配置的另一个进程已经连接，两者交替重连会互相断开。
@@ -26,6 +29,7 @@ import {
   TunnelCredit,
   TunnelInbound,
   type TunnelNotifyEvent,
+  type TunnelPush,
   type TunnelSender,
   tunnelHeaders,
 } from '@qywork/core'
@@ -43,8 +47,8 @@ export interface TunnelClientOptions {
   /** 云端接口来源，例如 `https://api.example.com`。 */
   apiOrigin: string
   key: string
-  /** 远程监听器的端口。 */
-  localPort: number
+  /** 远程监听器的端口；未开启远程访问时为 null。 */
+  localPort: number | null
   /** 当前进程的配对令牌与设备名，应答 `pair.request`。 */
   pairing: () => { token: string; deviceName: string }
   onStatus: (status: TunnelStatus) => void
@@ -52,8 +56,8 @@ export interface TunnelClientOptions {
   backoffMs?: (attempt: number) => number
   /** 耗时达到该值的请求写入日志（毫秒），缺省为 `SLOW_REQUEST_MS`。测试中缩短。 */
   slowRequestMs?: number
-  /** 云端推送型号清单已改变（`catalog.changed`）。 */
-  onCatalogChanged?: () => void
+  /** 云端的推送帧（`TunnelPush`）。 */
+  onPush?: (type: TunnelPush) => void
 }
 
 interface HttpStream {
@@ -168,7 +172,12 @@ export class TunnelClient {
     }, TUNNEL_PING_MS)
     ws.onopen = () => {
       ws.send(
-        JSON.stringify({ type: 'hello', protocol: TUNNEL_PROTOCOL_VERSION, key: this.opts.key }),
+        JSON.stringify({
+          type: 'hello',
+          protocol: TUNNEL_PROTOCOL_VERSION,
+          key: this.opts.key,
+          remote: this.opts.localPort !== null,
+        }),
       )
     }
     ws.onmessage = (e) => {
@@ -233,13 +242,17 @@ export class TunnelClient {
         this.send({ type: 'pair.reply', rid: frame.rid, ...this.opts.pairing() })
         return
       case 'catalog.changed':
-        this.opts.onCatalogChanged?.()
+      case 'support.changed':
+      case 'announcements.changed':
+        this.opts.onPush?.(frame.type)
         return
       case 'http.open':
-        this.openHttp(frame)
+        if (this.opts.localPort === null) this.send({ type: 'close', sid: frame.sid })
+        else this.openHttp(frame, this.opts.localPort)
         return
       case 'ws.open':
-        this.openWs(frame)
+        if (this.opts.localPort === null) this.send({ type: 'close', sid: frame.sid })
+        else this.openWs(frame, this.opts.localPort)
         return
       case 'window': {
         const stream = this.streams.get(frame.sid)
@@ -287,7 +300,7 @@ export class TunnelClient {
     else if (frame.kind === TUNNEL_DATA.binary) stream.local.send(frame.payload)
   }
 
-  private openHttp(open: TunnelControl & { type: 'http.open' }): void {
+  private openHttp(open: TunnelControl & { type: 'http.open' }, port: number): void {
     const { sid } = open
     const started = Date.now()
     let headMs: number | null = null
@@ -318,7 +331,7 @@ export class TunnelClient {
       decompress: false,
       ...(hasBody ? { body: inbound.readable, duplex: 'half' } : {}),
     }
-    void fetch(`http://127.0.0.1:${this.opts.localPort}${open.path}`, init)
+    void fetch(`http://127.0.0.1:${port}${open.path}`, init)
       .then(async (res) => {
         if (this.streams.get(sid)?.kind !== 'http') {
           status = res.status
@@ -356,9 +369,9 @@ export class TunnelClient {
       })
   }
 
-  private openWs(open: TunnelControl & { type: 'ws.open' }): void {
+  private openWs(open: TunnelControl & { type: 'ws.open' }, port: number): void {
     const { sid } = open
-    const local = new WebSocket(`ws://127.0.0.1:${this.opts.localPort}${open.path}`, {
+    const local = new WebSocket(`ws://127.0.0.1:${port}${open.path}`, {
       headers: Object.fromEntries(open.headers),
     })
     local.binaryType = 'arraybuffer'

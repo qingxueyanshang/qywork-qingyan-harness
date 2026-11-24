@@ -35,7 +35,7 @@ type Received =
 /** 模拟的隧道中心：接受 hello、应答 welcome，按测试的需要向电脑端发起请求。 */
 class FakeCloud {
   readonly server: ReturnType<typeof Bun.serve<undefined>>
-  hellos: { protocol: number; key: string }[] = []
+  hellos: { protocol: number; key: string; remote?: boolean }[] = []
   /** 设定后，下一次 hello 以该关闭码拒绝。 */
   reject: number | null = null
   ws: ServerWebSocket<undefined> | null = null
@@ -247,13 +247,14 @@ describe('隧道客户端', () => {
     await local.stop(true)
   })
 
-  test('握手携带设备密钥与协议版本，welcome 后状态为在线', async () => {
+  test('握手携带设备密钥、协议版本与远程访问开关，welcome 后状态为在线', async () => {
     const c = start()
     await until(() => c.status.state === 'online')
     expect(cloud.hellos.at(-1)).toEqual({
       type: 'hello',
       protocol: TUNNEL_PROTOCOL_VERSION,
       key: 'qyd_key',
+      remote: true,
     } as never)
     expect(c.status).toEqual({ state: 'online' })
   })
@@ -435,10 +436,10 @@ describe('隧道客户端', () => {
     expect(cloud.hellos.length).toBe(hellos)
   })
 
-  /** 原始失败形状：云端上架或调价后，电脑端要等用户打开账号窗口才重新读取型号清单。 */
-  test('隧道是型号清单的推送通道：连上与停止时告知账号，云端的 catalog.changed 转交给账号', async () => {
+  /** 原始失败形状：云端上架或调价、发布公告后，电脑端要等用户打开账号窗口或窗口重新获得焦点才重新读取。 */
+  test('隧道是推送通道：连上与停止时告知账号，云端的三种推送帧按类型转交', async () => {
     const channel: boolean[] = []
-    let changed = 0
+    const pushes: string[] = []
     const access = new RemoteAccess({
       config: {
         providers: {
@@ -457,18 +458,95 @@ describe('隧道客户端', () => {
       pairing: () => ({ token: 'tok', deviceName: '电脑' }),
       onRevoked: async () => {},
       onPushChannel: (online) => channel.push(online),
-      onCatalogChanged: () => changed++,
+      onPush: (type) => pushes.push(type),
       backoffMs: () => 20,
     })
     try {
       access.sync()
       await until(() => channel.at(-1) === true)
       cloud.send({ type: 'catalog.changed' })
-      await until(() => changed === 1)
+      cloud.send({ type: 'announcements.changed' })
+      cloud.send({ type: 'support.changed' })
+      await until(() => pushes.length === 3)
+      expect(pushes).toEqual(['catalog.changed', 'announcements.changed', 'support.changed'])
     } finally {
       access.stop()
     }
     expect(channel.at(-1)).toBe(false)
+  })
+
+  /** 原始失败形状：未开启远程访问时隧道不连接，客服回复与型号变更无法推送到电脑端。 */
+  test('未开启远程访问时隧道仍连接：hello.remote 为 false，设备页面的请求以 close 应答，推送照常转交，不上送一轮结束的通知', async () => {
+    const channel: boolean[] = []
+    const pushes: string[] = []
+    let listening = 0
+    const access = new RemoteAccess({
+      config: {
+        providers: {
+          [CLOUD_PROVIDER]: {
+            kind: 'anthropic_messages',
+            apiKey: 'qyd_key',
+            baseUrl: cloud.origin,
+            models: {},
+          },
+        },
+      } as QyConfig,
+      origin: cloud.origin,
+      tunnel: true,
+      listener: {
+        start: () => {
+          listening++
+          return local.port ?? 0
+        },
+        stop: () => {},
+      },
+      pairing: () => ({ token: 'tok', deviceName: '电脑' }),
+      onRevoked: async () => {},
+      onPushChannel: (online) => channel.push(online),
+      onPush: (type) => pushes.push(type),
+      backoffMs: () => 20,
+    })
+    try {
+      access.sync()
+      await until(() => channel.at(-1) === true)
+      expect(cloud.hellos.at(-1)?.remote).toBe(false)
+      expect(listening).toBe(0)
+      expect(access.snapshot()).toMatchObject({ available: true, enabled: false, tunnel: null })
+
+      const httpSid = cloud.newSid()
+      cloud.send({
+        type: 'http.open',
+        sid: httpSid,
+        method: 'GET',
+        path: '/api/workspace',
+        headers: [],
+      })
+      expect(await cloud.control('close', httpSid)).toEqual({ type: 'close', sid: httpSid })
+      const wsSid = cloud.newSid()
+      cloud.send({ type: 'ws.open', sid: wsSid, path: '/ws', headers: [] })
+      expect(await cloud.control('close', wsSid)).toEqual({ type: 'close', sid: wsSid })
+      expect(received).toEqual([])
+
+      cloud.send({ type: 'support.changed' })
+      await until(() => pushes.includes('support.changed'))
+
+      access.notify('run.finished', 'cv_1', '标题')
+      cloud.send({ type: 'pair.request', rid: 'after-notify' })
+      // 控制帧按顺序上送：pair.reply 之前没有 notify，说明通知未发送。
+      const first = await cloud.next((r) =>
+        'control' in r &&
+        (r.control.type === 'notify' ||
+          (r.control.type === 'pair.reply' && r.control.rid === 'after-notify'))
+          ? r.control
+          : undefined,
+      )
+      expect(first).toMatchObject({
+        type: 'pair.reply',
+        rid: 'after-notify',
+      })
+    } finally {
+      access.stop()
+    }
   })
 
   /** 原始失败形状：删除本地云端接口时写入配置失败，拒绝无人处理，`qy serve` 随之退出。 */
@@ -630,15 +708,24 @@ describe('远程访问经 serve() 装配', () => {
     expect(again.status).toBe(200)
     await until(() => handle?.remote.snapshot().tunnel?.state === 'online')
 
-    // 关闭开关：隧道断开，开关写入配置。
+    // 关闭开关：隧道以 remote 为 false 重新连接（仍是推送通道），开关写入配置，设备页面的请求不再转发。
     const off = await fetch(`${base}/api/pairing/remote`, {
       method: 'POST',
       headers: auth,
       body: JSON.stringify({ enabled: false }),
     })
     expect(((await off.json()) as { enabled: boolean; tunnel: unknown }).tunnel).toBeNull()
-    await until(() => cloud.ws === null)
+    await until(() => cloud.hellos.at(-1)?.remote === false && cloud.ws !== null)
     expect((await loadConfig()).remote).toBeUndefined()
+    const refused = cloud.newSid()
+    cloud.send({
+      type: 'http.open',
+      sid: refused,
+      method: 'GET',
+      path: '/api/workspace',
+      headers: [],
+    })
+    expect((await cloud.control('close', refused)).sid).toBe(refused)
 
     // 重新开启后，云端答复设备已被移除：本地删除云端接口，远程访问不再可用。
     await fetch(`${base}/api/pairing/remote`, {
@@ -646,7 +733,7 @@ describe('远程访问经 serve() 装配', () => {
       headers: auth,
       body: JSON.stringify({ enabled: true }),
     })
-    await until(() => cloud.ws !== null)
+    await until(() => cloud.hellos.at(-1)?.remote === true && cloud.ws !== null)
     cloud.ws?.close(TUNNEL_CLOSE.deviceRevoked)
     await until(() => handle?.remote.snapshot().available === false)
     const saved = await loadConfig()

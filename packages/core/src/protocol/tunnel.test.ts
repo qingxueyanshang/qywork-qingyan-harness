@@ -93,6 +93,25 @@ describe('控制帧', () => {
     expect(parseControl('{"type":"end","sid":1.5}')).toBeNull()
     expect(parseControl('{"type":"http.head","sid":1,"status":200,"headers":[["a"]]}')).toBeNull()
     expect(parseControl('{"type":"close","sid":1,"code":"x"}')).toBeNull()
+    expect(parseControl('{"type":"hello","protocol":2,"key":"k","remote":"false"}')).toBeNull()
+  })
+
+  test('hello 的 remote 可省略（协议 2 的电脑端）；support.changed 不带字段', () => {
+    expect(parseControl('{"type":"hello","protocol":2,"key":"k"}')).toEqual({
+      type: 'hello',
+      protocol: 2,
+      key: 'k',
+    })
+    expect(parseControl('{"type":"hello","protocol":2,"key":"k","remote":false}')).toEqual({
+      type: 'hello',
+      protocol: 2,
+      key: 'k',
+      remote: false,
+    })
+    expect(parseControl('{"type":"support.changed"}')).toEqual({ type: 'support.changed' })
+    expect(parseControl('{"type":"announcements.changed"}')).toEqual({
+      type: 'announcements.changed',
+    })
   })
 
   test('http.open 与 ws.open 的 path 不以 / 开头时返回 null', () => {

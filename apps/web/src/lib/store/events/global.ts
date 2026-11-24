@@ -5,12 +5,14 @@
  */
 
 import { produce } from 'solid-js/store'
+import { loadAnnouncements } from '../announcements.ts'
 import { setPersonalizationChange } from '../appearance/personalization.ts'
 import { setPetsChange } from '../appearance/pet.ts'
 import { setExportRequests } from '../canvas.ts'
 import { openFileInPanel } from '../files.ts'
 import { setConfigChange } from '../settings.ts'
 import { setState, settleBusy } from '../state.ts'
+import { supportChanged } from '../support.ts'
 import { workspace } from '../ui.ts'
 import { handlers } from './handler.ts'
 import { flushText } from './pace.ts'
@@ -101,6 +103,17 @@ export const globalEvents = handlers({
   'config.changed': {
     process(_ev, seq) {
       setConfigChange(seq)
+    },
+  },
+  // 云端经隧道推送的变化（本机服务转为全局事件）：公告列表与客服对话重新读取。
+  'announcements.changed': {
+    process() {
+      void loadAnnouncements()
+    },
+  },
+  'support.changed': {
+    process() {
+      void supportChanged()
     },
   },
   'pets.changed': {

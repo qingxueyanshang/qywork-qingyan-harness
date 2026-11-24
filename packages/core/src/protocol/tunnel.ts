@@ -48,7 +48,11 @@ export type TunnelHeaders = [string, string][]
 export type TunnelNotifyEvent = 'run.finished' | 'run.error'
 
 export type TunnelControl =
-  | { type: 'hello'; protocol: number; key: string }
+  /**
+   * `remote`：本机是否开启远程访问。为 false 时云端不登记该设备的设备页面，隧道只用于推送。
+   * 协议 2 的电脑端不带此字段，且只在开启远程访问时连接，云端按缺省为 true 判定。
+   */
+  | { type: 'hello'; protocol: number; key: string; remote?: boolean }
   | { type: 'welcome' }
   | { type: 'ping' }
   | { type: 'pong' }
@@ -71,21 +75,26 @@ export type TunnelControl =
   | { type: 'pair.request'; rid: string }
   | { type: 'pair.reply'; rid: string; token: string; deviceName: string }
   | { type: 'notify'; event: TunnelNotifyEvent; conversationId: string; title: string }
-  /**
-   * 云端发给电脑端：管理员改动了型号或上游接口，型号清单与价格已变，电脑端随即重新读取 `/v1/catalog`。
-   * 只是通知，不带清单内容：清单仍以设备密钥读取。未登记此帧类型的电脑端忽略它。
-   */
-  | { type: 'catalog.changed' }
+  | { type: TunnelPush }
+
+/**
+ * 云端发给电脑端的推送帧，电脑端收到后重新读取对应的内容：
+ * - `catalog.changed`：管理员改动了型号或上游接口，型号清单与价格已变（`/v1/catalog`）；
+ * - `support.changed`：本账号的客服对话有新消息（客服回复，或本账号在另一台电脑上发送）；
+ * - `announcements.changed`：公告已发布、修改、撤回或删除。
+ * 只是通知，不带内容：内容仍以设备密钥或公开接口读取。未登记该帧类型的电脑端忽略它。
+ */
+export type TunnelPush = 'catalog.changed' | 'support.changed' | 'announcements.changed'
 
 /**
  * `path`：以 `/` 开头的字符串。电脑端把它直接拼接在 `http://127.0.0.1:<端口>` 之后，
  * 不以 `/` 开头时 `@127.0.0.1:<另一端口>/x` 会使前半部分成为用户信息，请求发往本机的另一个端口。
  */
-type FieldKind = 'string' | 'number' | 'headers' | 'path' | 'string?' | 'number?'
+type FieldKind = 'string' | 'number' | 'headers' | 'path' | 'string?' | 'number?' | 'boolean?'
 
 /** 每种控制帧的字段与类型。`parseControl` 只按此表校验，新增帧类型时在此登记。 */
 const FIELDS: { [T in TunnelControl['type']]: Record<string, FieldKind> } = {
-  hello: { protocol: 'number', key: 'string' },
+  hello: { protocol: 'number', key: 'string', remote: 'boolean?' },
   welcome: {},
   ping: {},
   pong: {},
@@ -100,9 +109,12 @@ const FIELDS: { [T in TunnelControl['type']]: Record<string, FieldKind> } = {
   'pair.reply': { rid: 'string', token: 'string', deviceName: 'string' },
   notify: { event: 'string', conversationId: 'string', title: 'string' },
   'catalog.changed': {},
+  'support.changed': {},
+  'announcements.changed': {},
 }
 
 function fieldOk(value: unknown, kind: FieldKind): boolean {
+  if (kind === 'boolean?') return value === undefined || typeof value === 'boolean'
   if (kind === 'string?') return value === undefined || typeof value === 'string'
   if (kind === 'number?') return value === undefined || Number.isInteger(value)
   if (kind === 'number') return Number.isInteger(value)

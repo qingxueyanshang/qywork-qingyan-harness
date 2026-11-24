@@ -241,7 +241,29 @@ export type CloudState =
        * 云端暂时无法访问时为本设备上一次取得的值；本次运行中从未取得时缺省，界面不据此判定未读。
        */
       announcementSeen?: string | null
+      /** 云端已开通客服消息；false 时账号窗口不显示「联系客服」。云端暂时无法访问时为 false。 */
+      support: boolean
+      /** 客服回复中未读的条数。云端暂时无法访问时为 0。 */
+      supportUnread: number
     }
+
+/** 客服对话中的一个附件。内容经 `GET /api/cloud/support/files/:id` 读取。 */
+export interface SupportAttachment {
+  id: string
+  name: string
+  mime: string
+  size: number
+}
+
+/** `GET /api/cloud/support`：客服对话中的一条消息，旧者在前，只含最近的 200 条。 */
+export interface SupportMessage {
+  id: string
+  /** true 为客服的回复。 */
+  fromAdmin: boolean
+  body: string
+  attachments: SupportAttachment[]
+  createdAt: string
+}
 
 /** `POST /api/cloud/recharge`：一笔充值订单。1 元充值 1 积分。 */
 export interface CloudRechargeOrder {

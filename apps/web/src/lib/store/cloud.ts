@@ -50,6 +50,22 @@ export async function markAnnouncementSeen(id: string): Promise<void> {
   )
 }
 
+/**
+ * 把客服对话的已读位置写到云端账号，返回后以服务端的账号状态为准（未读数随之更新）。先清除本地的未读数使圆点立即消失；
+ * 写入失败时保留本地的值，下一次读取账号状态时恢复为云端的值。
+ */
+export async function markSupportRead(id: string): Promise<void> {
+  const current = cloudState()
+  if (current?.state !== 'signed_in') return
+  setCloudState({ ...current, supportUnread: 0 })
+  setCloudState(
+    await client.api<CloudState>('/api/cloud/support/read', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    }),
+  )
+}
+
 /** 登录或注册。失败时抛出可直接显示的原因，状态不变。成功后内置模型已写入配置，模型列表随之刷新。 */
 export async function cloudSignIn(
   mode: 'login' | 'register',

@@ -1,17 +1,29 @@
 /**
  * 账号界面：`AccountEntry.tsx`（侧栏入口）、`AccountDialog.tsx`（账号弹窗，其中的手机接入见 `PairPanel.test.tsx`）、`LoginForm.tsx`（登录表单）、`NameEdit.tsx`（用户名的修改）、
- * `RechargeDialog.tsx`（充值窗口）、
+ * `RechargeDialog.tsx`（充值窗口）、`SupportDialog.tsx`（联系客服窗口）与 `lib/store/support.ts`、
  * `ActivityGrid.tsx`（Token 活动方格）、`../LoginGate.tsx`（首次启动的登录页），以及 `lib/store/cloud.ts`。
  * 服务端接口以替身代替，状态以替身返回值为准。
  */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import type { Announcement, CloudRequest, CloudState, CloudUsage } from '@qywork/core'
+import type {
+  Announcement,
+  CloudRequest,
+  CloudState,
+  CloudUsage,
+  SupportMessage,
+} from '@qywork/core'
 import type { JSX } from 'solid-js'
 
 let store: typeof import('../../lib/store/index.ts')
 let cloudStore: typeof import('../../lib/store/cloud.ts')
+let supportStore: typeof import('../../lib/store/support.ts')
 let originalApi: typeof store.client.api
+let originalRaw: typeof store.client.raw
+/** 客服对话；发送的表单记在 `supportSent`，`supportRefusal` 非空时发送以该原因失败。 */
+let supportThread: SupportMessage[]
+let supportSent: FormData[]
+let supportRefusal: string | null
 let ApiError: typeof import('../../lib/client.ts').ApiError
 let cloud: CloudState
 let providers: unknown[]
@@ -51,6 +63,8 @@ const SIGNED_IN: CloudState = {
   origin: 'https://qywork.io',
   recharge: true,
   announcementSeen: null,
+  support: true,
+  supportUnread: 0,
 }
 
 const USAGE: CloudUsage = {
@@ -99,7 +113,37 @@ beforeAll(async () => {
   store = await import('../../lib/store/index.ts')
   cloudStore = await import('../../lib/store/cloud.ts')
   ApiError = (await import('../../lib/client.ts')).ApiError
+  supportStore = await import('../../lib/store/support.ts')
   originalApi = store.client.api
+  originalRaw = store.client.raw
+  store.client.raw = async (path: string, init?: RequestInit): Promise<Response> => {
+    calls.push(`${init?.method ?? 'GET'} ${path}`)
+    if (path.startsWith('/api/cloud/support/files/')) {
+      return new Response('png', { headers: { 'content-type': 'image/png' } })
+    }
+    if (path !== '/api/cloud/support' || init?.method !== 'POST')
+      throw new Error(`unexpected ${path}`)
+    const form = init.body as FormData
+    supportSent.push(form)
+    if (supportRefusal) {
+      return Response.json({ error: 'cloud', message: supportRefusal }, { status: 400 })
+    }
+    const files = form.getAll('files') as File[]
+    const sent: SupportMessage = {
+      id: String(100 + supportSent.length),
+      fromAdmin: false,
+      body: String(form.get('body')),
+      attachments: files.map((f, i) => ({
+        id: String(i + 1),
+        name: f.name,
+        mime: f.type,
+        size: f.size,
+      })),
+      createdAt: '2026-11-24T02:00:00.000Z',
+    }
+    supportThread = [...supportThread, sent]
+    return Response.json(sent)
+  }
   store.client.api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
     calls.push(`${init?.method ?? 'GET'} ${path}`)
     if (path === '/api/models') {
@@ -186,6 +230,11 @@ beforeAll(async () => {
     }
     if (path.startsWith('/api/cloud/requests')) return (pages.shift() ?? []) as T
     if (path === '/api/cloud/announcements') return structuredClone(notices) as T
+    if (path === '/api/cloud/support') return structuredClone(supportThread) as T
+    if (path === '/api/cloud/support/read') {
+      cloud = { ...(cloud as Extract<CloudState, { state: 'signed_in' }>), supportUnread: 0 }
+      return structuredClone(cloud) as T
+    }
     if (path === '/api/cloud/announcements/seen') {
       const { id } = JSON.parse(String(init?.body)) as { id: string }
       cloud = { ...(cloud as Extract<CloudState, { state: 'signed_in' }>), announcementSeen: id }
@@ -225,12 +274,16 @@ beforeEach(async () => {
   notices = []
   rechargeReplies = []
   cloudDown = false
+  supportThread = []
+  supportSent = []
+  supportRefusal = null
   stored = structuredClone(STORED)
   store.setAccountOpen(false)
 })
 
 afterAll(async () => {
   store.client.api = originalApi
+  store.client.raw = originalRaw
   await GlobalRegistrator.unregister()
 })
 
@@ -782,15 +835,128 @@ test('充值按钮：云端开通充值时显示在头部行尾，未开通时�
   await cloudStore.refreshCloudState()
   const view = await dialog()
   await until(() => view.button('充值') !== undefined)
-  expect(view.button('充值')?.previousElementSibling?.classList.contains('account-actions')).toBe(
-    true,
-  )
+  // 充值在行尾，左侧是联系客服，再左侧是公告、官网与退出按钮组。
+  const beside = view.button('充值')?.previousElementSibling
+  expect(beside?.getAttribute('aria-label')).toBe('联系客服')
+  expect(beside?.previousElementSibling?.classList.contains('account-actions')).toBe(true)
   view.button('充值')?.click()
   await until(() => view.host.querySelector('.recharge-dialog') !== null)
   expect(view.host.querySelector<HTMLDialogElement>('.recharge-dialog')?.open).toBe(true)
   view.host.querySelector<HTMLButtonElement>('.recharge-close')?.click()
   await until(() => view.host.querySelector('.recharge-dialog') === null)
   view.close()
+})
+
+test('联系客服：云端开通时在充值左侧显示耳麦图标，未开通时不显示；有未读的客服回复时图标与侧栏入口带圆点', async () => {
+  cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), support: false }
+  await cloudStore.refreshCloudState()
+  const off = await dialog()
+  await until(() => off.host.querySelector('.account-head') !== null)
+  expect(off.host.querySelector('[aria-label="联系客服"]')).toBeNull()
+  off.close()
+
+  cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), supportUnread: 2 }
+  await cloudStore.refreshCloudState()
+  const side = await entry()
+  expect(side.host.querySelector('.app-update-dot')?.getAttribute('aria-label')).toBe('有新消息')
+  side.close()
+  const view = await dialog()
+  await until(() => view.host.querySelector('[aria-label="联系客服"]') !== null)
+  const button = view.host.querySelector('[aria-label="联系客服"]') as HTMLButtonElement
+  expect(button.querySelector('[aria-label="有新消息"]')).not.toBeNull()
+  view.close()
+})
+
+test('联系客服窗口：打开时读取对话并把客服的新回复记为已读；选择的文件随消息发送，成功后清空输入；云端拒绝时显示原因', async () => {
+  cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), supportUnread: 1 }
+  supportThread = [
+    {
+      id: '7',
+      fromAdmin: true,
+      body: '请提供截图',
+      attachments: [{ id: '3', name: '步骤.png', mime: 'image/png', size: 2048 }],
+      createdAt: '2026-11-24T01:00:00.000Z',
+    },
+  ]
+  await cloudStore.refreshCloudState()
+  const view = await dialog()
+  await until(() => view.host.querySelector('[aria-label="联系客服"]') !== null)
+  ;(view.host.querySelector('[aria-label="联系客服"]') as HTMLButtonElement).click()
+  await until(() => view.text().includes('请提供截图'))
+  expect(view.host.querySelector<HTMLDialogElement>('.support-dialog')?.open).toBe(true)
+  expect(view.host.querySelector('.support-image img')?.getAttribute('src')).toContain(
+    '/api/cloud/support/files/3',
+  )
+  await until(() => calls.includes('POST /api/cloud/support/read'))
+  expect(supportStore.supportUnread()).toBe(false)
+  // 点击附件经本机接口取得内容后下载，不打开带令牌的地址。
+  const clicked: string[] = []
+  const onClick = (e: Event) => {
+    const a = e.target as HTMLAnchorElement
+    if (a.download) {
+      clicked.push(a.download)
+      e.preventDefault()
+    }
+  }
+  document.addEventListener('click', onClick, true)
+  view.host.querySelector<HTMLButtonElement>('.support-image')?.click()
+  await until(() => clicked.length === 1)
+  document.removeEventListener('click', onClick, true)
+  expect(clicked).toEqual(['步骤.png'])
+  expect(calls).toContain('GET /api/cloud/support/files/3')
+
+  const input = view.host.querySelector('.support-input') as HTMLTextAreaElement
+  const send = view.host.querySelector('.support-actions .send-btn') as HTMLButtonElement
+  expect(send.disabled).toBe(true)
+  input.value = '登录后一直转圈'
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  const picker = view.host.querySelector('.support-actions input[type="file"]') as HTMLInputElement
+  const log = new File(['日志'], 'qywork.log', { type: 'text/plain' })
+  Object.defineProperty(picker, 'files', { value: [log], configurable: true })
+  picker.dispatchEvent(new Event('change', { bubbles: true }))
+  await until(() => view.text().includes('qywork.log'))
+  send.click()
+  await until(() => supportSent.length === 1)
+  expect(supportSent[0]?.get('body')).toBe('登录后一直转圈')
+  expect((supportSent[0]?.getAll('files') as File[]).map((f) => f.name)).toEqual(['qywork.log'])
+  await until(() => view.host.querySelectorAll('.support-msg.mine').length === 1)
+  expect(input.value).toBe('')
+  expect(view.host.querySelector('.support-chip')).toBeNull()
+
+  supportRefusal = '账号服务返回 400：消息不能为空'
+  input.value = 'x'
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  send.click()
+  await until(() => view.text().includes('消息不能为空'))
+
+  view.host.querySelector<HTMLButtonElement>('.support-close')?.click()
+  await until(() => view.host.querySelector('.support-dialog') === null)
+  expect(supportStore.supportOpen()).toBe(false)
+  view.close()
+})
+
+test('客服对话有新消息（support.changed）：重新读取未读数，窗口打开时重新读取对话', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), supportUnread: 1 }
+  await supportStore.supportChanged()
+  expect(supportStore.supportUnread()).toBe(true)
+  expect(calls.filter((c) => c === 'GET /api/cloud/support')).toEqual([])
+
+  supportStore.openSupport()
+  supportThread = [
+    {
+      id: '9',
+      fromAdmin: true,
+      body: '已处理',
+      attachments: [],
+      createdAt: '2026-11-24T03:00:00.000Z',
+    },
+  ]
+  await supportStore.supportChanged()
+  expect(supportStore.supportMessages()?.map((m) => m.body)).toEqual(['已处理'])
+  expect(supportStore.supportUnread()).toBe(false)
+  supportStore.closeSupport()
 })
 
 async function recharge() {
