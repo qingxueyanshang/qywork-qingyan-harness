@@ -522,6 +522,9 @@ export function serve(opts: ServeOptions) {
     listener: remoteListener,
     pairing: () => ({ token: pairing.token, deviceName: pairing.deviceName }),
     onRevoked: () => cloud?.revoked() ?? Promise.resolve(),
+    // 隔道也是云端型号清单变更的推送通道（`cloud/account.ts`）。
+    onPushChannel: (online) => cloud?.setPushChannel(online),
+    onCatalogChanged: () => void cloud?.catalogChanged(),
   })
   // 一轮结束时经隧道上送通知；隧道未连接时不发送。
   const offRunNotify = watchRunEnds(bus, opts.store, (event, conversationId, title) =>

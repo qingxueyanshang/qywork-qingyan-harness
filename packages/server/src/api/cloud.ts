@@ -1,5 +1,6 @@
 /**
- * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`、`name`，账号界面的 `models`、`usage`、`requests`，
+ * 云端账号：`/api/cloud/state`、`login`、`register`、`logout`、`avatar`、`name`，账号界面的 `account`（一次取得全部内容）
+ * 与 `requests`（使用记录的后续分页），
  * 充值的 `recharge`（下单）与 `recharge/:orderNo`（状态），
  * 不需要登录的本版说明 `release-notes` 与公告列表 `announcements`，以及公告已读位置的写入 `announcements/seen`。
  *
@@ -10,7 +11,7 @@
 import { CloudAccountError } from '../cloud/account.ts'
 import { type ApiHandler, json } from './types.ts'
 
-/** 使用记录每页条数。 */
+/** 使用记录每页条数，账号概览中的第一页条数相同。 */
 const PAGE = 50
 
 export const handleCloudApi: ApiHandler = async (url, req, d) => {
@@ -75,8 +76,8 @@ export const handleCloudApi: ApiHandler = async (url, req, d) => {
       }
       return json(await account.setName(body.name))
     }
-    if (p === '/api/cloud/usage' && req.method === 'GET') return json(await account.usage())
-    if (p === '/api/cloud/models' && req.method === 'GET') return json(await account.models())
+    if (p === '/api/cloud/account' && req.method === 'GET')
+      return json(await account.overview(PAGE))
     if (p === '/api/cloud/requests' && req.method === 'GET') {
       return json(await account.requests(url.searchParams.get('before'), PAGE))
     }

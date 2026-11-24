@@ -12,12 +12,16 @@
  *   写入的条目带 `cloud` 标记；覆盖层仍是模型库之上唯一的一层，所有权规则见 `withSpecs`。
  * - 每个型号的显示名称写入云端接口下该型号的条目（`displayName`），不写入覆盖层：覆盖层为所有接口共用，
  *   写入后用户自建接口中的同名型号也显示云端的名称。
+ * - 型号清单不等用户打开账号窗口才同步：推送通道（隧道）连上时与收到 `catalog.changed` 时立即同步；
+ *   读取账号状态（窗口获得焦点、连接可用）时，清单不再最新（`fresh`）则在后台同步。写入配置后界面经
+ *   `config.changed` 重新读取模型目录。
  */
 
 import { httpStatusName, lookupModel, transportFailureKind } from '@qywork/ai'
 import {
   type Announcement,
   CLOUD_MEDIA_KIND,
+  type CloudAccountOverview,
   type CloudModel,
   type CloudModelSpec,
   type CloudRechargeOrder,
@@ -25,6 +29,7 @@ import {
   type CloudRequest,
   type CloudState,
   type CloudUsage,
+  log,
   type MediaOutput,
   type MediaUnit,
   type ProviderKind,
@@ -203,6 +208,66 @@ export interface CloudAccountOptions {
 /** 网关返回的请求记录：失败以状态码与网关的错误码表示，转为界面文字后交给账号界面。 */
 type GatewayRequest = Omit<CloudRequest, 'failure'> & { status: number; errorCode: string | null }
 
+function toRequest({ status, errorCode, ...r }: GatewayRequest): CloudRequest {
+  return { ...r, failure: failure(status, errorCode) }
+}
+
+/** 云端 `/v1/me` 的应答；云端未返回的可选字段取缺省值（`meOf`）。 */
+interface MeReply {
+  email: string
+  name?: string
+  credits: number
+  avatar?: string | null
+  recharge?: boolean
+  announcementSeen?: string | null
+}
+
+type Me = Required<Omit<MeReply, 'avatar' | 'announcementSeen'>> & {
+  avatar: string | null
+  announcementSeen: string | null
+}
+
+function meOf(me: MeReply): Me {
+  return {
+    email: me.email,
+    name: me.name ?? '',
+    credits: me.credits,
+    avatar: me.avatar ?? null,
+    recharge: me.recharge === true,
+    announcementSeen: me.announcementSeen ?? null,
+  }
+}
+
+/** 账号窗口列出的型号与单价：对话型号在前、生成型号在后，各自按清单的顺序。 */
+function cloudModels(list: Catalog): CloudModel[] {
+  const media: CloudModel[] = (list.media ?? []).map((m) => ({
+    output: m.output,
+    id: m.id,
+    unit: m.unit,
+    unitPrice: m.unitPrice,
+  }))
+  return list.models
+    .map(
+      (m): CloudModel => ({
+        output: 'chat',
+        id: m.id,
+        ratio: m.ratio,
+        official: m.official === true,
+        price: m.price,
+      }),
+    )
+    .concat(media)
+}
+
+/** 没有推送通道时，配置中的型号清单视为最新的时长。 */
+const STALE_MS = 60_000
+
+/**
+ * 推送通道连接期间，配置中的型号清单视为最新的时长。不是无限长：云端部署重叠期间，电脑仍连在旧进程上，
+ * 无法收到新进程发出的推送。
+ */
+const PUSH_TRUST_MS = 10 * 60_000
+
 /** 网关错误码对应的说明。`upstream_<状态码>` 写成「状态码 名称」，与运行页的报错写法相同。 */
 function failure(status: number, errorCode: string | null): string | null {
   if (!errorCode) return null
@@ -270,7 +335,12 @@ export class CloudAccount {
    * 换账号登录后密钥不同，不沿用上一个账号的值。
    */
   private seen: { key: string; id: string | null } | null = null
-  private refreshed = false
+  /** 上一次把云端型号清单写入配置的时刻；本进程尚未写入过为 0。 */
+  private syncedAt = 0
+  /** 推送通道（隧道）连上的时刻；未连接为 null。 */
+  private pushSince: number | null = null
+  /** 进行中的后台同步，同一时刻只有一个。 */
+  private syncing: Promise<void> | null = null
   private readonly onChange: () => void
   private readonly timeoutMs: number
   private readonly resendDelaysMs: readonly number[]
@@ -318,24 +388,9 @@ export class CloudAccount {
       return { state: 'signed_out', reason: 'revoked' }
     }
     if (me) {
-      this.email = me.email
-      this.name = me.name
-      this.seen = { key: provider.apiKey, id: me.announcementSeen }
-      if (!this.refreshed) {
-        this.refreshed = true
-        void this.refreshModels(provider.apiKey).catch(() => {})
-      }
-      return {
-        state: 'signed_in',
-        email: me.email,
-        name: me.name,
-        credits: me.credits,
-        avatar: me.avatar,
-        provider: CLOUD_PROVIDER,
-        origin: this.origin,
-        recharge: me.recharge,
-        announcementSeen: me.announcementSeen,
-      }
+      this.remember(me, provider.apiKey)
+      if (!this.fresh()) void this.refresh()
+      return this.signedIn(me)
     }
     // 云端暂时无法访问：仍视为已登录，余额与头像未知；用户名与公告已读位置沿用本设备上一次取得的值，
     // 公告已读位置未取得过时缺省。
@@ -352,6 +407,27 @@ export class CloudAccount {
     }
   }
 
+  /** 记录本次取得的账号资料，云端暂时无法访问时沿用。 */
+  private remember(me: Me, key: string): void {
+    this.email = me.email
+    this.name = me.name
+    this.seen = { key, id: me.announcementSeen }
+  }
+
+  private signedIn(me: Me): Extract<CloudState, { state: 'signed_in' }> {
+    return {
+      state: 'signed_in',
+      email: me.email,
+      name: me.name,
+      credits: me.credits,
+      avatar: me.avatar,
+      provider: CLOUD_PROVIDER,
+      origin: this.origin,
+      recharge: me.recharge,
+      announcementSeen: me.announcementSeen,
+    }
+  }
+
   /** 以邮箱密码登录。已登录时直接返回当前状态。 */
   login(email: string, password: string): Promise<CloudState> {
     return this.signIn('/v1/login', email, password)
@@ -363,29 +439,29 @@ export class CloudAccount {
   }
 
   /**
-   * 云端当前提供的对话型号与单价（积分 / 百万 token）。读取的同时更新配置中的云端接口与型号规格：
-   * 账号弹窗列出的型号与模型下拉列表一致，管理员调价或上架后无需重启。
+   * 账号窗口的全部内容：账号与余额、用量（按本机时区分日）、型号与单价、前 `limit` 条使用记录，
+   * 经云端 `/v1/account` 一次取得。不要拆成多个并行请求：每个请求各自新建到云端的连接，经代理的 TLS 握手
+   * 实测每次 4–15 秒。读取的同时把型号清单写入配置，账号窗口列出的型号与模型选择一致。
    */
-  async models(): Promise<CloudModel[]> {
-    const list = await this.call<Catalog>('/v1/catalog')
-    await this.applyModels(list)
-    const media: CloudModel[] = (list.media ?? []).map((m) => ({
-      output: m.output,
-      id: m.id,
-      unit: m.unit,
-      unitPrice: m.unitPrice,
-    }))
-    return list.models
-      .map(
-        (m): CloudModel => ({
-          output: 'chat',
-          id: m.id,
-          ratio: m.ratio,
-          official: m.official === true,
-          price: m.price,
-        }),
-      )
-      .concat(media)
+  async overview(limit: number): Promise<CloudAccountOverview> {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    const query = new URLSearchParams({ tz, limit: String(limit) })
+    const reply = await this.call<{
+      me: MeReply
+      usage: CloudUsage
+      catalog: Catalog
+      requests: GatewayRequest[]
+    }>(`/v1/account?${query}`)
+    await this.applyModels(reply.catalog)
+    const me = meOf(reply.me)
+    const key = cloudProviderOf(this.live, this.origin)?.apiKey
+    if (key) this.remember(me, key)
+    return {
+      state: this.signedIn(me),
+      usage: reply.usage,
+      models: cloudModels(reply.catalog),
+      requests: reply.requests.map(toRequest),
+    }
   }
 
   /**
@@ -456,21 +532,12 @@ export class CloudAccount {
     return this.state()
   }
 
-  /** 用量汇总，按本机时区分日。 */
-  usage(): Promise<CloudUsage> {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-    return this.call<CloudUsage>(`/v1/usage?tz=${encodeURIComponent(tz)}`)
-  }
-
-  /** 使用记录，按时间倒序；`before` 为上一页最后一条的 `startedAt`。 */
+  /** 使用记录，按时间倒序；`before` 为上一页最后一条的 `startedAt`。第一页随 `overview` 返回。 */
   async requests(before: string | null, limit: number): Promise<CloudRequest[]> {
     const query = new URLSearchParams({ limit: String(limit) })
     if (before) query.set('before', before)
     const rows = await this.call<GatewayRequest[]>(`/v1/requests?${query}`)
-    return rows.map(({ status, errorCode, ...r }) => ({
-      ...r,
-      failure: failure(status, errorCode),
-    }))
+    return rows.map(toRequest)
   }
 
   /** 微信支付充值下单，金额为整数元，范围由云端校验。 */
@@ -630,7 +697,7 @@ export class CloudAccount {
         `写入配置失败：${'problems' in result ? result.problems.join('；') : result.status}`,
       )
     }
-    this.refreshed = true
+    this.syncedAt = Date.now()
     this.onChange()
   }
 
@@ -645,22 +712,64 @@ export class CloudAccount {
   }
 
   /**
-   * 更新配置中网关上的型号：协议、价格与显示名称随清单更新，用户的思考档位等设置保留；新增的型号加入；
-   * 网关上已停用的型号标记 `delisted`；型号规格写入模型库覆盖层（`withSpecs`）。
-   * 每个进程首次确认已登录时执行一次，账号弹窗每次读取可用模型时再执行一次。
+   * 推送通道（远程访问的隧道）连上或断开。连上时立即同步一次：断开期间云端的改动没有推送到本机。
+   * 云端重新部署后隧道重连，内置模型库随部署更新的规格也由这次同步取得。
    */
-  private async refreshModels(key: string): Promise<void> {
-    await this.applyModels(await this.catalog(key))
+  setPushChannel(online: boolean): void {
+    if (!online) {
+      this.pushSince = null
+      return
+    }
+    if (this.pushSince !== null) return
+    this.pushSince = Date.now()
+    void this.refresh()
+  }
+
+  /** 云端推送型号清单已改变。不并入进行中的同步：那次同步可能读取到改动之前的清单。失败只记录日志，不拒绝。 */
+  catalogChanged(): Promise<void> {
+    return this.sync()
   }
 
   /**
-   * 一轮使用云端型号之前读取当前的型号与倍率。后台可随时调整倍率，配置中的副本只在登录、进程首次确认登录与
-   * 打开账号窗口时更新；不在开始前同步时，调价之后的轮次按旧倍率记账，与云端扣费不一致。
+   * 配置中的型号清单是否可视为最新：推送通道连上之后同步过且不超过 `PUSH_TRUST_MS`，
+   * 或没有推送通道时距上次同步不超过 `STALE_MS`。
+   */
+  private fresh(): boolean {
+    if (this.syncedAt === 0) return false
+    const age = Date.now() - this.syncedAt
+    if (this.pushSince !== null && this.syncedAt >= this.pushSince) return age < PUSH_TRUST_MS
+    return age < STALE_MS
+  }
+
+  /** 在后台同步型号清单；进行中时不另发。 */
+  private refresh(): Promise<void> {
+    this.syncing ??= this.sync().finally(() => {
+      this.syncing = null
+    })
+    return this.syncing
+  }
+
+  /** 同步失败时记录原因，沿用已保存的型号与价格。 */
+  private async sync(): Promise<void> {
+    const key = cloudProviderOf(this.live, this.origin)?.apiKey
+    if (!key) return
+    try {
+      await this.applyModels(await this.catalog(key))
+    } catch (err) {
+      log.warn('cloud', '同步云端型号清单失败，沿用已保存的型号', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  /**
+   * 一轮使用云端型号之前确认配置中的型号与倍率是最新的：后台可随时调整倍率，按旧倍率记账时与云端扣费不一致。
+   * 已是最新（`fresh`）时不读取：经代理新建到云端的连接常需数秒，每轮都读取时一轮要先等待这段时间。
    * 读取超时 3 秒，失败时抛出，由调用方沿用已保存的价格。
    */
   async syncModels(): Promise<void> {
     const provider = cloudProviderOf(this.live, this.origin)
-    if (!provider?.apiKey) return
+    if (!provider?.apiKey || this.fresh()) return
     await this.applyModels(await this.catalog(provider.apiKey, AbortSignal.timeout(3000)))
   }
 
@@ -728,40 +837,13 @@ export class CloudAccount {
         },
       }
     })
+    this.syncedAt = Date.now()
   }
 
-  private async me(key: string): Promise<
-    | {
-        email: string
-        name: string
-        credits: number
-        avatar: string | null
-        recharge: boolean
-        announcementSeen: string | null
-      }
-    | 'revoked'
-    | null
-  > {
+  private async me(key: string): Promise<Me | 'revoked' | null> {
     try {
       const res = await this.read('/v1/me', { authorization: `Bearer ${key}` })
-      if (res.ok) {
-        const me = (await res.json()) as {
-          email: string
-          name?: string
-          credits: number
-          avatar?: string | null
-          recharge?: boolean
-          announcementSeen?: string | null
-        }
-        return {
-          email: me.email,
-          name: me.name ?? '',
-          credits: me.credits,
-          avatar: me.avatar ?? null,
-          recharge: me.recharge === true,
-          announcementSeen: me.announcementSeen ?? null,
-        }
-      }
+      if (res.ok) return meOf((await res.json()) as MeReply)
       const body = (await res.json().catch(() => null)) as { error?: { code?: string } } | null
       return res.status === 401 && body?.error?.code === 'device_revoked' ? 'revoked' : null
     } catch {

@@ -426,6 +426,7 @@ export type {
   Announcement,
   ClientLogEntry,
   ClientLogRequest,
+  CloudAccountOverview,
   CloudModel,
   CloudRechargeOrder,
   CloudRechargeStatus,

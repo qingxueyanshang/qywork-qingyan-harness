@@ -4,7 +4,7 @@
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
 
-import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { afterAll, beforeEach, expect, setSystemTime, test } from 'bun:test'
 import { readFile, stat, utimes } from 'node:fs/promises'
 import { cloudModelSpec, lookupMediaModel, lookupModel, quoteMedia } from '@qywork/ai'
 import type { Announcement, CloudModelSpec } from '@qywork/core'
@@ -85,9 +85,10 @@ const cloud = {
   revoked: 0,
   /** 云端收到的登录与注册请求。 */
   logins: [] as { email: string; password: string; name: string; platform: string }[],
-  /** 云端收到的最后一次 `/v1/usage` 查询串与 `/v1/requests` 查询串。 */
+  /** 云端收到的最后一次 `/v1/usage` 查询串、`/v1/requests` 查询串与 `/v1/account` 查询串。 */
   usageQuery: '',
   requestsQuery: '',
+  accountQuery: '',
   /** 型号清单中是否包含后上架的型号。 */
   extraModel: false,
   /** 型号清单中模型库没有的型号是否带规格，以及规格中的对应型号。 */
@@ -240,6 +241,19 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
       cloud.usageQuery = url.search
       return Response.json({ requests: 3, credits: 1.5, days: [] })
     }
+    // 与云端相同：账号概览的各项与分别读取各接口的结果相同。
+    if (path === '/v1/account' && authed) {
+      cloud.accountQuery = url.search
+      const read = async (p: string) =>
+        (await server.fetch(new Request(`${url.origin}${p}`, { headers: req.headers }))).json()
+      const tz = encodeURIComponent(url.searchParams.get('tz') ?? '')
+      return Response.json({
+        me: await read('/v1/me'),
+        usage: await read(`/v1/usage?tz=${tz}`),
+        catalog: await read('/v1/catalog'),
+        requests: await read(`/v1/requests?limit=${url.searchParams.get('limit')}`),
+      })
+    }
     if (path === '/v1/requests' && authed) {
       cloud.requestsQuery = url.search
       return Response.json([
@@ -365,6 +379,7 @@ beforeEach(async () => {
     logins: [],
     usageQuery: '',
     requestsQuery: '',
+    accountQuery: '',
     extraModel: false,
     nextSpec: true,
     nextBase: 'claude-sonnet-5-5',
@@ -483,8 +498,7 @@ test('账号服务接受连接但不响应时，读取在超时后失败并给�
       models: {},
     }
     const slow = new CloudAccount(live, origin, { timeoutMs: 50 })
-    await expect(slow.models()).rejects.toThrow('无法连接账号服务：请求超时')
-    await expect(slow.usage()).rejects.toThrow('无法连接账号服务：请求超时')
+    await expect(slow.overview(50)).rejects.toThrow('无法连接账号服务：请求超时')
     expect(await slow.state()).toMatchObject({ state: 'signed_in', credits: null })
   } finally {
     await stalled.stop(true)
@@ -554,11 +568,22 @@ test('退出时请求云端吊销本设备并删除本地接口；模型库中�
   await writeConfig(live, ({ catalog: _catalog, ...rest }) => rest)
 })
 
-test('用量与使用记录以设备密钥读取：用量带本机时区，记录带页长与续页位置，失败转为文字', async () => {
+test('账号概览以设备密钥一次读取账号、用量、型号与第一页记录：带本机时区与页长；续页带页长与续页位置；失败转为文字', async () => {
   await account.login('me@example.com', PASSWORD)
-  expect(await account.usage()).toMatchObject({ requests: 3, credits: 1.5 })
+  const reads = cloud.catalogReads
+  const overview = await account.overview(50)
+  expect(overview.state).toMatchObject({
+    state: 'signed_in',
+    email: 'me@example.com',
+    credits: 12.5,
+  })
+  expect(overview.usage).toMatchObject({ requests: 3, credits: 1.5 })
+  expect(overview.models.map((m) => m.id)).toEqual(['claude-sonnet-5-5', 'gpt-5', 'claude-next'])
+  expect(overview.requests.map((r) => r.failure).slice(0, 2)).toEqual([null, '429 请求过多'])
+  // 本机只发出一次请求（模拟云端在内部分别读取各项）。
+  expect(cloud.catalogReads).toBe(reads + 1)
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  expect(new URLSearchParams(cloud.usageQuery).get('tz')).toBe(tz)
+  expect(Object.fromEntries(new URLSearchParams(cloud.accountQuery))).toEqual({ tz, limit: '50' })
   expect(await account.requests('2026-11-01T00:00:00.000Z', 50)).toEqual([
     { id: 'r1', credits: 0.5, failure: null },
     { id: 'r2', credits: 0, failure: '429 请求过多' },
@@ -576,13 +601,13 @@ test('用量与使用记录以设备密钥读取：用量带本机时区，记�
   })
 })
 
-test('读取用量时设备已被移除：删除本地接口，接口以 400 返回原因', async () => {
+test('读取账号概览时设备已被移除：删除本地接口，接口以 400 返回原因', async () => {
   await account.login('me@example.com', PASSWORD)
   cloud.me = 'revoked'
   const deps = { cloud: account } as unknown as ApiRequestDeps
   const res = await handleCloudApi(
-    new URL('http://x/api/cloud/usage'),
-    new Request('http://x/api/cloud/usage'),
+    new URL('http://x/api/cloud/account'),
+    new Request('http://x/api/cloud/account'),
     deps,
   )
   expect(res?.status).toBe(400)
@@ -638,10 +663,10 @@ test('公告列表：未登录也可读取，原样返回云端的顺序；未�
   expect(await none?.json()).toEqual([])
 })
 
-test('可用模型实时读取云端型号清单，单价为积分 / 百万 token；新上架的型号同时写入配置', async () => {
+test('账号概览实时读取云端型号清单，单价为积分 / 百万 token；新上架的型号同时写入配置', async () => {
   await account.login('me@example.com', PASSWORD)
   cloud.extraModel = true
-  const models = await account.models()
+  const { models } = await account.overview(50)
   expect(models.map((m) => m.id)).toEqual([
     'claude-sonnet-5-5',
     'gpt-5',
@@ -671,12 +696,13 @@ test('可用模型实时读取云端型号清单，单价为积分 / 百万 toke
 /** 原始失败形状：后台把倍率从 0.5 改为 0.35 后，电脑端仍按 0.5 记账，直到打开账号窗口。 */
 test('同步型号清单：后台调价后配置中的倍率随之更新；清单未变时不重写配置文件；未登录时不请求云端', async () => {
   await account.syncModels()
+  await account.catalogChanged()
   expect(cloud.catalogReads).toBe(0)
   await account.login('me@example.com', PASSWORD)
   const price = () => live.providers[CLOUD_PROVIDER]?.models['claude-sonnet-5-5']?.price
   expect(price()).toEqual({ scale: 0.5, currency: 'CREDIT' })
   cloud.sonnetRatio = 0.35
-  await account.syncModels()
+  await account.catalogChanged()
   expect(price()).toEqual({ scale: 0.35, currency: 'CREDIT' })
   expect(
     (await loadConfig()).providers[CLOUD_PROVIDER]?.models['claude-sonnet-5-5']?.price,
@@ -685,8 +711,69 @@ test('同步型号清单：后台调价后配置中的倍率随之更新；清�
   const past = new Date(Date.now() - 60_000)
   await utimes(configPath(), past, past)
   const before = (await stat(configPath())).mtimeMs
-  await account.syncModels()
+  await account.catalogChanged()
   expect((await stat(configPath())).mtimeMs).toBe(before)
+})
+
+/** 等待后台同步完成。按 `performance.now()` 计时：用例以 `setSystemTime` 拨动了 `Date.now()`。 */
+async function until(cond: () => boolean): Promise<void> {
+  const end = performance.now() + 3000
+  while (!cond()) {
+    if (performance.now() > end) throw new Error('等待超时')
+    await Bun.sleep(5)
+  }
+}
+
+/** 原始失败形状：云端上架新型号后，要打开账号窗口才出现在模型选择中。 */
+test('读取账号状态时，型号清单超过一分钟未同步即在后台同步，新上架的型号写入配置', async () => {
+  await account.login('me@example.com', PASSWORD)
+  cloud.extraModel = true
+  const reads = cloud.catalogReads
+  await account.state()
+  expect(cloud.catalogReads).toBe(reads)
+  setSystemTime(new Date(Date.now() + 61_000))
+  try {
+    await account.state()
+    await until(() => 'claude-opus-5-5' in (live.providers[CLOUD_PROVIDER]?.models ?? {}))
+  } finally {
+    setSystemTime()
+  }
+})
+
+/**
+ * 原始失败形状：每一轮开始前都读取型号清单，经代理新建到云端的连接常需数秒，超过 3 秒即放弃，
+ * 一轮要先等待这段时间才开始（日志中「同步云端价格失败」反复出现）。
+ */
+test('开始一轮前：清单已是最新时不读取；推送通道连上时同步一次，此后改动由推送送达；断开后按一分钟判断', async () => {
+  await account.login('me@example.com', PASSWORD)
+  const price = () => live.providers[CLOUD_PROVIDER]?.models['claude-sonnet-5-5']?.price
+  const reads = cloud.catalogReads
+  await account.syncModels()
+  expect(cloud.catalogReads).toBe(reads)
+  const at = Date.now()
+  try {
+    cloud.sonnetRatio = 0.35
+    setSystemTime(new Date(at + 61_000))
+    await account.syncModels()
+    expect(cloud.catalogReads).toBe(reads + 1)
+    expect(price()).toEqual({ scale: 0.35, currency: 'CREDIT' })
+
+    account.setPushChannel(true)
+    await until(() => cloud.catalogReads === reads + 2)
+    setSystemTime(new Date(at + 5 * 60_000))
+    await account.syncModels()
+    expect(cloud.catalogReads).toBe(reads + 2)
+    cloud.sonnetRatio = 0.4
+    await account.catalogChanged()
+    expect(price()).toEqual({ scale: 0.4, currency: 'CREDIT' })
+
+    account.setPushChannel(false)
+    setSystemTime(new Date(at + 7 * 60_000))
+    await account.syncModels()
+    expect(cloud.catalogReads).toBe(reads + 4)
+  } finally {
+    setSystemTime()
+  }
 })
 
 /**
@@ -715,7 +802,7 @@ test('同步型号清单：配置中的型号按清单的顺序排列，已下�
       active: { provider: CLOUD_PROVIDER, model: 'relay-internal-id' },
     }
   })
-  await account.syncModels()
+  await account.catalogChanged()
   const stored = live.providers[CLOUD_PROVIDER]?.models ?? {}
   expect(Object.keys(stored)).toEqual(['claude-sonnet-5-5', 'gpt-5', 'claude-next', 'claude-old'])
   expect(stored['claude-old']?.delisted).toBe(true)
@@ -744,7 +831,7 @@ test('同步型号清单：默认对话模型下架时清除默认值，不改�
       active: { provider: CLOUD_PROVIDER, model: 'claude-old' },
     }
   })
-  await account.syncModels()
+  await account.catalogChanged()
   expect(live.providers[CLOUD_PROVIDER]?.models['claude-old']?.delisted).toBe(true)
   expect(live.active).toBeUndefined()
   expect((await loadConfig()).active).toBeUndefined()
@@ -776,7 +863,7 @@ test('模型库没有的型号：云端规格带来源标记写入覆盖层，�
   })
   // 对应型号不在本机模型库中：不写该项，也不保留此前写入的对应型号。
   cloud.nextBase = 'model-unknown-here'
-  await account.models()
+  await account.overview(50)
   expect(live.catalog?.[key]).toEqual({
     contextWindow: 2_000_000,
     maxOutputTokens: 128_000,
@@ -784,13 +871,13 @@ test('模型库没有的型号：云端规格带来源标记写入覆盖层，�
     cloud: true,
   })
   cloud.nextSpec = false
-  await account.models()
+  await account.overview(50)
   expect(live.catalog?.[key]).toEqual({ thinksByDefault: true })
 
   // 清单中已没有的型号（使用对外编号之前按内部 id 写入的条目）：删除归同步所有的四项。
   const gone = 'relay-internal-id|anthropic_messages'
   await setCatalog(gone, { base: 'claude-sonnet-5-5', contextWindow: 9, cloud: true })
-  await account.models()
+  await account.overview(50)
   expect(live.catalog?.[gone]).toBeUndefined()
 })
 
@@ -810,7 +897,7 @@ test('本机模型库已收录的型号：带来源标记的条目删除归同�
   await setCatalog(sonnet, { base: 'claude-haiku-5-5' })
   cloud.extraModel = true
   cloud.opusSpec = true
-  await account.models()
+  await account.overview(50)
   expect(live.catalog?.[opus]).toEqual({ thinksByDefault: true })
   expect(live.catalog?.[haiku]).toBeUndefined()
   expect(live.catalog?.[sonnet]).toEqual({ base: 'claude-haiku-5-5' })
@@ -874,7 +961,7 @@ test('后台填写的显示名称：写入云端接口下的型号条目，模�
   })
   cloud.opusName = '旗舰对话二代'
   cloud.channelName = '视频通道2'
-  await account.syncModels()
+  await account.catalogChanged()
   expect(live.providers[CLOUD_PROVIDER]?.models['claude-opus-5-5']).toMatchObject({
     displayName: '旗舰对话二代',
     effort: 'high',
@@ -1036,13 +1123,13 @@ test('生成型号：登录时写入云端生成协议与云端下发的规格�
   ])
     expect(written).not.toContain(word)
 
-  const models = await account.models()
+  const { models } = await account.overview(50)
   expect(models.find((m) => m.output === 'video')).toMatchObject({
     id: SEEDANCE_PUBLIC,
     unit: 'second',
   })
   cloud.media = false
-  await account.models()
+  await account.overview(50)
   expect(live.providers[CLOUD_PROVIDER]?.media?.[SEEDANCE_PUBLIC]?.delisted).toBe(true)
 })
 

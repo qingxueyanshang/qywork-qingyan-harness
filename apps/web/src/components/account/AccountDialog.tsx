@@ -7,17 +7,7 @@ import {
   type MediaUnit,
   type UnitPrice,
 } from '@qywork/core'
-import {
-  createEffect,
-  createResource,
-  createSignal,
-  For,
-  Match,
-  onCleanup,
-  Show,
-  Switch,
-} from 'solid-js'
-import { loaded } from '../../lib/resource.ts'
+import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from 'solid-js'
 import { compact } from '../../lib/step-view.ts'
 import {
   announcements,
@@ -26,10 +16,10 @@ import {
 } from '../../lib/store/announcements.ts'
 import {
   cloudLogout,
+  cloudOverview,
   cloudState,
-  fetchCloudModels,
   fetchCloudRequests,
-  fetchCloudUsage,
+  refreshCloudOverview,
   refreshCloudState,
   setCloudAvatar,
   setCloudName,
@@ -73,7 +63,8 @@ const close = () => setAccountOpen(false)
  */
 export default function AccountDialog(props: { retryMs?: number }) {
   holdOverlay(() => true)
-  void refreshCloudState().catch(() => {})
+  // 已登录时不另读账号状态：账号概览中已带有，另发一个并行请求会再新建一条到云端的连接。
+  if (cloudState()?.state !== 'signed_in') void refreshCloudState().catch(() => {})
 
   createEffect(() => {
     // 上层有打开的窗口（公告、充值，均为模态 `<dialog>`）时，Escape 由该窗口的 cancel 事件关闭，本窗口保留。
@@ -119,31 +110,37 @@ export default function AccountDialog(props: { retryMs?: number }) {
 }
 
 function AccountView(props: { signed: SignedIn; retryMs: number }) {
-  const [usage, { refetch: refetchUsage }] = createResource(fetchCloudUsage)
-  const [models, { refetch: refetchModels }] = createResource(fetchCloudModels)
-  const requests = createRequestPages()
+  const requests = createRequestPages(cloudOverview()?.requests ?? null)
   ensureConfig()
   void ensureModelCatalog()
-  // 三项读取经同一个云端服务，失败原因相同：只显示一处原因与一个重试按钮，读取失败的各节不显示。
-  // 已有记录时后续分页的读取失败不计入：它显示在使用记录表的下方。
-  const requestsFailed = () => (requests.rows().length === 0 ? requests.error() : null)
-  const failure = () => usage.error ?? models.error ?? requestsFailed()
-  const retrying = () => usage.loading || models.loading || requests.loading()
-  // 读取失败时账号状态同样未取得（余额未知、充值入口不显示），重试时一并重新读取。
+  // 全部内容经一次请求取得；上一次的内容先显示，读取完成后替换。读取失败只显示一处原因与一个重试按钮，
+  // 没有上一次的内容时各节不显示。
+  const [loading, setLoading] = createSignal(false)
+  const [failure, setFailure] = createSignal<unknown>(null)
+  const load = async () => {
+    setLoading(true)
+    try {
+      requests.reset((await refreshCloudOverview()).requests)
+      setFailure(null)
+    } catch (e) {
+      setFailure(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+  void load()
   const retry = () => {
-    if (retrying()) return
-    void refreshCloudState().catch(() => {})
-    if (usage.error) void refetchUsage()
-    if (models.error) void refetchModels()
-    if (requestsFailed()) void requests.more()
+    if (!loading()) void load()
   }
   // 读取失败后每隔 `retryMs` 自动重新读取，直到成功或窗口关闭：到云端的新建连接会在数十秒的时段内
   // 连续被断开，时段结束后读取即可成功，不需要用户操作。
   createEffect(() => {
-    if (!failure() || retrying()) return
+    if (!failure() || loading()) return
     const timer = setTimeout(retry, props.retryMs)
     onCleanup(() => clearTimeout(timer))
   })
+  /** 各节在有内容、或读取尚未失败（显示占位）时显示。 */
+  const sections = () => cloudOverview() !== null || !failure()
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [recharging, setRecharging] = createSignal(false)
@@ -271,9 +268,9 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
         <Show when={failure()}>{(e) => <LoadState error={e()} onRetry={retry} />}</Show>
 
         <Show
-          when={loaded(usage)}
+          when={cloudOverview()?.usage}
           fallback={
-            <Show when={!usage.error}>
+            <Show when={!failure()}>
               <Skeleton lines={6} />
             </Show>
           }
@@ -316,18 +313,18 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
 
         <PairPanel />
 
-        <Show when={!models.error}>
+        <Show when={sections()}>
           <h3 class="account-section">
             对话<span class="account-unit">积分 / 百万 token</span>
           </h3>
-          <Show when={loaded(models)} fallback={<Skeleton lines={4} />}>
+          <Show when={cloudOverview()?.models} fallback={<Skeleton lines={4} />}>
             {(all) => <ModelTable provider={props.signed.provider} models={all()} />}
           </Show>
         </Show>
 
-        <Show when={!requestsFailed()}>
+        <Show when={sections()}>
           <h3 class="account-section">使用记录</h3>
-          <RequestTable pages={requests} />
+          <RequestTable pages={requests} pending={cloudOverview() === null && loading()} />
         </Show>
       </div>
     </>
@@ -536,15 +533,21 @@ function priceTerms(r: CloudRequest): string[] {
 }
 
 /**
- * 使用记录的分页读取，按时间倒序；创建时读取第一页。
- * `error` 保留到下一次读取完成：重试期间原因仍显示，与 `createResource` 的 `error` 相同。
+ * 使用记录的分页读取，按时间倒序。第一页随账号概览取得（`first`、`reset`），此处只读取后续各页。
+ * `error` 保留到下一次读取完成：重试期间原因仍显示。
  */
-function createRequestPages() {
-  const [rows, setRows] = createSignal<CloudRequest[]>([])
-  const [done, setDone] = createSignal(false)
+function createRequestPages(first: CloudRequest[] | null) {
+  const [rows, setRows] = createSignal<CloudRequest[]>(first ?? [])
+  const [done, setDone] = createSignal(first !== null && first.length < PAGE)
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<unknown>(null)
 
+  /** 账号概览重新读取后，以其中的第一页替换已加载的记录。 */
+  const reset = (page: CloudRequest[]) => {
+    setRows(page)
+    setDone(page.length < PAGE)
+    setError(null)
+  }
   const more = async () => {
     setLoading(true)
     try {
@@ -558,8 +561,7 @@ function createRequestPages() {
       setLoading(false)
     }
   }
-  void more()
-  return { rows, done, loading, error, more }
+  return { rows, done, loading, error, more, reset }
 }
 
 /** 与画布相同：已不在型号清单中的型号在名称后标出「（已下架）」。 */
@@ -568,13 +570,13 @@ function recordModel(r: CloudRequest): string {
   return r.delisted ? `${r.model}（已下架）` : r.model
 }
 
-/** 逐条请求记录。「输入」含缓存命中与缓存写入，与「用量」页同一口径。 */
-function RequestTable(props: { pages: ReturnType<typeof createRequestPages> }) {
+/** 逐条请求记录。「输入」含缓存命中与缓存写入，与「用量」页同一口径。`pending`：第一页尚在读取。 */
+function RequestTable(props: { pages: ReturnType<typeof createRequestPages>; pending: boolean }) {
   const { rows, done, loading, error, more } = props.pages
 
   return (
     <>
-      <Show when={rows().length === 0 && loading()}>
+      <Show when={rows().length === 0 && (loading() || props.pending)}>
         <Skeleton lines={4} />
       </Show>
       <Show when={rows().length > 0}>

@@ -4,12 +4,11 @@
  */
 
 import type {
-  CloudModel,
+  CloudAccountOverview,
   CloudRechargeOrder,
   CloudRechargeStatus,
   CloudRequest,
   CloudState,
-  CloudUsage,
 } from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { client } from './client.ts'
@@ -19,8 +18,20 @@ import { reloadModelCatalog } from './settings.ts'
 const [cloudState, setCloudState] = createSignal<CloudState | null>(null)
 export { cloudState }
 
+/**
+ * 上一次读取的账号概览（账号窗口的全部内容）；本页尚未读取过为 null。账号窗口再次打开时先显示它、同时重新读取：
+ * 到云端的读取常需数秒。登录与退出时清除，不显示上一个账号的内容。
+ */
+const [cloudOverview, setCloudOverview] = createSignal<CloudAccountOverview | null>(null)
+export { cloudOverview }
+
 export async function refreshCloudState(): Promise<void> {
-  setCloudState(await client.api<CloudState>('/api/cloud/state'))
+  const state = await client.api<CloudState>('/api/cloud/state')
+  setCloudState(state)
+  // 不再是同一账号（已退出、设备被移除、另一端换了账号）：不再显示上一个账号的概览。
+  if (state.state !== 'signed_in' || state.email !== cloudOverview()?.state.email) {
+    setCloudOverview(null)
+  }
 }
 
 /**
@@ -54,11 +65,13 @@ export async function cloudSignIn(
       ...(mode === 'register' && inviteCode ? { inviteCode } : {}),
     }),
   })
+  setCloudOverview(null)
   setCloudState(state)
   void reloadModelCatalog()
 }
 
 export async function cloudLogout(): Promise<void> {
+  setCloudOverview(null)
   setCloudState(await client.api<CloudState>('/api/cloud/logout', { method: 'POST' }))
   void reloadModelCatalog()
 }
@@ -93,15 +106,15 @@ async function readCloud<T>(path: string): Promise<T> {
   }
 }
 
-/** 可用模型与单价。服务端读取时同时更新了配置中的内置模型，模型列表随之刷新。 */
-export async function fetchCloudModels(): Promise<CloudModel[]> {
-  const models = await readCloud<CloudModel[]>('/api/cloud/models')
-  void reloadModelCatalog()
-  return models
-}
-
-export function fetchCloudUsage(): Promise<CloudUsage> {
-  return readCloud<CloudUsage>('/api/cloud/usage')
+/**
+ * 读取账号窗口的全部内容：服务端经一次云端请求取得，不要拆成多个请求（理由见 `CloudAccountOverview`）。
+ * 账号状态随之更新；服务端同时把型号清单写入配置，模型列表经 `config.changed` 刷新。
+ */
+export async function refreshCloudOverview(): Promise<CloudAccountOverview> {
+  const overview = await readCloud<CloudAccountOverview>('/api/cloud/account')
+  setCloudState(overview.state)
+  setCloudOverview(overview)
+  return overview
 }
 
 /** `before` 为上一页最后一条的 `startedAt`；返回空数组表示没有更早的记录。 */

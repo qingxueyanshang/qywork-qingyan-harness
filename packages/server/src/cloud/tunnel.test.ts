@@ -435,6 +435,42 @@ describe('隧道客户端', () => {
     expect(cloud.hellos.length).toBe(hellos)
   })
 
+  /** 原始失败形状：云端上架或调价后，电脑端要等用户打开账号窗口才重新读取型号清单。 */
+  test('隧道是型号清单的推送通道：连上与停止时告知账号，云端的 catalog.changed 转交给账号', async () => {
+    const channel: boolean[] = []
+    let changed = 0
+    const access = new RemoteAccess({
+      config: {
+        providers: {
+          [CLOUD_PROVIDER]: {
+            kind: 'anthropic_messages',
+            apiKey: 'qyd_key',
+            baseUrl: cloud.origin,
+            models: {},
+          },
+        },
+        remote: true,
+      } as QyConfig,
+      origin: cloud.origin,
+      tunnel: true,
+      listener: { start: () => local.port ?? 0, stop: () => {} },
+      pairing: () => ({ token: 'tok', deviceName: '电脑' }),
+      onRevoked: async () => {},
+      onPushChannel: (online) => channel.push(online),
+      onCatalogChanged: () => changed++,
+      backoffMs: () => 20,
+    })
+    try {
+      access.sync()
+      await until(() => channel.at(-1) === true)
+      cloud.send({ type: 'catalog.changed' })
+      await until(() => changed === 1)
+    } finally {
+      access.stop()
+    }
+    expect(channel.at(-1)).toBe(false)
+  })
+
   /** 原始失败形状：删除本地云端接口时写入配置失败，拒绝无人处理，`qy serve` 随之退出。 */
   test('设备已被移除而删除本地云端接口失败：记录日志，不成为未处理的拒绝', async () => {
     const rejections: unknown[] = []

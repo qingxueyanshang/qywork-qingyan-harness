@@ -8,6 +8,8 @@
  * - 隧道以「设备已被移除」关闭时，经 `onRevoked` 删除本地的云端接口，与网关返回 `device_revoked` 的处理相同。
  * - `tunnel` 为 false 时从不连接云端，理由见 `ServeOptions.remote`。
  * - 隧道被同一设备的另一条连接替换后不自动重连（见 `tunnel.ts`），由用户经 `reconnect` 重新连接。
+ * - 隧道同时是云端的推送通道：连上与断开、停止经 `onPushChannel` 告知账号，云端推送的 `catalog.changed`
+ *   经 `onCatalogChanged` 转交。
  */
 
 import { log } from '@qywork/core'
@@ -38,6 +40,9 @@ export interface RemoteAccessDeps {
   listener: RemoteListener
   pairing: () => { token: string; deviceName: string }
   onRevoked: () => Promise<void>
+  /** 推送通道连上（true）或断开、停止（false）。 */
+  onPushChannel?: (online: boolean) => void
+  onCatalogChanged?: () => void
   backoffMs?: TunnelClientOptions['backoffMs']
 }
 
@@ -84,6 +89,7 @@ export class RemoteAccess {
       onStatus: (status) => {
         if (this.tunnel !== tunnel) return
         this.status = status
+        this.deps.onPushChannel?.(status.state === 'online')
         // 删除本地云端接口要写入配置文件，写入失败时记录日志：不处理时成为未处理的拒绝，服务进程随之退出。
         if (status.state === 'revoked') {
           void this.deps.onRevoked().then(
@@ -96,6 +102,7 @@ export class RemoteAccess {
           )
         }
       },
+      ...(this.deps.onCatalogChanged ? { onCatalogChanged: this.deps.onCatalogChanged } : {}),
       ...(this.deps.backoffMs ? { backoffMs: this.deps.backoffMs } : {}),
     })
     this.tunnel = tunnel
@@ -118,6 +125,7 @@ export class RemoteAccess {
   }
 
   private halt(): void {
+    if (this.tunnel) this.deps.onPushChannel?.(false)
     this.tunnel?.stop()
     this.tunnel = null
     this.key = null

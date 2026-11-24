@@ -64,13 +64,18 @@ export type TunnelControl =
    *
    * `peerCode`：云端在手机一侧观察到的原始关闭码，只供电脑端写入日志。`code` 须为可发送的关闭码，
    * 1001（页面离开）与 1006（未收到关闭帧即断开，网络中断或页面被系统冻结）都记为 1000，
-   * 不另带此字段时电脑端无法区分断开的原因。旧版电脑端忽略未登记的字段。
+   * 不另带此字段时电脑端无法区分断开的原因。未登记此字段的电脑端忽略它。
    */
   | { type: 'close'; sid: number; code?: number; reason?: string; peerCode?: number }
   | { type: 'window'; sid: number; bytes: number }
   | { type: 'pair.request'; rid: string }
   | { type: 'pair.reply'; rid: string; token: string; deviceName: string }
   | { type: 'notify'; event: TunnelNotifyEvent; conversationId: string; title: string }
+  /**
+   * 云端发给电脑端：管理员改动了型号或上游接口，型号清单与价格已变，电脑端随即重新读取 `/v1/catalog`。
+   * 只是通知，不带清单内容：清单仍以设备密钥读取。未登记此帧类型的电脑端忽略它。
+   */
+  | { type: 'catalog.changed' }
 
 /**
  * `path`：以 `/` 开头的字符串。电脑端把它直接拼接在 `http://127.0.0.1:<端口>` 之后，
@@ -94,6 +99,7 @@ const FIELDS: { [T in TunnelControl['type']]: Record<string, FieldKind> } = {
   'pair.request': { rid: 'string' },
   'pair.reply': { rid: 'string', token: 'string', deviceName: 'string' },
   notify: { event: 'string', conversationId: 'string', title: 'string' },
+  'catalog.changed': {},
 }
 
 function fieldOk(value: unknown, kind: FieldKind): boolean {

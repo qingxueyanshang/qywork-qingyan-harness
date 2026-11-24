@@ -283,7 +283,7 @@ export interface Announcement {
 }
 
 /**
- * `GET /api/cloud/usage`：云端统计的本账号用量。token 四项与云端计费口径相同：输入不含缓存命中与缓存写入。
+ * 账号概览中的用量：云端统计的本账号用量。token 四项与云端计费口径相同：输入不含缓存命中与缓存写入。
  */
 export interface CloudUsage {
   requests: number
@@ -298,7 +298,7 @@ export interface CloudUsage {
 }
 
 /**
- * `GET /api/cloud/models`：云端当前提供的型号。对话型号为售价倍率与单价（基础档乘以倍率），单位为积分 / 百万 token，
+ * 账号概览中的型号：云端当前提供的型号。对话型号为售价倍率与单价（基础档乘以倍率），单位为积分 / 百万 token，
  * 云端未定价时为 null；生成型号为计费单位与单价（积分 / 单位），可按分辨率档位分别定价。
  */
 export type CloudModel =
@@ -344,6 +344,18 @@ export interface CloudRequest {
   /** 本次扣除的积分。 */
   credits: number
   startedAt: string
+}
+
+/**
+ * `GET /api/cloud/account`：账号窗口的全部内容，在一次云端请求中取得。拆成多个并行请求时，
+ * 每个请求各自新建到云端的连接，经代理的 TLS 握手每次需数秒。
+ */
+export interface CloudAccountOverview {
+  state: Extract<CloudState, { state: 'signed_in' }>
+  usage: CloudUsage
+  models: CloudModel[]
+  /** 第一页使用记录，条数与 `/api/cloud/requests` 的每页条数相同。 */
+  requests: CloudRequest[]
 }
 
 /**

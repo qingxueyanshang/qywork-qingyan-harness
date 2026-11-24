@@ -19,13 +19,13 @@ let providers: unknown[]
 let media: unknown[]
 let calls: string[]
 let pages: CloudRequest[][]
-/** 使用记录的读取在它完成前不返回。 */
-let requestsGate: Promise<void>
+/** 账号概览的读取在它完成前不返回。 */
+let accountGate: Promise<void>
 /** 云端已发布的公告，新者在前。 */
 let notices: Announcement[]
 /** 充值订单状态的依次答复；`Error` 表示该次读取失败。 */
 let rechargeReplies: (string | Error)[]
-/** 为真时用量、可用模型与使用记录的读取全部失败。 */
+/** 为真时账号概览与使用记录的读取全部失败。 */
 let cloudDown: boolean
 /** 服务端配置：云端接口下有两个型号，默认对话模型是本地接口的型号。 */
 let stored: Record<string, unknown> = {}
@@ -150,38 +150,41 @@ beforeAll(async () => {
       } as T
     }
     if (path === '/api/pairing') return { available: false, enabled: false, tunnel: null } as T
-    if (cloudDown && /^\/api\/cloud\/(usage|models|requests)/.test(path)) {
+    if (cloudDown && /^\/api\/cloud\/(account|requests)/.test(path)) {
       throw new ApiError(400, path, JSON.stringify({ error: 'cloud', message: '无法连接账号服务' }))
     }
-    if (path === '/api/cloud/usage') return structuredClone(USAGE) as T
-    if (path === '/api/cloud/models') {
-      return [
-        {
-          output: 'chat',
-          id: 'claude-opus-5-5',
-          ratio: 0.85,
-          official: true,
-          price: { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 },
-        },
-        {
-          output: 'chat',
-          id: 'relay-model',
-          ratio: 1,
-          official: false,
-          price: { input: 100, output: 200, cacheRead: 0.0175, cacheWrite: 0 },
-        },
-        {
-          output: 'video',
-          id: 'doubao-seedance-2-0-260128',
-          unit: 'second',
-          unitPrice: { '720p': 0.2, '1080p': 0.4 },
-        },
-      ] as T
+    // 账号概览：账号状态、用量、型号与第一页使用记录在同一个请求中。
+    if (path === '/api/cloud/account') {
+      await accountGate
+      return {
+        state: structuredClone(cloud),
+        usage: structuredClone(USAGE),
+        models: [
+          {
+            output: 'chat',
+            id: 'claude-opus-5-5',
+            ratio: 0.85,
+            official: true,
+            price: { input: 300, output: 1500, cacheRead: 30, cacheWrite: 375 },
+          },
+          {
+            output: 'chat',
+            id: 'relay-model',
+            ratio: 1,
+            official: false,
+            price: { input: 100, output: 200, cacheRead: 0.0175, cacheWrite: 0 },
+          },
+          {
+            output: 'video',
+            id: 'doubao-seedance-2-0-260128',
+            unit: 'second',
+            unitPrice: { '720p': 0.2, '1080p': 0.4 },
+          },
+        ],
+        requests: pages.shift() ?? [],
+      } as T
     }
-    if (path.startsWith('/api/cloud/requests')) {
-      await requestsGate
-      return (pages.shift() ?? []) as T
-    }
+    if (path.startsWith('/api/cloud/requests')) return (pages.shift() ?? []) as T
     if (path === '/api/cloud/announcements') return structuredClone(notices) as T
     if (path === '/api/cloud/announcements/seen') {
       const { id } = JSON.parse(String(init?.body)) as { id: string }
@@ -215,8 +218,10 @@ beforeEach(async () => {
   providers = []
   media = []
   calls = []
+  // 上一个用例留下的账号概览随退出状态清除。
+  await cloudStore.refreshCloudState()
   pages = []
-  requestsGate = Promise.resolve()
+  accountGate = Promise.resolve()
   notices = []
   rechargeReplies = []
   cloudDown = false
@@ -491,48 +496,68 @@ test('公告：未读时侧栏入口与账号窗口的铃铛带圆点，打开�
   view.close()
 })
 
-test('使用记录读取超过 200 毫秒时显示占位，读取完成后显示记录', async () => {
+test('首次打开时各节显示占位，读取完成后显示内容；只发出一个云端读取，不另读账号状态', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
+  const from = calls.length
   let release!: () => void
-  requestsGate = new Promise((resolve) => {
+  accountGate = new Promise((resolve) => {
     release = resolve
   })
   pages = [[record('1')]]
   const view = await dialog()
-  await until(() => view.host.querySelectorAll('.skeleton').length === 1)
-  // 统计与可用模型已返回，只有使用记录仍在读取。
-  expect(view.host.querySelectorAll('.skeleton')).toHaveLength(1)
+  await until(() => view.host.querySelectorAll('.skeleton').length === 3)
   release()
   await until(() => view.text().includes('完成'))
   expect(view.host.querySelector('.skeleton')).toBeNull()
+  expect(calls.slice(from).filter((c) => c.startsWith('GET /api/cloud/'))).toEqual([
+    'GET /api/cloud/account',
+  ])
   view.close()
 })
 
-test('用量、可用模型与使用记录都读取失败时只显示一处原因与一个重试；重试后重新读取账号状态并显示各节', async () => {
+/** 原始失败形状：每次打开都从占位开始，等待数个云端请求全部返回（实测约 10 秒）才有内容。 */
+test('再次打开时先显示上一次的内容，不显示占位；读取完成后更新为最新的内容', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  pages = [[record('1')], [record('2'), record('1')]]
+  const records = (view: Awaited<ReturnType<typeof dialog>>) =>
+    [...view.host.querySelectorAll('.lib-table')].at(-1)?.querySelectorAll('tbody tr').length
+  const first = await dialog()
+  await until(() => records(first) === 1)
+  first.close()
+
+  let release!: () => void
+  accountGate = new Promise((resolve) => {
+    release = resolve
+  })
+  const again = await dialog()
+  expect(again.text()).toContain('累计 Token')
+  expect(again.text()).toContain('claude-opus-5-5')
+  expect(records(again)).toBe(1)
+  expect(again.host.querySelector('.skeleton')).toBeNull()
+  release()
+  await until(() => records(again) === 2)
+  again.close()
+})
+
+test('账号概览读取失败时只显示一处原因与一个重试，各节不显示；重试后显示各节', async () => {
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
   cloudDown = true
   pages = [[record('1')]]
   const view = await dialog()
   await until(() => view.button('重试') !== undefined)
-  // 三项读取都已失败之后再断言。桩在发出请求时同步抛出，失败的处理只经过微任务：
-  // 使用记录的请求发出后，让出一轮事件循环即可判定。
-  await until(() => calls.filter((c) => c.startsWith('GET /api/cloud/requests')).length === 1)
-  await new Promise((resolve) => setTimeout(resolve, 0))
   expect(view.text().split('无法连接账号服务')).toHaveLength(2)
   expect(view.host.querySelectorAll('.settings-error')).toHaveLength(1)
   expect(view.text()).not.toContain('使用记录')
   expect(view.text()).not.toContain('积分 / 百万 token')
 
   cloudDown = false
-  const stateReads = () => calls.filter((c) => c === 'GET /api/cloud/state').length
-  const before = stateReads()
   view.button('重试')?.click()
   await until(() => view.text().includes('完成') && view.text().includes('claude-opus-5-5'))
   expect(view.text()).toContain('累计 Token')
   expect(view.host.querySelector('.settings-error')).toBeNull()
-  expect(stateReads()).toBeGreaterThan(before)
   view.close()
 })
 
@@ -544,7 +569,7 @@ test('读取失败后不经操作自动重新读取：云端恢复后各节出�
   const view = await dialog(20)
   await until(() => view.button('重试') !== undefined)
   // 云端未恢复期间持续重新读取，报错始终只有一处。
-  const usageReads = () => calls.filter((c) => c === 'GET /api/cloud/usage').length
+  const usageReads = () => calls.filter((c) => c === 'GET /api/cloud/account').length
   await until(() => usageReads() >= 3)
   expect(view.host.querySelectorAll('.settings-error')).toHaveLength(1)
 

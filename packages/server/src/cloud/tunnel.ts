@@ -52,6 +52,8 @@ export interface TunnelClientOptions {
   backoffMs?: (attempt: number) => number
   /** 耗时达到该值的请求写入日志（毫秒），缺省为 `SLOW_REQUEST_MS`。测试中缩短。 */
   slowRequestMs?: number
+  /** 云端推送型号清单已改变（`catalog.changed`）。 */
+  onCatalogChanged?: () => void
 }
 
 interface HttpStream {
@@ -86,7 +88,7 @@ function pathOf(path: string): string {
   return q < 0 ? path : path.slice(0, q)
 }
 
-/** 手机一侧关闭码的含义，供查日志时不必对照关闭码表。旧版云端不带关闭码时为 null。 */
+/** 手机一侧关闭码的含义，供查日志时不必对照关闭码表。云端未附关闭码时为 null。 */
 function closeCause(code: number | undefined): string | null {
   if (code === undefined) return null
   if (code === 1000) return '页面主动关闭'
@@ -229,6 +231,9 @@ export class TunnelClient {
         return
       case 'pair.request':
         this.send({ type: 'pair.reply', rid: frame.rid, ...this.opts.pairing() })
+        return
+      case 'catalog.changed':
+        this.opts.onCatalogChanged?.()
         return
       case 'http.open':
         this.openHttp(frame)
