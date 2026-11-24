@@ -246,6 +246,51 @@ describe('窗口', () => {
     expect(inbound.push(bytes(1))).toBe(false)
   })
 
+  /**
+   * 原始失败形状：远程打开 Word 文件时字体文件（约 10 MB）经隧道传输，本机响应体的块大小不按单帧上限对齐，
+   * 发送端在窗口余量不足一帧时仍发出整帧，云端排队超过窗口后关闭该流，预览显示「Failed to fetch」。
+   */
+  test('数据源的块不按单帧上限对齐、接收端暂未读取时，发出的字节不超过窗口，之后完整送达', async () => {
+    const credit = new TunnelCredit()
+    const inbound = new TunnelInbound(
+      (n) => credit.grant(n),
+      () => {},
+    )
+    const total = TUNNEL_WINDOW * 3 + 123
+    const piece = 100_000
+    let pulled = 0
+    let sent = 0
+    let refused = false
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const size = Math.min(piece, total - pulled)
+        if (size <= 0) return controller.close()
+        pulled += size
+        controller.enqueue(bytes(size))
+      },
+    })
+    const pumped = pumpBody(source, 4, credit, {
+      data: (f) => {
+        const d = decodeData(f)
+        if (!d) return
+        sent += d.payload.length
+        if (!inbound.push(d.payload)) refused = true
+      },
+      control: (c) => {
+        if (c.type === 'end') inbound.end()
+      },
+    })
+    // 接收端尚未读取：发送端停在窗口用尽处。
+    for (let i = 0; i < 200; i++) await new Promise((resolve) => setImmediate(resolve))
+    expect(refused).toBe(false)
+    expect(sent).toBeGreaterThan(TUNNEL_WINDOW - TUNNEL_CHUNK)
+    expect(sent).toBeLessThanOrEqual(TUNNEL_WINDOW)
+
+    expect(await readAll(inbound.readable)).toBe(total)
+    expect(await pumped).toBe(true)
+    expect(refused).toBe(false)
+  })
+
   test('发送端与接收端经同一个窗口相连时，大于窗口的数据完整送达', async () => {
     const credit = new TunnelCredit()
     const inbound = new TunnelInbound(

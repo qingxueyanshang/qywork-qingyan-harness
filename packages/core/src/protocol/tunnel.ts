@@ -4,7 +4,7 @@
  * 不变量：
  * - 流（`sid`）只由云端打开，电脑端只应答；`sid` 在一条隧道内唯一。
  * - 控制帧是 JSON 文本帧，经 `parseControl` 校验后才处理；数据帧是二进制帧：1 字节类型 + 4 字节 `sid`（大端）+ 负载。
- * - HTTP 请求体与响应体按流计窗口：发送端在窗口耗尽时暂停读取数据源（`pumpBody`），接收端的消费方读取后以 `window` 帧归还
+ * - HTTP 请求体与响应体按流计窗口：发送端在窗口余量不足下一块时暂停读取数据源（`pumpBody`），接收端的消费方读取后以 `window` 帧归还
  *   （`TunnelInbound`）。接收端排队的字节超过窗口时视为对端违反协议，调用方关闭该流，因此每条流在任一端占用的内存不超过一个窗口。
  * - WebSocket 消息不计窗口：消息是 `/stream` 的事件与指令，单条有界。
  * - 协议版本由云端裁决：`hello.protocol` 不在云端支持范围内时以 `TUNNEL_CLOSE.outdated` 关闭，电脑端不再重连。
@@ -222,9 +222,13 @@ export class TunnelCredit {
     this.release()
   }
 
-  /** 等待窗口有余量后占用 `bytes`；流已关闭时返回 false。 */
+  /**
+   * 等待窗口余量不小于 `bytes`（不超过 `TUNNEL_CHUNK`）后占用；流已关闭时返回 false。
+   * 不要改为「余量大于 0 即占用」：数据源的块不按 `TUNNEL_CHUNK` 对齐时，在途字节会超出窗口，
+   * 接收端读取较慢时排队超过窗口，按违反协议关闭该流。
+   */
   async take(bytes: number): Promise<boolean> {
-    while (this.available <= 0 && !this.closed) {
+    while (this.available < bytes && !this.closed) {
       await new Promise<void>((resolve) => {
         this.waiter = resolve
       })
