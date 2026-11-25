@@ -13,7 +13,10 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { ToolContext } from '@qywork/agent'
 import {
+  batchCapped,
+  batchRemaining,
   decideCommand,
+  firstPageCap,
   openBatchBudget,
   Ports,
   provide,
@@ -868,6 +871,41 @@ describe('文件工具', () => {
     const clamped = await r.execute('read_file', { path: 'a.txt', offset: 0 }, ctx(root))
     expect(clamped.status).toBe('success')
     expect(String(clamped.data?.content)).toStartWith('1\thello')
+  })
+
+  /**
+   * 未指定范围、文件又无法整份读取时，第一次只返回不超过 `firstPageCap` 的开头部分，不记为触及上限，
+   * 下一次决策之前不被收纳；指定 offset 续读时按 `deliveryCap` 读满并记为触及上限。
+   */
+  test('未指定范围且无法整份读取时只返回开头部分，指定 offset 续读时读满单次上限', async () => {
+    const root = await workspace()
+    const line = `第一行之后的正文 ${'x'.repeat(60)}`
+    await writeFile(join(root, 'novel.txt'), Array.from({ length: 20_000 }, () => line).join('\n'))
+    const budget = () => ({
+      ...ctx(root),
+      state: openBatchBudget(new Map(), 100_000, 20_000),
+    })
+    const r = registry()
+
+    const first = budget()
+    const opening = await r.execute('read_file', { path: 'novel.txt' }, first)
+    expect(opening.status).toBe('success')
+    const head = opening.data as { startLine: number; endLine: number; nextOffset: number }
+    expect(head.startLine).toBe(1)
+    expect(head.nextOffset).toBe(head.endLine + 1)
+    expect(opening.message).toContain('先返回开头部分')
+    expect(opening.message).toContain(`offset=${head.endLine + 1}`)
+    expect(100_000 - batchRemaining(first)).toBeLessThanOrEqual(firstPageCap(budget()))
+    expect(batchCapped(first.state)).toBe(false)
+
+    const next = budget()
+    const more = await r.execute('read_file', { path: 'novel.txt', offset: head.nextOffset }, next)
+    expect(more.status).toBe('success')
+    const tail = more.data as { startLine: number; endLine: number }
+    expect(tail.startLine).toBe(head.endLine + 1)
+    expect(more.message).toContain('超出上下文剩余空间')
+    expect(tail.endLine - tail.startLine + 1).toBeGreaterThan(4 * head.endLine)
+    expect(batchCapped(next.state)).toBe(true)
   })
 
   test('未读先写：拒绝覆盖已存在文件', async () => {

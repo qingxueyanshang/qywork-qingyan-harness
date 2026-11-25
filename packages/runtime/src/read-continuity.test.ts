@@ -563,11 +563,12 @@ describe('占用在 55% 至 80% 之间执行普通工具，历史不被替换', 
 })
 
 /**
- * 读取约为窗口 3 倍的文件：每段读完且模型已查看后，下一次压缩将该段整体收纳，下一段可占满余量。
+ * 读取约为窗口 3 倍的文件：第一次读取未指定范围，只返回不超过 `firstPageCap` 的开头部分；此后的续读段读完且
+ * 模型已查看后，下一次压缩将该段整体收纳，下一段可占满余量。
  * 已查看的超大段整体留在保留尾部时，续读段会大小交替，压缩次数翻倍。
  */
 describe('远大于窗口的文件每段都能占满余量', () => {
-  test('只收纳不摘要，各段按行号首尾相接读取到末尾，除最后一段外每段至少占窗口的 40%', async () => {
+  test('只收纳不摘要，各段按行号首尾相接读取到末尾，开头一段不超过上限，其余各段除最后一段外至少占窗口的 40%', async () => {
     const window = 200_000
     const { stop, steps } = await readScript(window, [{ name: 'huge.txt', tokens: 3 * window }])
     expect(stop).toBe('completed')
@@ -589,7 +590,9 @@ describe('远大于窗口的文件每段都能占满余量', () => {
       expect(reads[i]!.data.startLine).toBe(reads[i - 1]!.data.endLine + 1)
     }
     expect(reads.at(-1)!.data.endLine).toBe(reads.at(-1)!.data.totalLines)
-    for (const o of reads.slice(0, -1)) {
+    const opening = tailRetain({ contextWindow: window, compactPercent: 80 }) / 4
+    expect(estimateText(reads[0]!.data.content, flash.density)).toBeLessThanOrEqual(opening)
+    for (const o of reads.slice(1, -1)) {
       expect(estimateText(o.data.content, flash.density)).toBeGreaterThan(window * 0.4)
     }
     for (const s of steps.filter((step) => step.kind === 'compaction')) {
@@ -606,7 +609,7 @@ describe('远大于窗口的文件每段都能占满余量', () => {
  * 每段触及单次上限后，下一次决策开始前先收纳该段，续读段不会被限制为半份保留量的小段。
  */
 describe('估算偏高时续读段不受限于半份保留量', () => {
-  test('除最后一段外，每段都大于半份保留量', async () => {
+  test('除开头一段与最后一段外，每段都大于半份保留量', async () => {
     const window = 200_000
     const { stop, steps } = await readScript(
       window,
@@ -622,7 +625,7 @@ describe('估算偏高时续读段不受限于半份保留量', () => {
             .outcome,
       )
     expect(reads.every((o) => o.status === 'success')).toBe(true)
-    for (const o of reads.slice(0, -1)) {
+    for (const o of reads.slice(1, -1)) {
       expect(estimateText(o.data.content, flash.density)).toBeGreaterThan(
         tailRetain({ contextWindow: window, compactPercent: 80 }) / 2,
       )

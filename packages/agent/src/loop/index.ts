@@ -26,6 +26,7 @@ import {
 import type { AgentEvent, ContextOmitted } from '@qywork/core'
 import { emptyOmitted, log, waitOrAbort } from '@qywork/core'
 import { stepStamp } from '../compaction.ts'
+import { foldsBeforeNextDecision } from '../delivery.ts'
 import { describeDrift, PrefixAudit } from '../prefix-audit.ts'
 import { sendTurn } from './attempt.ts'
 import { compactBeforeSend } from './compact.ts'
@@ -256,9 +257,15 @@ export class AgentLoop {
     /*
      * 缓存断点之四：本次已接受消息的末尾。下一步未改动这一批结果时，从此处整段复用；
      * 兼容协议忽略此标记，Anthropic 将其写为显式断点。
+     * 最后一批结果将在下一次决策执行工具之前被收纳时不设置（`foldsBeforeNextDecision`）：收纳改写该批结果，
+     * 此处写入的条目不会再被读取，而缓存写入按高于普通输入的单价计费。断点之三仍缓存到该批之前。
      */
     const latest = messages.length - 1
-    if (latest >= 0 && !messages[latest]!.cacheBreakpoint) {
+    if (
+      latest >= 0 &&
+      !messages[latest]!.cacheBreakpoint &&
+      !foldsBeforeNextDecision(run.ctx.state)
+    ) {
       messages[latest] = { ...messages[latest]!, cacheBreakpoint: true }
     }
 

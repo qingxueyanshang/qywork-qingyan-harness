@@ -2,7 +2,8 @@
  * 消息级缓存断点的位置与每一步的缓存命中。
  *
  * 覆盖范围：`loop/index.ts` 的 `buildRequest` 设置在 history 末条、最后一批工具调用所属的
- * assistant 消息与末尾消息上的三个断点，以及它们与 `loop/request.ts` 的 `evictedMedia` 换出的配合。
+ * assistant 消息与末尾消息上的三个断点，末尾断点按 `delivery.ts` 的 `foldsBeforeNextDecision` 省略，
+ * 以及它们与 `loop/request.ts` 的 `evictedMedia` 换出的配合。
  * 断言针对适配器收到的请求，按 Anthropic 的缓存规则计算每一步命中到哪一条消息。
  *
  * 检查三项：图片保留在请求中时，每一步命中上一步的全部内容；媒体超过保留上限时，只有换出的那一步
@@ -12,6 +13,7 @@
 
 import { expect, test } from 'bun:test'
 import type { ContentBlock, LlmAdapter, WireMessage } from '@qywork/ai'
+import { recordCappedSpent } from '../delivery.ts'
 import { ToolRegistry } from '../registry.ts'
 import { baseCtx, call, fakeAdapter, noopPersistence } from './fixtures.test-helper.ts'
 import { AgentLoop } from './index.ts'
@@ -123,6 +125,64 @@ test('工具每一步返回一张图：图片保留在请求中，每一步命�
   for (const messages of seen) {
     expect(messages.filter((m) => m.cacheBreakpoint).length).toBeLessThanOrEqual(3)
   }
+})
+
+/**
+ * 结果触及单次上限且投递量不低于预留量时，下一次决策执行工具之前该批结果会被收纳：
+ * 携带该批结果的请求不在末尾设置断点，工具调用所属的 assistant 消息仍有断点；之后的普通结果恢复末尾断点。
+ */
+test('将被收纳的截断结果不在末尾设置缓存断点，之前的内容照常缓存', async () => {
+  const registry = new ToolRegistry()
+  const spec = (name: string, capped: boolean) => ({
+    name,
+    description: '读取正文。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    actionKind: 'read' as const,
+    objectLabel: '正文',
+    category: 'session' as const,
+    facet: '测试',
+    summary: '测试夹具',
+    permissionEffect: 'internal_control' as const,
+    async fn(_args: Record<string, unknown>, ctx: { state: Map<string, unknown> }) {
+      if (capped) recordCappedSpent(ctx, 10_000_000)
+      return { status: 'success' as const, message: `${name} 完成` }
+    },
+  })
+  registry.register(spec('read_large', true))
+  registry.register(spec('read_small', false))
+  const scripted = fakeAdapter([[call('read_large')], [call('read_small')], null])
+  const seen: WireMessage[][] = []
+  const adapter: LlmAdapter = {
+    ...scripted,
+    stream(req) {
+      seen.push(JSON.parse(JSON.stringify(req.messages)) as WireMessage[])
+      return scripted.stream(req)
+    },
+  }
+  const loop = new AgentLoop({
+    adapter,
+    registry,
+    systemPrompt: 'sys',
+    makeToolContext: baseCtx,
+    persist: noopPersistence(),
+  })
+  for await (const _ of loop.run({
+    compactPercent: 80,
+    runId: 'rn_cache_fold' as never,
+    history: [{ role: 'user', content: '读取', _group: 'historyMessages' }],
+    signal: new AbortController().signal,
+  })) {
+    // 断言针对适配器收到的请求。
+  }
+  expect(seen).toHaveLength(3)
+  const afterLarge = seen[1]!
+  expect(afterLarge.at(-1)!.role).toBe('tool')
+  expect(afterLarge.at(-1)!.cacheBreakpoint).toBeUndefined()
+  expect(afterLarge.at(-2)!.toolCalls?.length).toBe(1)
+  expect(afterLarge.at(-2)!.cacheBreakpoint).toBe(true)
+  const afterSmall = seen[2]!
+  expect(afterSmall.at(-1)!.role).toBe('tool')
+  expect(afterSmall.at(-1)!.cacheBreakpoint).toBe(true)
 })
 
 /** 约 1.5 MB 的噪声 PNG（无法压缩）：第 6 张使总量超过 8 MB，前五张缩小为缩略图。 */

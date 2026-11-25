@@ -37,6 +37,8 @@ export {
   decodeUtf8Boundary,
   deliveredTokens,
   deliveryCap,
+  firstPageCap,
+  foldsBeforeNextDecision,
   type HeadDelivery,
   headBytesWithin,
   landHead,

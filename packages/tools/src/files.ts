@@ -19,6 +19,7 @@ import {
   chargeImage,
   chargeVideo,
   deliveryCap,
+  firstPageCap,
   outcomeTokens,
   recordBatchSpent,
   recordCappedSpent,
@@ -363,7 +364,8 @@ export const readFileTool: ToolSpec = {
     'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配；没有文字层时返回失败）。' +
     '修改任何已存在的文件前必须先用本工具读取一次：' +
     'write_file 和 edit_file 会校验已读取的内容是否仍是磁盘上的最新版本。' +
-    '默认读取整个文件；超出上下文剩余空间时返回可容纳的部分与续读位置。读取指定范围时用 offset/limit。',
+    '默认读取整个文件；文件无法整份读取时先返回开头部分与续读位置。' +
+    '指定 offset 或 limit 时，超出上下文剩余空间则返回可容纳的部分与续读位置。读取指定范围时用 offset/limit。',
   parameters: {
     type: 'object',
     properties: {
@@ -577,7 +579,10 @@ export const readFileTool: ToolSpec = {
      * 取得时，拦截即失效。脱敏只作用于交给模型的文本，磁盘上的文件不做任何修改；
      * `edit_file` 的读取校验使用原文哈希，不受影响。
      */
-    const firstLines = (n: number): { message: string; data: Record<string, unknown> } => {
+    const firstLines = (
+      n: number,
+      opening = false,
+    ): { message: string; data: Record<string, unknown> } => {
       const numbered = slice
         .slice(0, n)
         .map((l, i) => `${offset + i}\t${l}`)
@@ -587,8 +592,11 @@ export const readFileTool: ToolSpec = {
       return {
         message: complete
           ? `读取 ${shown}（${n} 行${end < totalLines ? '，已截断' : ''}）`
-          : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行）。` +
-            `超出上下文剩余空间，从 offset=${end + 1} 续读；已读取的段落在压缩时会被折叠，要点写在回复中。`,
+          : opening
+            ? `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行）。` +
+              `文件较大，先返回开头部分；从 offset=${end + 1} 续读，或用 offset/limit 读取指定范围。`
+            : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行）。` +
+              `超出上下文剩余空间，从 offset=${end + 1} 续读；已读取的段落在压缩时会被折叠，要点写在回复中。`,
         data: {
           content: redactSecrets(numbered, secrets),
           startLine: offset,
@@ -608,6 +616,8 @@ export const readFileTool: ToolSpec = {
     /*
      * 投递：所请求的范围能够整份容纳时整份返回；否则返回可容纳的最长行前缀与下一行的 offset，
      * 不拒绝。拒绝的回合不产出正文，模型只能按建议再读取一次。
+     * 未指定 offset 与 limit 时前缀不超过 `firstPageCap`：这一段不记为触及上限，不触发收纳，留在上下文中；
+     * 指定其中任一项时按 `deliveryCap` 读满。
      *
      * 行数用二分法按实际结果计量，不要按平均行长估算：行长不均时估算出的行数会超出额度。
      */
@@ -616,10 +626,13 @@ export const readFileTool: ToolSpec = {
       markRead()
       return { status: 'success', ...whole }
     }
-    const remaining = deliveryCap(ctx)
+    const budget = deliveryCap(ctx)
+    const remaining =
+      args.offset === undefined && args.limit === undefined ? firstPageCap(ctx) : budget
+    const opening = remaining < budget
     // 余量连一段都无法容纳时仍返回 `MIN_DELIVERY_BYTES` 以内的整行，不报告失败。
     const fits = (n: number) => {
-      const part = firstLines(n)
+      const part = firstLines(n, opening)
       return (
         outcomeTokens(part, ctx.density) <= remaining ||
         Buffer.byteLength(String(part.data.content)) <= MIN_DELIVERY_BYTES
@@ -638,8 +651,9 @@ export const readFileTool: ToolSpec = {
       else over = mid
     }
     if (fit > 0) {
-      const part = firstLines(fit)
-      recordCappedSpent(ctx, outcomeTokens(part, ctx.density))
+      const part = firstLines(fit, opening)
+      if (opening) recordBatchSpent(ctx, outcomeTokens(part, ctx.density))
+      else recordCappedSpent(ctx, outcomeTokens(part, ctx.density))
       markRead()
       return { status: 'success', ...part }
     }

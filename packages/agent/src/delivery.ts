@@ -59,6 +59,18 @@ export function batchCapped(state: ReadonlyMap<string, unknown>): boolean {
   return state.get(CAPPED_KEY) === true
 }
 
+/**
+ * 当前账目所属决策的结果是否会在下一次决策执行工具之前被收纳：触及单次上限，且投递量不低于预留量。
+ * 预留量与自动收纳的回收下限同为半份尾部保留量；回收量为投递量减去信封，投递量不低于预留量时检查点收纳该段。
+ * 下一次回复不调用工具时收纳不发生；本判定只决定缓存断点，判定不成立只影响计费，不影响请求内容。
+ */
+export function foldsBeforeNextDecision(state: ReadonlyMap<string, unknown>): boolean {
+  if (!batchCapped(state)) return false
+  const spent = state.get(SPENT_KEY)
+  const reserve = state.get(RESERVE_KEY)
+  return typeof spent === 'number' && typeof reserve === 'number' && spent >= reserve
+}
+
 function account(state: Map<string, unknown>): { room: number; reserve: number; spent: number } {
   const room = state.get(ROOM_KEY)
   // 不设默认额度：工具只经 AgentLoop 执行，未开账说明调用方遗漏了开账，设默认值等于不限额放行。
@@ -103,6 +115,16 @@ export function deliveryCap(ctx: Pick<ToolContext, 'state'>): number {
   const { room, reserve, spent } = account(ctx.state)
   const remaining = Math.max(0, room - spent)
   return Math.max(remaining - reserve, Math.min(remaining, reserve))
+}
+
+/**
+ * 未指定范围、文件又无法整份读取时，第一次读取的上限（token）：预留量的一半。
+ * 预留量等于自动收纳的回收下限（半份尾部保留量），取其一半时这一段不会触发收纳，留在上下文中；
+ * 续读时调用方改用 `deliveryCap` 读满余量。余额不足时等于 `deliveryCap`。
+ */
+export function firstPageCap(ctx: Pick<ToolContext, 'state'>): number {
+  const { reserve } = account(ctx.state)
+  return Math.min(deliveryCap(ctx), Math.floor(reserve / 2))
 }
 
 /**

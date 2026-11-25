@@ -2,7 +2,8 @@
  * 投递额度与续读落盘。
  *
  * 覆盖范围：`delivery.ts` 的 `openBatchBudget` / `chargeBatchBudget` / `recordBatchSpent` /
- * `recordCappedSpent` / `batchCapped` / `batchRemaining` / `outcomeTokens` / `tokensToBytes` /
+ * `recordCappedSpent` / `batchCapped` / `foldsBeforeNextDecision` / `batchRemaining` / `firstPageCap` /
+ * `outcomeTokens` / `tokensToBytes` /
  * `landHead` / `continuationNote` / `boundExecutedOutcome`。
  *
  * 本组测试锁定三项行为：一次决策只有一份额度，读取与已执行的结果从同一份额度中扣除；
@@ -20,6 +21,8 @@ import {
   continuationNote,
   deliveredTokens,
   deliveryCap,
+  firstPageCap,
+  foldsBeforeNextDecision,
   landHead,
   openBatchBudget,
   outcomeTokens,
@@ -96,6 +99,25 @@ describe('一次决策一份额度', () => {
     const c = { state: openBatchBudget(new Map<string, unknown>(), 6_000, 4_000) }
     expect(deliveryCap(c)).toBe(4_000)
     expect(deliveryCap({ state: openBatchBudget(new Map(), 3_000, 4_000) })).toBe(3_000)
+  })
+
+  /** 1M 窗口、比例 80 时预留量为 12.5 万，未指定范围的第一次读取不超过 6.25 万。 */
+  test('未指定范围的第一次读取取预留量的一半，余额不足时不超过单次上限', () => {
+    const reserve = tailRetain({ contextWindow: 1_000_000, compactPercent: 80 }) / 2
+    expect(firstPageCap({ state: openBatchBudget(new Map(), 760_000, reserve) })).toBe(62_500)
+    expect(firstPageCap({ state: openBatchBudget(new Map(), 40_000, reserve) })).toBe(40_000)
+  })
+
+  test('触及单次上限且投递量不低于预留量时判定为下一次决策之前收纳', () => {
+    const c = { state: openBatchBudget(new Map<string, unknown>(), 760_000, 125_000) }
+    recordCappedSpent(c, 124_999)
+    expect(foldsBeforeNextDecision(c.state)).toBe(false)
+    recordBatchSpent(c, 1)
+    expect(foldsBeforeNextDecision(c.state)).toBe(true)
+    const uncapped = { state: openBatchBudget(new Map<string, unknown>(), 760_000, 125_000) }
+    recordBatchSpent(uncapped, 500_000)
+    expect(foldsBeforeNextDecision(uncapped.state)).toBe(false)
+    expect(foldsBeforeNextDecision(new Map())).toBe(false)
   })
 
   test('比例为 80 时保留量为窗口的 1/4，不设固定上限', () => {

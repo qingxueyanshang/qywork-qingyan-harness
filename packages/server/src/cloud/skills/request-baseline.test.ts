@@ -34,9 +34,9 @@ const PROTOCOLS: { provider: string; kind: ProviderKind; model: string }[] = [
 
 /** 期望值：各协议全部请求体按顺序以换行连接、替换占位后的 SHA-256。 */
 const EXPECTED: Record<string, string> = {
-  anthropic: '1fbebffb0c3dbcf8e0d236662321b0c2a41ed3cb08206964f13979d47aa9d7b2',
-  chat: 'cb737a5e9b4bc3a48c0ddd8c00f28e40e0f7dfa0bb1c367ffa97898a041412d9',
-  responses: '7c33180a2b0fe2f23dd20e08256c3892ca1bba0cf06097de11133d45b4c5bba1',
+  anthropic: '009afad6745b20720710e43f7645529c1022d3424255b70ef3411ae0370d0e23',
+  chat: '991831d8204c12eb442b4031179b997f0817353cf4052593650e9a32e7b4ac95',
+  responses: '877d7f1ca4b9481e48e93e7ddc2e193bd09e0188e0e5b6581de1ea9c3a64621c',
 }
 
 function sse(events: Record<string, unknown>[], named: boolean): string {
