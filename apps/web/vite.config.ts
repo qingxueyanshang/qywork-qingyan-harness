@@ -23,13 +23,21 @@ const COORDINATED_RELOAD = process.env.QYWORK_COORDINATED_RELOAD === '1'
  * JPEG 2000、JBIG2 图片与 ICC 色彩的解码模块。按原文件名发布在 `assets/pdfjs-<内容哈希>/` 下：文件名不能带各自的哈希；
  * 目录带全部内容的哈希，云端与浏览器按 `assets/` 长期缓存，更换 pdf.js 版本后不会取到其他版本的解码模块。
  * 脚本沙箱（quickjs）不发布：预览不执行 PDF 中的脚本。
+ * 没有扩展名的许可证文件（`LICENSE_FOXIT` 等）以 `.txt` 扩展名发布：桌面安装包内嵌界面时资源名为「名称-哈希.扩展名」，
+ * 没有扩展名时以点结尾，Windows 上的 Tauri 无法读取该资源，外壳编译失败。pdf.js 不按名称读取这些文件。
  */
 const PDFJS_ROOT = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
 const PDFJS_FILES = new Map<string, Buffer>(
   ['cmaps', 'standard_fonts', 'wasm', 'iccs'].flatMap((dir) =>
     readdirSync(join(PDFJS_ROOT, dir))
       .filter((name) => !/quickjs/i.test(name))
-      .map((name) => [`${dir}/${name}`, readFileSync(join(PDFJS_ROOT, dir, name))] as const),
+      .map(
+        (name) =>
+          [
+            `${dir}/${name.includes('.') ? name : `${name}.txt`}`,
+            readFileSync(join(PDFJS_ROOT, dir, name)),
+          ] as const,
+      ),
   ),
 )
 const PDFJS_BASE = `assets/pdfjs-${createHash('sha256')
