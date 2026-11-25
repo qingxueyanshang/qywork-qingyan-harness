@@ -6,6 +6,7 @@
  * 用户停止时 signal 中止，异常原样抛出，由工具波次按中断处理收尾。
  */
 
+import { join } from 'node:path'
 import {
   buildMediaAdapter,
   isLocalEndpoint,
@@ -32,12 +33,17 @@ import {
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/tools'
 import { generateArt } from './art.ts'
 import {
+  configDir,
   listMediaModels,
   type ModelRef,
   type QyConfig,
   resolveMediaModel,
   savedDisplayName,
 } from './config.ts'
+
+/** 结果下载的临时文件目录，位于全局数据目录下（`DownloadOptions.dir`）。 */
+const DOWNLOAD_DIR = 'downloads'
+
 import { mediaParameterTable } from './prompt.ts'
 
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
@@ -252,6 +258,11 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
             ...(call.onRetry ? { onRetry: call.onRetry } : {}),
             ...(call.resumeTaskId ? { resumeTaskId: call.resumeTaskId } : {}),
             ...(call.logFields ? { logFields: call.logFields } : {}),
+            // 临时文件按下载地址命名，放在全局数据目录：取回同一任务时续传，不出现在工作区中。
+            download: {
+              dir: join(configDir(), DOWNLOAD_DIR),
+              ...(call.onDownload ? { onProgress: call.onDownload } : {}),
+            },
           },
         )
         reportSpend(result.usage ?? {})

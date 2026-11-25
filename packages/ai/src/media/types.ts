@@ -100,6 +100,18 @@ export interface MediaImageResult {
   warning?: string
 }
 
+/**
+ * 结果下载（`download`）的选项，经运行上下文传给下载，适配器不需要传递。
+ *
+ * - `dir`：临时文件目录。下载边接收边写入其中按地址命名的文件，中断（停止、断线、进程退出）后保留；再次下载同一地址时
+ *   以 Range 请求剩余部分。服务器不支持 Range 或文件已变化时从头下载。下载完成后删除临时文件。
+ * - `onProgress`：已接收的字节与总字节（服务器未给出时为 null），至多每 `PROGRESS_MS` 回报一次，接收完成时再回报一次。
+ */
+export interface DownloadOptions {
+  dir?: string
+  onProgress?: (received: number, total: number | null) => void
+}
+
 export interface MediaRunOptions {
   signal: AbortSignal
   /**
@@ -124,6 +136,8 @@ export interface MediaRunOptions {
   onStatus?: (status: string) => void
   /** 只查询与下载该已提交的任务，不再提交。 */
   resumeTaskId?: string
+  /** 结果下载的进度回报与续传，见 `DownloadOptions`。省略时下载在内存中进行，中断后从头下载。 */
+  download?: DownloadOptions
   /**
    * 本次运行的日志标识，附在重试等待、查询失败与按任务号确认的日志行中（`reportingRetries`）：本机为画布路径与节点或工具调用，
    * 云端为任务号。值写入日志文件，不得放入密钥、提示词与素材内容。

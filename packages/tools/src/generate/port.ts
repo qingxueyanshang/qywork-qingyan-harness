@@ -67,6 +67,8 @@ export interface MediaCall {
   onStatus?: (status: string) => void
   /** 请求被拒绝后进入重试等待时回报第几次、上限与原因，等待结束时回报 `null`。 */
   onRetry?: (retry: RetryWait | null) => void
+  /** 结果下载的进度：已接收的字节与总字节（服务器未给出时为 null），至多每 0.5 秒回报一次。 */
+  onDownload?: (received: number, total: number | null) => void
   /** 本次生成的花费，取得服务商结果时回报一次；恢复下载不再次回报。 */
   onSpend?: (spend: MediaSpend) => void
   /**

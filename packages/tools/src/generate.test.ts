@@ -103,6 +103,7 @@ describe('generate_image', () => {
       onTask: expect.any(Function),
       onStatus: expect.any(Function),
       onRetry: expect.any(Function),
+      onDownload: expect.any(Function),
       type: 'image',
       prompt: '一只猫',
       inputs: [],
@@ -830,6 +831,12 @@ describe('工具卡片上的进度', () => {
     return { context, lines }
   }
   const retry = (attempt: number) => ({ attempt, max: 5, reason: 'HTTP 429 请求过多：busy' })
+  /** 工具卡片的显示规则（web 的 `collapseCarriageReturns`）：每行显示最后一个回车符之后的文字。 */
+  const collapsed = (text: string) =>
+    text
+      .split('\n')
+      .map((line) => line.slice(line.lastIndexOf('\r') + 1))
+      .join('\n')
 
   /**
    * 不经画布直接调用生成工具时，对话的工具卡片是重试唯一的显示位置；写法与画布卡片的标签、悬停提示同源。
@@ -882,6 +889,58 @@ describe('工具卡片上的进度', () => {
     const fetched = recording(root)
     await retrieveMediaTool.fn({ path: 'wave.task.json' }, fetched.context)
     expect(fetched.lines).toEqual(['排队中\n', '生成中\n'])
+  })
+
+  /**
+   * 原始失败形状：41 MB 的成片下载约 48 分钟未完成，工具卡片一直显示「生成中」，用户无法判断是否仍在下载，停止了对话。
+   */
+  test('generate_video 与 retrieve_media 下载结果时显示已下载与总大小，在同一行原地刷新', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qy-gen-download-'))
+    const MB = 1024 * 1024
+    during = async (call) => {
+      call.onStatus?.('RUNNING')
+      call.onDownload?.(0, 41 * MB)
+      call.onDownload?.(0.04 * MB, 41 * MB)
+      call.onDownload?.(12.3 * MB, 41 * MB)
+      call.onDownload?.(41 * MB, 41 * MB)
+      call.onRetry?.(retry(1))
+    }
+    const made = recording(root)
+    await generateVideoTool.fn({ prompt: 'x' }, made.context)
+    expect(made.lines).toEqual([
+      '生成中\n',
+      '\r下载中 0.0 / 41.0 MB',
+      '\r下载中 12.3 / 41.0 MB',
+      '\r下载中 41.0 / 41.0 MB',
+      '\n第 1/5 次重试 · 上次失败：HTTP 429 请求过多：busy\n',
+    ])
+    expect(collapsed(made.lines.join(''))).toBe(
+      '生成中\n下载中 41.0 / 41.0 MB\n第 1/5 次重试 · 上次失败：HTTP 429 请求过多：busy\n',
+    )
+    expect(
+      canvasRunLabel('video', {
+        state: 'running',
+        startedAt: 0,
+        phase: 'running',
+        download: { received: 12.3 * MB, total: 41 * MB },
+      }),
+    ).toBe('下载中 30%')
+    expect(
+      canvasRunLabel('video', {
+        state: 'running',
+        startedAt: 0,
+        download: { received: 12.3 * MB },
+      }),
+    ).toBe('下载中 12.3 MB')
+
+    await writeFile(
+      join(root, 'wave.task.json'),
+      JSON.stringify({ type: 'video', provider: 'qwen', model: 'v', taskId: 't', output: 'wave' }),
+    )
+    during = async (call) => call.onDownload?.(5 * MB, null)
+    const fetched = recording(root)
+    await retrieveMediaTool.fn({ path: 'wave.task.json' }, fetched.context)
+    expect(fetched.lines).toEqual(['\r下载中 5.0 MB'])
   })
 
   /**

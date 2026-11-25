@@ -1,6 +1,7 @@
 /** 生成适配器共用的请求、诊断、下载与文件格式识别。 */
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { basename } from 'node:path'
+import { mkdir, open, readdir, readFile, rm, stat, truncate, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import {
   type ChannelVendor,
   type ErrorCode,
@@ -21,7 +22,7 @@ import {
   upstreamFailureCode,
 } from '../errors.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
-import { MediaError, type MediaInput, type MediaRunOptions } from './types.ts'
+import { type DownloadOptions, MediaError, type MediaInput, type MediaRunOptions } from './types.ts'
 
 /**
  * 各阶段的静默上限：连续该时长没有收到任何数据（响应头或正文字节）即判定连接已失效，数据仍在到达时不中止。
@@ -52,21 +53,28 @@ export interface RequestPolicy {
     vendor: ChannelVendor | null
     refused?: (body: Record<string, unknown>) => string | undefined
   }
+  /**
+   * 读取 2xx 答复的正文，代替整份读入内存（`readBody`）。每收到一块调用一次 `heard`，静默上限照常生效；
+   * 读取中抛出的错误与连接中断同样归类，可以重发。`download` 用它边接收边写入临时文件并回报进度。
+   */
+  receive?: (res: Response, heard: () => void) => Promise<Uint8Array>
 }
 
 /**
  * 一次适配器运行期间的提交与重试回报回调、日志标识。经异步上下文传给 `send` 与 `waitTask`，不经各适配器的请求参数：
  * 提交、同步出图、语音与素材上传共有十余个请求点，逐处传参时遗漏一处，该协议的重试与提交时刻就不回报，日志也缺少标识。
  */
-type RunContext = Pick<MediaRunOptions, 'onRetry' | 'onSubmit' | 'logFields'>
+type RunContext = Pick<MediaRunOptions, 'onRetry' | 'onSubmit' | 'logFields' | 'download'>
 const runContext = new AsyncLocalStorage<RunContext>()
 
 /**
  * 执行 `work`，其间 `send` 每次发出生成请求之前回报给 `opts.onSubmit`，进入与结束重试等待时回报给 `opts.onRetry`，
- * 重试与查询失败的日志带上 `opts.logFields`（`MediaRunOptions`）。
+ * 重试与查询失败的日志带上 `opts.logFields`，结果下载按 `opts.download` 续传与回报进度（`MediaRunOptions`）。
  */
 export function reportingRetries<T>(opts: RunContext, work: () => Promise<T>): Promise<T> {
-  return opts.onRetry || opts.onSubmit || opts.logFields ? runContext.run(opts, work) : work()
+  return opts.onRetry || opts.onSubmit || opts.logFields || opts.download
+    ? runContext.run(opts, work)
+    : work()
 }
 
 /** 当前运行的日志标识（`MediaRunOptions.logFields`）；不在 `reportingRetries` 之内时为空对象。 */
@@ -315,7 +323,10 @@ export async function send(
       heard()
       if (init.redirect === 'manual' && [301, 302, 303, 307, 308].includes(response.status))
         return response
-      const bytes = await readBody(response, heard)
+      const bytes =
+        response.ok && policy.receive
+          ? await policy.receive(response, heard)
+          : await readBody(response, heard)
       res = new Response([204, 205, 304].includes(response.status) ? null : bytes, {
         status: response.status,
         statusText: response.statusText,
@@ -479,51 +490,232 @@ export async function getJson(
   return sendJson(url, { method: 'GET', headers }, signal, policy)
 }
 
-/** 重试只读取同一个产物，不提交生成。跨源重定向不得携带接口凭证。 */
+/**
+ * 重试只读取同一个产物，不提交生成。跨源重定向不得携带接口凭证。
+ *
+ * 运行上下文给出 `download.dir` 时边接收边写入临时文件（`claimPartial`），重试与再次下载同一地址时只请求剩余部分；
+ * 给出 `download.onProgress` 时回报进度。两者都没有时与整份读入内存相同。
+ */
 export async function download(
   url: string,
   signal: AbortSignal,
   headers: Record<string, string> = {},
 ): Promise<{ bytes: Uint8Array; mime: string }> {
   const origin = new URL(url).origin
-  for (let attempt = 0; ; attempt++) {
-    try {
-      let target = url
-      for (let redirects = 0; ; redirects++) {
-        const res = await send(
-          target,
-          {
-            method: 'GET',
-            redirect: 'manual',
-            headers: new URL(target).origin === origin ? headers : {},
-          },
-          signal,
-          { stage: 'download' },
-        )
-        if (res.ok) {
-          const bytes = new Uint8Array(await res.arrayBuffer())
-          const header = res.headers.get('content-type')?.split(';')[0]?.trim()
-          return { bytes, mime: sniffMime(bytes) ?? header ?? 'application/octet-stream' }
+  const options = runContext.getStore()?.download
+  const partial = options?.dir ? await claimPartial(options.dir, url) : null
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        let target = url
+        for (let redirects = 0; ; redirects++) {
+          const resume = partial ? await partial.resumable() : null
+          const res = await send(
+            target,
+            {
+              method: 'GET',
+              redirect: 'manual',
+              headers: {
+                ...(new URL(target).origin === origin ? headers : {}),
+                ...(resume ? { range: `bytes=${resume.have}-`, 'if-range': resume.validator } : {}),
+              },
+            },
+            signal,
+            { stage: 'download', receive: receiver(partial, resume, options?.onProgress) },
+          )
+          if (res.ok) {
+            const bytes = new Uint8Array(await res.arrayBuffer())
+            await partial?.remove()
+            const header = res.headers.get('content-type')?.split(';')[0]?.trim()
+            return { bytes, mime: sniffMime(bytes) ?? header ?? 'application/octet-stream' }
+          }
+          const location = res.headers.get('location')
+          await res.body?.cancel()
+          if (!location || redirects >= 5) throw new MediaError('下载重定向无效或次数过多')
+          target = new URL(location, target).href
         }
-        const location = res.headers.get('location')
-        await res.body?.cancel()
-        if (!location || redirects >= 5) throw new MediaError('下载重定向无效或次数过多')
-        target = new URL(location, target).href
+      } catch (err) {
+        if (signal.aborted) throw signal.reason
+        // 续传请求被拒绝（416）：已下载的部分与服务器上的文件不一致，清空后从头下载。
+        if (err instanceof MediaError && err.status === 416 && partial) await partial.remove()
+        if (
+          (transientFailure(err) || (err instanceof MediaError && err.status === 416)) &&
+          attempt + 1 < DOWNLOAD_ATTEMPTS
+        ) {
+          await waitOrAbort(500 * 2 ** attempt, signal)
+          continue
+        }
+        throw new MediaError(`结果下载失败：${err instanceof Error ? err.message : String(err)}`, {
+          ...(err instanceof MediaError && err.status !== undefined ? { status: err.status } : {}),
+          ...(err instanceof MediaError && err.diagnostic ? { diagnostic: err.diagnostic } : {}),
+          ...(err instanceof MediaError && err.code ? { code: err.code } : {}),
+          cause: err,
+        })
       }
-    } catch (err) {
-      if (signal.aborted) throw signal.reason
-      if (transientFailure(err) && attempt + 1 < DOWNLOAD_ATTEMPTS) {
-        await waitOrAbort(500 * 2 ** attempt, signal)
-        continue
-      }
-      throw new MediaError(`结果下载失败：${err instanceof Error ? err.message : String(err)}`, {
-        ...(err instanceof MediaError && err.status !== undefined ? { status: err.status } : {}),
-        ...(err instanceof MediaError && err.diagnostic ? { diagnostic: err.diagnostic } : {}),
-        ...(err instanceof MediaError && err.code ? { code: err.code } : {}),
-        cause: err,
-      })
     }
+  } finally {
+    partial?.release()
   }
+}
+
+/** 进度回报的最短间隔（毫秒）。 */
+const PROGRESS_MS = 500
+
+/** 下载临时文件的保留时长：与云端结果文件的保留期相同，更早的临时文件对应的结果已无法取回。 */
+const PARTIAL_TTL_MS = 7 * 24 * 3_600_000
+
+/** 本进程中正在写入的临时文件。同一地址同时下载时只有第一个使用临时文件，其余在内存中下载，避免交错写入同一文件。 */
+const writing = new Set<string>()
+
+/** 续传所需的已下载部分：字节数与服务器上该文件的校验标识（ETag 或 Last-Modified）。 */
+interface Resume {
+  have: number
+  validator: string
+}
+
+interface Partial {
+  /** 可以续传时给出已下载的部分；没有临时文件、没有校验标识或已下载 0 字节时为 null。 */
+  resumable(): Promise<Resume | null>
+  /** 从 `start` 起写入：截断到 `start` 后追加。`validator` 与 `total` 写入校验文件。 */
+  open(
+    start: number,
+    meta: { validator: string | null; total: number | null },
+  ): Promise<{
+    write(chunk: Uint8Array): Promise<void>
+    close(): Promise<void>
+  }>
+  read(): Promise<Uint8Array>
+  remove(): Promise<void>
+  release(): void
+}
+
+/**
+ * 取得地址对应的临时文件（`<dir>/<地址摘要>.part` 与校验文件 `.json`），同时删除目录中超过保留期的临时文件。
+ * 该地址正在本进程中下载时返回 null。
+ */
+async function claimPartial(dir: string, url: string): Promise<Partial | null> {
+  const base = join(dir, Bun.hash(url).toString(36))
+  const data = `${base}.part`
+  const meta = `${base}.json`
+  if (writing.has(data)) return null
+  writing.add(data)
+  await mkdir(dir, { recursive: true })
+  await sweepPartials(dir)
+  const remove = async () => {
+    await rm(data, { force: true })
+    await rm(meta, { force: true })
+  }
+  return {
+    async resumable() {
+      const have = (await stat(data).catch(() => null))?.size ?? 0
+      if (have === 0) return null
+      const saved = await readFile(meta, 'utf8').then(
+        (t) => JSON.parse(t) as { validator?: unknown },
+        () => null,
+      )
+      return typeof saved?.validator === 'string' ? { have, validator: saved.validator } : null
+    },
+    async open(start, info) {
+      if (start === 0) {
+        await writeFile(data, new Uint8Array())
+        await writeFile(meta, JSON.stringify(info))
+      } else {
+        await truncate(data, start)
+      }
+      const handle = await open(data, 'a')
+      return {
+        write: async (chunk) => {
+          await handle.write(chunk)
+        },
+        close: () => handle.close(),
+      }
+    },
+    read: async () => new Uint8Array(await readFile(data)),
+    remove,
+    release: () => {
+      writing.delete(data)
+    },
+  }
+}
+
+async function sweepPartials(dir: string): Promise<void> {
+  const now = Date.now()
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    const path = join(dir, name)
+    if (writing.has(path)) continue
+    const info = await stat(path).catch(() => null)
+    if (info && now - info.mtimeMs > PARTIAL_TTL_MS) await rm(path, { force: true })
+  }
+}
+
+/**
+ * 下载答复正文的读取（`RequestPolicy.receive`）：206 且起点等于已下载的字节数时接着写入临时文件，200 时从头写入；
+ * 读完后核对总长，不一致时抛出，按连接中断重发并从已写入的位置续传。没有临时文件时在内存中累积。
+ */
+function receiver(
+  partial: Partial | null,
+  resume: Resume | null,
+  onProgress: DownloadOptions['onProgress'],
+): (res: Response, heard: () => void) => Promise<Uint8Array> {
+  return async (res, heard) => {
+    const range = res.status === 206 ? contentRange(res.headers.get('content-range')) : null
+    if (res.status === 206 && (!range || !resume || range.start !== resume.have)) {
+      await partial?.remove()
+      throw new Error('服务器返回的续传起点与已下载的部分不一致')
+    }
+    const start = range?.start ?? 0
+    const length = Number(res.headers.get('content-length'))
+    const total = range?.total ?? (Number.isFinite(length) && length > 0 ? start + length : null)
+    const sink = partial
+      ? await partial.open(start, {
+          validator: res.headers.get('etag') ?? res.headers.get('last-modified'),
+          total,
+        })
+      : null
+    const chunks: Uint8Array[] = []
+    let received = start
+    let reported = 0
+    const report = (force: boolean) => {
+      if (!onProgress || (!force && Date.now() - reported < PROGRESS_MS)) return
+      reported = Date.now()
+      onProgress(received, total)
+    }
+    try {
+      if (res.body) {
+        const reader = res.body.getReader()
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          heard()
+          received += value.length
+          if (sink) await sink.write(value)
+          else chunks.push(value)
+          report(false)
+        }
+      }
+    } finally {
+      await sink?.close()
+    }
+    report(true)
+    if (total !== null && received !== total) {
+      throw new Error(`下载不完整：已收到 ${received} 字节，应为 ${total} 字节`)
+    }
+    if (partial) return partial.read()
+    const bytes = new Uint8Array(received)
+    let at = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, at)
+      at += chunk.length
+    }
+    return bytes
+  }
+}
+
+/** 解析 `Content-Range: bytes <起点>-<终点>/<总长>`；总长为 `*` 时为 null。 */
+function contentRange(header: string | null): { start: number; total: number | null } | null {
+  const m = /^bytes (\d+)-\d+\/(\d+|\*)$/.exec(header?.trim() ?? '')
+  if (!m) return null
+  return { start: Number(m[1]), total: m[2] === '*' ? null : Number(m[2]) }
 }
 
 /** 文件头自 `offset` 起是否为指定的 ASCII 字符串。 */

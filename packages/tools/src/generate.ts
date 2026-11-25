@@ -24,6 +24,7 @@ import {
   taskPhase,
 } from '@qywork/ai'
 import {
+  downloadLabel,
   GENERATE_OUTPUTS,
   type GenerateOutput,
   imageSizeOf,
@@ -330,6 +331,8 @@ export interface GenerateRequest {
   onSubmit?: () => void
   /** 请求被拒绝后的重试等待，见 `MediaCall.onRetry`。 */
   onRetry?: MediaCall['onRetry']
+  /** 结果下载的进度，见 `MediaCall.onDownload`。 */
+  onDownload?: MediaCall['onDownload']
   /** 取得结果时回报本次的花费。 */
   onSpend?: (spend: MediaSpend) => void
   /** 发起方的日志标识，见 `MediaCall.logFields`；任务记录的路径由 `generateMedia` 加上。 */
@@ -473,6 +476,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
     }
     if (req.type === 'video' && req.onSubmit) call.onSubmit = req.onSubmit
     if (req.onStatus) call.onStatus = req.onStatus
+    if (req.onDownload) call.onDownload = req.onDownload
     let result: MediaCallResult
     try {
       result = await req.media.generate(call, req.signal)
@@ -525,6 +529,8 @@ export async function resumeMedia(req: {
   onStatus?: (status: string) => void
   /** 远端一侧的重试等待（经由云端的任务在云端被上游拒绝后重试），见 `MediaCall.onRetry`。 */
   onRetry?: MediaCall['onRetry']
+  /** 结果下载的进度，见 `MediaCall.onDownload`。 */
+  onDownload?: MediaCall['onDownload']
   onSpend?: (spend: MediaSpend) => void
   /** 发起方的日志标识，见 `GenerateRequest.logFields`。 */
   logFields?: Record<string, string>
@@ -605,6 +611,7 @@ export async function resumeMedia(req: {
     logFields: { ...req.logFields, record: req.record },
   }
   if (req.onStatus) call.onStatus = req.onStatus
+  if (req.onDownload) call.onDownload = req.onDownload
   const result = await req.media.generate(call, req.signal)
   return settle(req.roots, type, result, record.output, recordPath, record.params, req.attach)
 }
@@ -842,18 +849,26 @@ function receipt(
 
 /**
  * 生成工具在对话的工具卡片上显示的进度（`progress`）：远端任务的阶段与重试等待，写法与画布卡片相同
- * （`taskPhaseLabel`、`retryAttemptText`、`retryCauseText`）。无法识别的状态不输出；重试等待结束不输出。
+ * （`taskPhaseLabel`、`retryAttemptText`、`retryCauseText`），以及结果下载的已下载与总大小（`downloadLabel`）。
+ * 无法识别的状态不输出；重试等待结束不输出。
  * 与上一行相同时不再输出：两个上游原词可能是同一阶段，经由云端的任务每次查询都回报正在进行的重试等待。
  */
 function progressOf(ctx: ToolContext): {
   onStatus: (status: string) => void
   onRetry: (retry: RetryWait | null) => void
+  onDownload: (received: number, total: number | null) => void
 } {
   let last = ''
+  /**
+   * 下载进度以回车符开头、不换行，工具卡片在同一行原地改写（`collapseCarriageReturns`）。
+   * 其后的状态行先换行：否则状态文字接在下载进度之后，显示为同一行。
+   */
+  let inPlace = false
   const line = (text: string) => {
     if (text === last) return
     last = text
-    ctx.emit('progress', `${text}\n`)
+    ctx.emit('progress', `${inPlace ? '\n' : ''}${text}\n`)
+    inPlace = false
   }
   return {
     onStatus(status) {
@@ -862,6 +877,13 @@ function progressOf(ctx: ToolContext): {
     },
     onRetry(retry) {
       if (retry) line(`${retryAttemptText(retry)} · ${retryCauseText(retry.reason)}`)
+    },
+    onDownload(received, total) {
+      const text = downloadLabel(received, total)
+      if (text === last) return
+      last = text
+      ctx.emit('progress', `\r${text}`)
+      inPlace = true
     },
   }
 }

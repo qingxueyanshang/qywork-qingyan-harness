@@ -63,6 +63,10 @@ import { type CanvasStates, type CanvasTask, type CardAt, keyOf, type RunEntry }
 /** 云端生成结果的保留时长，期满后结果文件删除。 */
 const CLOUD_RESULT_RETENTION_MS = 7 * 24 * 3600_000
 
+/** 下载进度发送 `canvas.run` 的间隔：进度每跨过该百分点数，或距上次发送超过该时长（`downloading`）。 */
+const DOWNLOAD_STEP = 5
+const DOWNLOAD_EVENT_MS = 3000
+
 /**
  * 此前结束的云端任务撤销记录可能是误判（见 `restoreMisjudged`）。取云端与电脑端都改为按任务状态判定撤销之后的时刻。
  */
@@ -564,6 +568,7 @@ export class CanvasRuns {
         },
         onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
         onRetry: (retry) => this.retrying(entry, ws, rel, nodeId, retry),
+        onDownload: (received, total) => this.downloading(entry, ws, rel, nodeId, received, total),
         onSpend: (spend) => {
           facts.cost = spend.cost
           facts.currency = spend.currency
@@ -739,6 +744,7 @@ export class CanvasRuns {
         signal: this.signalFor(entry),
         onStatus: (status) => this.advance(entry, ws, rel, nodeId, status),
         onRetry: (retry) => this.retrying(entry, ws, rel, nodeId, retry),
+        onDownload: (received, total) => this.downloading(entry, ws, rel, nodeId, received, total),
         onSpend: (spend) => {
           facts.cost = spend.cost
           facts.currency = spend.currency
@@ -928,6 +934,39 @@ export class CanvasRuns {
     else delete entry.retry
     // 等待重试期间接口没有受理请求，此时停止不产生费用；请求重新发出后恢复为已发出。
     if (entry.requestSent !== undefined && !entry.task) entry.requestSent = retry === null
+    this.deps.publish({
+      type: 'canvas.run',
+      workspaceId: ws.id,
+      path: rel,
+      nodeId,
+      state: 'running',
+    })
+  }
+
+  /**
+   * 结果下载的进度：记在运行条目上供卡片显示（`canvasRunLabel`）。每次进度都发送 `canvas.run` 时，界面每 0.5 秒重新读取一次整张画布，
+   * 远程访问时每次都经隧道传输，因此只在进度跨过 `DOWNLOAD_STEP` 个百分点或距上次发送超过 `DOWNLOAD_EVENT_MS` 时发送，下载完成时必发送。
+   */
+  private downloading(
+    entry: RunEntry,
+    ws: CanvasWorkspace,
+    rel: string,
+    nodeId: string,
+    received: number,
+    total: number | null,
+  ): void {
+    entry.download = { received, ...(total ? { total } : {}) }
+    const percent = total ? Math.floor((received / total) * 100) : 0
+    const sent = entry.downloadSent
+    const now = Date.now()
+    if (
+      sent &&
+      received !== total &&
+      percent - sent.percent < DOWNLOAD_STEP &&
+      now - sent.at < DOWNLOAD_EVENT_MS
+    )
+      return
+    entry.downloadSent = { at: now, percent }
     this.deps.publish({
       type: 'canvas.run',
       workspaceId: ws.id,

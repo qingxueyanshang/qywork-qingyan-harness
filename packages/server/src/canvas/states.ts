@@ -58,6 +58,10 @@ export interface RunEntry {
   phase?: TaskPhase
   /** 请求被拒绝后正在等待自动重试；不在等待时不存在。 */
   retry?: RetryWait
+  /** 结果下载中的已接收与总字节；未开始下载时不存在。 */
+  download?: { received: number; total?: number }
+  /** 最近一次因下载进度发送 `canvas.run` 的时刻与进度（百分比），按 `downloading` 的间隔发送。 */
+  downloadSent?: { at: number; percent: number }
   /** 远端已撤销：收尾时删除该版本与任务记录，不记录失败。 */
   cancelled?: true
   /**
@@ -129,6 +133,7 @@ export class CanvasStates {
         ...(run.task ? { taskId: run.task.taskId } : {}),
         ...(run.phase ? { phase: run.phase } : {}),
         ...(run.retry ? { retry: run.retry } : {}),
+        ...(run.download ? { download: run.download } : {}),
       }
     }
     const tasks = node.versions.filter((v) => v.path.endsWith(TASK_SUFFIX))

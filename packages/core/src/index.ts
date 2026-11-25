@@ -99,6 +99,7 @@ export {
   compilePrompt,
   copyOps,
   displayNameOf,
+  downloadLabel,
   emptyCanvas,
   excerptOf,
   fitBox,

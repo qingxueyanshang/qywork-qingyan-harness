@@ -221,6 +221,8 @@ export type CanvasNodeState =
       stage?: 'preparing' | 'submitting'
       /** 请求被拒绝后正在等待自动重试；不在等待时不存在。 */
       retry?: RetryWait
+      /** 结果下载中：已接收的字节与总字节（服务器未给出时缺省）；未开始下载时不存在。 */
+      download?: { received: number; total?: number }
     }
   /** `version`：点击「取回」时取回的版本。 */
   | { state: 'pending'; version: string }
@@ -232,12 +234,26 @@ export function taskPhaseLabel(phase: 'queued' | 'running'): string {
   return phase === 'queued' ? '排队中' : '生成中'
 }
 
-/** 界面与画布工具共用阶段名称；只有平台明确回报排队时才显示排队中。 */
+const MB = 1024 * 1024
+
+/** 结果下载的进度文字，生成工具的进度行使用：已下载与总大小（MB，一位小数），总大小未知时只写已下载。 */
+export function downloadLabel(received: number, total: number | null): string {
+  const mb = (n: number) => (n / MB).toFixed(1)
+  return total ? `下载中 ${mb(received)} / ${mb(total)} MB` : `下载中 ${mb(received)} MB`
+}
+
+/** 界面与画布工具共用阶段名称；只有平台明确回报排队时才显示排队中。下载中按百分比显示，卡片上的位置容不下大小。 */
 export function canvasRunLabel(
   output: GenerateOutput,
   state: Extract<CanvasNodeState, { state: 'running' }>,
 ): string {
   if (state.retry) return retryAttemptText(state.retry)
+  if (state.download) {
+    const { received, total } = state.download
+    return total
+      ? `下载中 ${Math.floor((received / total) * 100)}%`
+      : `下载中 ${(received / MB).toFixed(1)} MB`
+  }
   if (state.phase) return taskPhaseLabel(state.phase)
   if (state.action === 'retrieve') return '取回中'
   return output === 'video'

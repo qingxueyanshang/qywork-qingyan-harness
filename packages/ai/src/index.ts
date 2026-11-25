@@ -114,6 +114,7 @@ export {
   waitTask,
 } from './media/task.ts'
 export {
+  type DownloadOptions,
   type MediaAdapter,
   type MediaCancel,
   MediaError,

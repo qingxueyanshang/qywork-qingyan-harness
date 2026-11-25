@@ -1952,6 +1952,38 @@ describe('画布运行：排队中与生成中', () => {
     })
     await done
   })
+
+  /**
+   * 原始失败形状：成片下载期间卡片一直显示「生成中」，无法判断是否仍在下载。下载进度写入卡片状态；
+   * 每次进度都发送 canvas.run 时界面每 0.5 秒重新读取整张画布，因此按 5 个百分点或 3 秒发送，下载完成时必发送。
+   */
+  test('下载进度写入卡片状态，canvas.run 按进度间隔发送，下载完成时必发送', async () => {
+    const { ws, svc, events, ids } = await setup(VIDEO_CARD)
+    const fake = fakePort()
+    const { done } = await svc.runs.run(ws, PATH, ids.$v!, { media: fake.port })
+    const p = await fake.next()
+    await p.submit('t-1')
+    const runningEvents = () =>
+      events.filter((e) => e.type === 'canvas.run' && e.state === 'running').length
+    const before = runningEvents()
+    const total = 1000
+    for (const received of [0, 10, 30, 49, 51, 52, 990]) p.call.onDownload?.(received, total)
+    // 进度 0%、5.1%、99% 各发送一次；1%、3%、4.9%、5.2% 不发送。
+    expect(runningEvents()).toBe(before + 3)
+    expect((await svc.docs.read(ws.root, PATH)).states[ids.$v!]).toMatchObject({
+      state: 'running',
+      download: { received: 990, total },
+    })
+    p.call.onDownload?.(total, total)
+    expect(runningEvents()).toBe(before + 4)
+    p.finish({
+      ok: true,
+      provider: 'ark',
+      model: 'seedance',
+      files: [{ bytes: MP4, mime: 'video/mp4' }],
+    })
+    await done
+  })
 })
 
 describe('画布运行：生成记录', () => {
