@@ -6,6 +6,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 对整台机器都成立的陷阱（Windows 编码、Playwright 不可用、npm shim）和跨项目的工作偏好，
 写入全局 `~/.claude/projects/.../memory/`。写新记忆前先读本文件，避免重复。
 
+- [真实模型实测扣云端积分](live-tests-spend-cloud-credits.md) — 先估算并查余额，默认用 DeepSeek V4.1 Flash 或 GPT-6.1 Terra；Opus 对照实验一次消耗约 30 积分并透支
 - [命中率只取最后一次调用](hit-rate-shows-latest-call.md) — 用户确定的口径，不要改为整轮累计；可以调整的只有「没回报按 0 算」那一处
 - [排查先查本地数据库](diagnose-from-the-local-db.md) — `~/.qywork/qywork.sqlite3` 有每次工具调用的完整 args 与 outcome；`permission_audit` 为空表 = 未发生过任何权限裁决
 - [dev server 必须显式绑定 IPv4](dev-server-must-bind-ipv4.md) — vite 不设 host 时只监听 `::1`，Tauri/PowerShell 探测 localhost 使用 IPv4，现象为 `tauri dev` 停滞 180 秒；`strictPort` 同样必须开启
