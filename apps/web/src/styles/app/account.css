@@ -462,7 +462,6 @@
 .support-head {
   flex: none;
   padding: var(--s-4) var(--s-5) var(--s-3);
-  border-bottom: 1px solid var(--border-subtle);
 }
 .support-title {
   margin: 0;
