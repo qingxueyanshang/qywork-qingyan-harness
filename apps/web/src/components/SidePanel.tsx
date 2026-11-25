@@ -1,5 +1,5 @@
 import type { Component, JSX } from 'solid-js'
-import { createMemo, createSignal, For, lazy, onCleanup, Show } from 'solid-js'
+import { createMemo, createSignal, For, lazy, onCleanup, Show, untrack } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import type { OfficeFormat } from '../lib/file-search.ts'
 import {
@@ -543,6 +543,10 @@ export default function SidePanel() {
  *
  * 各页按 id 渲染，不按页签对象：网页的标题与地址变化时页签对象被替换，按对象渲染会重建该页的正文，
  * 远程画面（`RemoteView`）随之重新连接，重连期间画面为空、输入丢失。
+ *
+ * 正文收到的页签记录在该行创建时取一次，此后不随记录的替换更新：同一 id 的 kind、path、workbench 不变，
+ * 正文按 id 读取其余状态。不要改为非 keyed 的 `<Show>` 访问器：切换项目时整组页卸载，卸载中执行的清理函数
+ * （`EmbeddedView` 收起子视图）读取访问器会重新进入更新并取得 undefined，切换随之失败。
  */
 function TabPanes(props: { visible: string | null }) {
   const shown = createMemo<ReadonlySet<string>>((seen) => {
@@ -553,12 +557,12 @@ function TabPanes(props: { visible: string | null }) {
   return (
     <For each={ids()}>
       {(id) => (
-        <Show when={panelTabs().find((t) => t.id === id)}>
-          {(t) => (
-            <Show when={t().kind === 'terminal' || t().kind === 'cli' || shown().has(id)}>
+        <Show when={untrack(() => panelTabs().find((t) => t.id === id))} keyed>
+          {(tab) => (
+            <Show when={tab.kind === 'terminal' || tab.kind === 'cli' || shown().has(id)}>
               <div class="tab-pane" classList={{ active: props.visible === id }}>
                 <HoldBoundary fallback={<div class="pane-loading" />}>
-                  <Dynamic component={tabView(t())} tab={t()} visible={props.visible === id} />
+                  <Dynamic component={tabView(tab)} tab={tab} visible={props.visible === id} />
                 </HoldBoundary>
               </div>
             </Show>
