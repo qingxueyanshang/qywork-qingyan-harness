@@ -144,13 +144,6 @@ test('点击深层文件链接会展开、选中并滚动到文件；重复点�
 
 test('画布链接进入画布页并复用页签，返回文件页后选中该画布', async () => {
   const page = await setup()
-  const original = globalThis.matchMedia
-  globalThis.matchMedia = ((query: string) => ({
-    matches: query === '(pointer: fine)',
-  })) as typeof matchMedia
-  restore.push(() => {
-    globalThis.matchMedia = original
-  })
   page.store.setOpenFile('output/final/成品.pptx')
   page.click('output/final/分镜.canvas.json')
   page.click('file:///C:/项目%20空格/output/final/分镜.canvas.json')
@@ -172,7 +165,8 @@ test('画布链接进入画布页并复用页签，返回文件页后选中该�
   await waitFor(() => page.host.querySelector('.canvas-stage') !== null)
 })
 
-test('无鼠标端的画布文件保留文本入口', async () => {
+/** 原始失败形状：经云端远程访问时手机打开画布文件只显示 JSON 原文。 */
+test('主指针不是鼠标的客户端同样以画布打开画布文件', async () => {
   const page = await setup()
   const original = globalThis.matchMedia
   globalThis.matchMedia = (() => ({ matches: false })) as unknown as typeof matchMedia
@@ -180,7 +174,7 @@ test('无鼠标端的画布文件保留文本入口', async () => {
     globalThis.matchMedia = original
   })
   page.click('output/final/分镜.canvas.json')
-  expect(page.store.sidePanel()).toBe('files')
-  expect(page.store.openFile()).toBe('output/final/分镜.canvas.json')
-  expect(page.store.panelTabs()).toHaveLength(0)
+  expect(page.store.panelTabs()).toHaveLength(1)
+  expect(page.store.panelTabs()[0]?.kind).toBe('canvas')
+  expect(page.store.openFile()).toBeNull()
 })

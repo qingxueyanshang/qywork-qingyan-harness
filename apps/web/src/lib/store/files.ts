@@ -6,8 +6,8 @@ import { openCanvasTab, openPanel, setOpenFile, workspace } from './ui.ts'
 export const CANVAS_SUFFIX = '.canvas.json'
 
 /**
- * 当前客户端是否可以使用画布。画布的操作均按鼠标设计（滚轮缩放、Shift 框选、悬停显示连接点、从文件树拖入），
- * 主指针不是鼠标时不提供入口，画布文件按文本打开。
+ * 当前客户端是否提供新建画布的入口。画布的编辑操作按鼠标设计（Shift 框选、悬停显示连接点、从文件树拖入），
+ * 主指针不是鼠标时不提供新建入口。已有的画布文件在任何客户端都以画布打开：触屏上单指拖动空白处平移、双指缩放。
  */
 export function canvasAvailable(): boolean {
   return typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches
@@ -38,7 +38,7 @@ export function openFileInPanel(path: string): void {
   const ws = workspace()
   if (!ws) return
   setFileRevealRequest({ workspaceId: ws.id, path })
-  if (path.toLowerCase().endsWith(CANVAS_SUFFIX) && canvasAvailable()) {
+  if (path.toLowerCase().endsWith(CANVAS_SUFFIX)) {
     setOpenFile(null)
     openCanvasTab(path, canvasTitle(path))
   } else {

@@ -1,6 +1,7 @@
 /**
  * 主机字体接口（`api/fonts.ts`）：字体目录表、注册表登记的字体文件、按字体名解析、按标识取字节、TTC 拆分结果、主机字体的族名
- * （按界面语言取的族名与全部语言的族名）、参数校验、未找到、缓存头、字体安装后下一次请求可见、字体平滑设置，以及在派发器中的注册。
+ * （按界面语言取的族名与全部语言的族名）、参数校验、未找到、缓存头、字体安装后下一次请求可见、字体平滑设置，以及在派发器中的注册；
+ * 另覆盖 `api/font-subset.ts`：按文档用到的字裁剪、含图元文件的文档不裁剪。
  *
  * 系统字体取自本机 Windows 字体目录与注册表；用户字体目录指向临时目录，注册表中登记的用户字体照常进入索引。
  * 环境变量在任何请求之前设置：索引按首次请求时的目录清单建立。
@@ -12,7 +13,15 @@ import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { localFamilyName, readFaces, readFamilyNames, tableBytes } from '@qywork/ooxml/font'
+import { buildDocx, p, r } from '@qywork/ooxml/docx/test-helper'
+import {
+  localFamilyName,
+  readCmap,
+  readFaces,
+  readFamilyNames,
+  readGlyphOutlines,
+  tableBytes,
+} from '@qywork/ooxml/font'
 import { Store, upsertWorkspace } from '@qywork/store'
 import {
   faceBytes,
@@ -53,9 +62,9 @@ describe('字体目录', () => {
   })
 })
 
-const get = (path: string, method = 'GET') => {
+const get = (path: string, method = 'GET', workspaceRoot = '') => {
   const url = new URL(`http://127.0.0.1${path}`)
-  return handleFontsApi(url, new Request(url.href, { method }), {} as never)
+  return handleFontsApi(url, new Request(url.href, { method }), { workspaceRoot } as never)
 }
 const faces = async (name: string) => {
   const res = await get(`/api/fonts?name=${encodeURIComponent(name)}`)
@@ -153,6 +162,48 @@ describe.skipIf(!LOCAL_FONTS)('本机字体', () => {
     expect((await faces('宋体')).body.faces[0]!.id).not.toBe(
       (await faces('新宋体')).body.faces[0]!.id,
     )
+  })
+
+  /**
+   * 原始失败形状：远程访问时一份 Word 的主机字体按整套下发，宋体一项 18 MB。带 `doc` 时只含该文档用到的字形，
+   * 字形编号与前进宽度不变；文档含图元文件时其中的文字无法读取，按整套下发。
+   */
+  test('带文档时按文档用到的字裁剪，度量不变；文档含图元文件时下发整套字体', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'qywork-subset-'))
+    await writeFile(join(dir, 'a.docx'), buildDocx({ body: p(r('永和九年')) }))
+    await writeFile(
+      join(dir, 'b.docx'),
+      buildDocx({
+        body: p(r('永和九年')),
+        extra: [
+          { id: 'rId9', type: 'image', name: 'media/image1.emf', content: new Uint8Array(8) },
+        ],
+      }),
+    )
+    const { body } = await faces('宋体')
+    const id = body.faces[0]!.id
+    const full = new Uint8Array(await (await file('宋体', id))!.arrayBuffer())
+    const fetch = async (doc: string) => {
+      const path = `/api/fonts/file?name=${encodeURIComponent('宋体')}&id=${id}&doc=${doc}&v=1`
+      const res = await get(path, 'GET', dir)
+      expect(res?.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
+      return new Uint8Array(await res!.arrayBuffer())
+    }
+    const sub = await fetch('a.docx')
+    expect(sub.length).toBeLessThan(full.length / 8)
+    const a = readGlyphOutlines(full, readFaces(full)[0]!)!
+    const b = readGlyphOutlines(sub, readFaces(sub)[0]!)!
+    const glyph = (bytes: Uint8Array, ch: string) =>
+      readCmap(tableBytes(bytes, readFaces(bytes)[0]!, 'cmap'))(ch.codePointAt(0)!)
+    for (const ch of ['永', '和', 'A', '1']) {
+      const g = glyph(full, ch)
+      expect(b.outline(g)).toEqual(a.outline(g))
+      expect(b.advance(g)).toBe(a.advance(g))
+    }
+    expect(a.outline(glyph(full, '龘')).length).toBeGreaterThan(0)
+    expect(await fetch('b.docx')).toEqual(full)
+    const outside = `/api/fonts/file?name=${encodeURIComponent('宋体')}&id=${id}&doc=../x.docx&v=1`
+    expect((await get(outside, 'GET', dir))?.status).toBe(422)
   })
 
   test('单个字体文件按原字节下发', async () => {

@@ -14,7 +14,8 @@
         "title": "夹具页",
         "marker": "9a3f",
         "workspaceId": "ws_a",
-        "conversationId": "cv_a1"
+        "conversationId": "cv_a1",
+        "hidden": false
       },
       {
         "tabId": "bt_2",
@@ -22,12 +23,14 @@
         "title": "夹具页",
         "marker": "b1c4",
         "workspaceId": "ws_a",
-        "conversationId": null
+        "conversationId": null,
+        "hidden": false
       }
     ]
   },
   "hostUnavailable": {
     "type": "host.unavailable",
+    "connectionEpoch": 3,
     "reason": "not_found"
   },
   "createRequest": {
@@ -84,7 +87,8 @@
     "title": "夹具页",
     "marker": "9a3f",
     "workspaceId": "ws_a",
-    "conversationId": "cv_a1"
+    "conversationId": "cv_a1",
+    "hidden": false
   },
   "event": {
     "type": "browser.event",

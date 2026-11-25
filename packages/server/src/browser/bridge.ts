@@ -61,6 +61,8 @@ export interface BrowserRequestParams {
   downloadId?: string
   /** `create` 专用：内部渲染页，不列入界面的页签条（`renderArt`）。 */
   hidden?: boolean
+  /** `navigate` 必须携带。 */
+  action?: BrowserRequestFrame['action']
 }
 
 export class BrowserBridge {
@@ -69,6 +71,8 @@ export class BrowserBridge {
   #host: NativeBrowserHost | null = null
   /** 宿主已连接但报告没有可用浏览器。与 `#host` 互斥：一个非空时另一个必为空。 */
   #unavailable: BrowserCapability['unavailable'] | null = null
+  /** 报告没有可用浏览器的那一帧的纪元：`restart` 按它发送。 */
+  #unavailableEpoch: number | null = null
   #tabs = new Map<string, BrowserTabSnapshot>()
   #pending = new Map<string, Pending>()
   #nextRequest = 0
@@ -132,8 +136,9 @@ export class BrowserBridge {
     deadlineMs = DEFAULT_DEADLINE_MS,
   ): Promise<BrowserResultFrame['data']> {
     const socket = this.#socket
-    const host = this.#host
-    if (!socket || !host) {
+    // `restart` 也发给报告没有可用浏览器的宿主：安装专用 Chromium 之后由它重新查找浏览器。
+    const epoch = this.#host?.connectionEpoch ?? (op === 'restart' ? this.#unavailableEpoch : null)
+    if (!socket || epoch === null) {
       return Promise.reject(new BrowserBridgeError('浏览器宿主未连接'))
     }
     this.#nextRequest += 1
@@ -141,7 +146,7 @@ export class BrowserBridge {
     const frame: BrowserRequestFrame = {
       type: 'browser.request',
       requestId,
-      connectionEpoch: host.connectionEpoch,
+      connectionEpoch: epoch,
       deadline: Date.now() + deadlineMs,
       op,
       ...(params.tabId !== undefined ? { tabId: params.tabId } : {}),
@@ -151,13 +156,14 @@ export class BrowserBridge {
       ...(params.path !== undefined ? { path: params.path } : {}),
       ...(params.downloadId !== undefined ? { downloadId: params.downloadId } : {}),
       ...(params.hidden ? { hidden: true } : {}),
+      ...(params.action !== undefined ? { action: params.action } : {}),
     }
     return new Promise<BrowserResultFrame['data']>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(requestId)
         reject(new BrowserBridgeError(`浏览器操作 ${op} 超时`))
       }, deadlineMs)
-      this.#pending.set(requestId, { resolve, reject, timer, epoch: host.connectionEpoch })
+      this.#pending.set(requestId, { resolve, reject, timer, epoch })
       socket.send(JSON.stringify(frame))
     })
   }
@@ -194,7 +200,7 @@ export class BrowserBridge {
       return
     }
     if (frame.type === 'host.unavailable') {
-      this.#withdraw(frame.reason)
+      this.#withdraw(frame.reason, frame.connectionEpoch)
       return
     }
     if (frame.type === 'browser.result') {
@@ -217,6 +223,7 @@ export class BrowserBridge {
     // 重连按新纪元重建：先让上一纪元的待决调用失败，再登记快照。
     this.#failPending(new BrowserBridgeError('浏览器宿主已重连'))
     this.#unavailable = null
+    this.#unavailableEpoch = null
     this.#host = {
       hostInstanceId: frame.hostInstanceId,
       connectionEpoch: frame.connectionEpoch,
@@ -272,6 +279,7 @@ export class BrowserBridge {
         marker: frame.marker ?? '',
         workspaceId: frame.workspaceId,
         conversationId: frame.conversationId ?? null,
+        hidden: frame.hidden === true,
       })
     } else if (frame.kind === 'closed') this.#tabs.delete(frame.tabId)
     else if (tab) {
@@ -295,10 +303,11 @@ export class BrowserBridge {
    * 宿主报告没有可用浏览器：连接保留，上一份快照与待决调用作废，能力随之下线。
    * 浏览器重新启动后宿主在同一连接上再次发送 `host.ready`。
    */
-  #withdraw(reason: NonNullable<BrowserCapability['unavailable']>): void {
+  #withdraw(reason: NonNullable<BrowserCapability['unavailable']>, epoch: number): void {
     this.#failPending(new BrowserBridgeError('浏览器宿主没有可用的浏览器'))
     this.#host = null
     this.#unavailable = reason
+    this.#unavailableEpoch = epoch
     this.#tabs.clear()
     log.info('browser', '浏览器宿主没有可用的浏览器', { reason })
     for (const listener of [...this.#hostChanges]) listener(null)
@@ -308,6 +317,7 @@ export class BrowserBridge {
     this.#failPending(new BrowserBridgeError('浏览器宿主已断开'))
     this.#host = null
     this.#unavailable = null
+    this.#unavailableEpoch = null
     this.#tabs.clear()
     for (const listener of [...this.#hostChanges]) listener(null)
   }

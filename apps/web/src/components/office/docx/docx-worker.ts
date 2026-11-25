@@ -22,7 +22,7 @@ import {
   requiredFonts,
   type UnsupportedCounts,
 } from '@qywork/ooxml/docx'
-import type { HostFamilies } from '@qywork/ooxml/text'
+import type { HostFamilies, StyleMask } from '@qywork/ooxml/text'
 import type { WorkerReply, WorkerRequest } from '../document.ts'
 
 export type DocxRequest =
@@ -47,6 +47,8 @@ export type DocxParsed =
       readonly ok: true
       /** 排版所需的全部字体名。 */
       readonly fonts: readonly string[]
+      /** 各字体名需要的字形样式（`requiredFonts` 的 `styles`），主线程只取得排版会选用的字体文件。 */
+      readonly styles: readonly (readonly [string, StyleMask])[]
       /** 排版所用的嵌入字体：主机没有其字体名（见 `embeddedFaces`）。 */
       readonly embedded: readonly EmbeddedFace[]
       readonly unsupported: UnsupportedCounts
@@ -87,10 +89,12 @@ async function handle(
     if (!parsed.ok) return { reply: parsed, transfer: [] }
     doc = parsed.value
     host = body.host
+    const styles = new Map<string, StyleMask>()
     return {
       reply: {
         ok: true,
-        fonts: requiredFonts(doc, host),
+        fonts: requiredFonts(doc, host, styles),
+        styles: [...styles],
         embedded: embeddedFaces(doc, host),
         unsupported: doc.unsupported,
       },

@@ -77,6 +77,11 @@ export interface SocketData {
    * 依据自报字段区分等于允许任何已配对客户端注册为宿主。
    */
   native: 'browser' | 'desktop' | null
+  /**
+   * 远程查看连接（`/browser/view`）所查看的页面 id，其余连接为 `null`。由服务端在升级时按 URL 写入，
+   * 该连接只承载画面与输入，不解析聊天指令。
+   */
+  view: string | null
   /** 升级成功的时刻，关闭时用于计算连接的持续时长。 */
   openedAt: number
 }

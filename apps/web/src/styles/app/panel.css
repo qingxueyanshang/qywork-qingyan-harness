@@ -466,6 +466,158 @@
     padding-bottom: calc(28px + var(--safe-bottom));
   }
 }
+/* 远程画面（桌面外壳以外的客户端，`RemoteView`）。画布铺满该区域，画面在画布中按比例居中绘制。
+   `touch-action: none`：触屏的拖动由组件转为网页的滚动，浏览器不滚动或缩放本页。 */
+.remote-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-inset);
+}
+.remote-view > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+/* 接收键盘输入的输入框：不可见、不拦截指针。字号 16px：iOS 在字号小于 16px 的输入框获得焦点时放大整个页面。 */
+.remote-view-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 16px;
+  pointer-events: none;
+}
+.remote-view-note {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+}
+/* 远程画面的弹出层（`RemotePrompt`）：铺满画面、接收弹出层以外的点击；各弹出层的样式各自一条完整规则。 */
+.remote-prompt {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+/* 输入框字号 16px：iOS 在字号小于 16px 的输入框获得焦点时放大整个页面。 */
+.remote-prompt input:not([type="file"]) {
+  font-size: 16px;
+}
+.remote-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+.remote-select {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+.remote-select > button {
+  flex: none;
+  height: 36px;
+  padding: 0 var(--s-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-primary);
+  font-size: var(--fs-md);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.remote-select > button[aria-selected="true"] {
+  background: var(--bg-active);
+  font-weight: 600;
+}
+.remote-select > button:disabled {
+  opacity: var(--disabled-opacity);
+}
+.remote-select-group {
+  flex: none;
+  height: 36px;
+  line-height: 36px;
+  padding: 0 var(--s-2);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.remote-picker {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+.remote-dialog {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(320px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.remote-dialog > p {
+  margin: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+}
+.remote-files {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(280px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-lg);
+}
+.remote-files > p {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
 /* 文件页的 HTML 预览：工具栏与网页的占位区域。网页由宿主摆放，理由同 `.web-view`。 */
 .html-preview {
   display: flex;
@@ -1012,13 +1164,6 @@
   display: block;
   width: calc(100% - var(--s-8));
   margin: var(--s-6) auto;
-}
-/* 块级显示：iframe 默认为行内元素，下方的行内间隙使外层多出一段滚动范围。 */
-.preview-frame {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: none;
 }
 .code-view {
   height: 100%;

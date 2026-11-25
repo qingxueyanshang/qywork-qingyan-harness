@@ -1,5 +1,6 @@
 /**
- * Office 预览的缩放：比例信号、标题行中的缩放控件（`usePreviewTools`）与按键。表格、演示文稿、文档三个视图共用。
+ * Office 预览的缩放：比例信号、标题行中的缩放控件（`usePreviewTools`）与按键。表格、演示文稿、文档与 PDF 的页面视图
+ * （`../preview/PdfPages.tsx`）共用。
  *
  * Ctrl+滚轮与双指捏合由视口自身处理（`createZoomScroll`），此处只注册按键。比例由视口的 `onChange` 经 `note` 传入。
  */

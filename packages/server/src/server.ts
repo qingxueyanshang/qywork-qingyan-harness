@@ -22,6 +22,7 @@ import type {
 import {
   ART_MENTION,
   ART_SIZE_PARAM,
+  BROWSER_VIEW_PATH,
   conversationSummary,
   log,
   NATIVE_BROWSER_PATH,
@@ -62,6 +63,9 @@ import { serveArt } from './art.ts'
 import { BrowserBridge } from './browser/bridge.ts'
 import { browserCapability } from './browser/capability.ts'
 import { BrowserCoordinator } from './browser/coordinator.ts'
+import { browserPages, browserTabsOf, publishBrowserTabs } from './browser/remote/pages.ts'
+import { watchUploads } from './browser/remote/uploads.ts'
+import { BrowserView } from './browser/remote/view.ts'
 import { EventBus } from './bus.ts'
 import { CanvasService } from './canvas/service.ts'
 import { CloudAccount } from './cloud/account.ts'
@@ -255,6 +259,10 @@ export function serve(opts: ServeOptions) {
   const offBrowserHost = browserBridge?.onHostChange(() => {
     bus.publish({ type: 'browser.state', browser: browserCapability(browserBridge) })
   })
+  /** 桌面外壳以外的客户端的页签清单、上传文件与查看连接（`browser/remote/`）。 */
+  const offBrowserTabs = browserBridge ? publishBrowserTabs(browserBridge, bus) : null
+  const offBrowserUploads = browserBridge ? watchUploads(browserBridge) : null
+  const browserViews = new Map<string, BrowserView>()
   /*
    * 桌面宿主连接与电脑控制协调器。与浏览器共用同一份宿主凭据：两条路径由同一个
    * 桌面外壳进程发起，同一次启动只有一个随机值；宿主类型由 URL 路径判定，
@@ -607,6 +615,7 @@ export function serve(opts: ServeOptions) {
             authed: true,
             origin: 'cli' as const,
             native: kind,
+            view: null,
             openedAt: Date.now(),
           },
         })
@@ -626,6 +635,31 @@ export function serve(opts: ServeOptions) {
             authed: false,
             origin: (url.searchParams.get('origin') as SocketData['origin']) ?? 'external',
             native: null,
+            view: null,
+            openedAt: Date.now(),
+          },
+        })
+        return ok ? undefined : new Response('upgrade failed', { status: 400 })
+      }
+
+      /*
+       * ── 远程查看内置浏览器的页面（`browser/remote/view.ts`）──
+       *
+       * 令牌在升级时校验：该连接不发送 hello，客户端在连接关闭后不自动重连，显示连接已断开。
+       */
+      if (url.pathname === BROWSER_VIEW_PATH) {
+        const tabId = url.searchParams.get('tabId') ?? ''
+        if (!pairing.verify(url.searchParams.get('token') ?? '')) {
+          return new Response('unauthorized', { status: 401 })
+        }
+        if (!browserBridge?.tab(tabId)) return new Response('not found', { status: 404 })
+        const ok = srv.upgrade(req, {
+          data: {
+            id: crypto.randomUUID(),
+            authed: true,
+            origin: 'external' as const,
+            native: null,
+            view: tabId,
             openedAt: Date.now(),
           },
         })
@@ -680,6 +714,10 @@ export function serve(opts: ServeOptions) {
             loadToolImages: (steps) => loadToolImages(opts.store, content, steps),
             closeBrowserPages: (conversationId) =>
               browser?.closeConversation(conversationId) ?? Promise.resolve(),
+            browserPages: browserBridge ? browserPages(browserBridge) : null,
+            restartBrowser: browserBridge
+              ? () => browserBridge.request('restart').then(() => {})
+              : null,
             office,
             pluginUiKey,
           })
@@ -708,6 +746,10 @@ export function serve(opts: ServeOptions) {
 
     websocket: {
       async message(ws: ServerWebSocket<SocketData>, raw: string | Buffer) {
+        if (ws.data.view !== null) {
+          browserViews.get(ws.data.id)?.input(String(raw))
+          return
+        }
         // 宿主连接只处理各自的资源操作，这两条路径上不解析聊天指令。
         if (ws.data.native === 'browser') {
           browserBridge?.message(ws, String(raw))
@@ -738,6 +780,9 @@ export function serve(opts: ServeOptions) {
             announceGit: () => gitWatch.announce(),
             announceDesktopTarget: () => {
               bus.publish({ type: 'desktop.target', targets: desktop?.targets() ?? [] })
+            },
+            announceBrowserTabs: () => {
+              bus.publish({ type: 'browser.tabs', tabs: browserTabsOf(browserBridge) })
             },
           })
           return
@@ -780,6 +825,13 @@ export function serve(opts: ServeOptions) {
         }
       },
       open(ws: ServerWebSocket<SocketData>) {
+        if (ws.data.view !== null && browserBridge) {
+          const view = new BrowserView(ws, browserBridge, ws.data.view)
+          browserViews.set(ws.data.id, view)
+          void view.start()
+          log.info('ws', 'open', { id: ws.data.id, origin: 'browser-view' })
+          return
+        }
         if (ws.data.native) {
           if (ws.data.native === 'browser') browserBridge?.open(ws)
           else desktopBridge?.open(ws)
@@ -802,6 +854,11 @@ export function serve(opts: ServeOptions) {
           reason,
           seconds: Math.round((Date.now() - ws.data.openedAt) / 1000),
         })
+        if (ws.data.view !== null) {
+          browserViews.get(ws.data.id)?.close()
+          browserViews.delete(ws.data.id)
+          return
+        }
         if (ws.data.native) {
           if (ws.data.native === 'browser') browserBridge?.close(ws)
           else desktopBridge?.close(ws)
@@ -880,6 +937,8 @@ export function serve(opts: ServeOptions) {
       power?.stop()
       gitWatch.stop()
       offBrowserHost?.()
+      offBrowserTabs?.()
+      offBrowserUploads?.()
       browser?.stop()
       offDesktopHost?.()
       offDesktopTarget?.()

@@ -99,6 +99,8 @@ function deps(root = '/ws/demo'): ApiDeps & { wsId: string } {
     bus: { publish: () => {}, currentSeq: 77 },
     // 删除会话时关闭该会话名下的内置浏览器页面。没有宿主时为空操作。
     closeBrowserPages: async () => {},
+    browserPages: null,
+    restartBrowser: null,
     // 远程访问只替换开关与快照：隧道由 `cloud/remote.test.ts` 覆盖。
     remote: {
       enabled: false,

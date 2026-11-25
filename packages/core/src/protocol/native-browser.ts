@@ -22,10 +22,13 @@ export const NATIVE_BROWSER_PATH = '/native/browser'
 const BROWSER_OPS = [
   'create',
   'close',
+  'navigate',
   'bind',
   'close.conversation',
   'download.arm',
   'download.disarm',
+  /** 重新查找浏览器并重启（macOS 与 Linux 安装专用 Chromium 之后）。Windows 的宿主不接受。 */
+  'restart',
 ] as const
 export type BrowserOp = (typeof BROWSER_OPS)[number]
 
@@ -71,14 +74,17 @@ export interface BrowserTabSnapshot {
    * （AI 的页面需要授权，用户页使用默认目录）。不要添加 `manual` 字段，否则同一事项会出现独立的第二份状态。
    */
   conversationId: string | null
+  /** 不列入界面页签条的页：文件页的 HTML 预览与服务端内部渲染用的页。创建时确定，此后不变。 */
+  hidden: boolean
 }
 
 /**
  * 页面的显示位置。`embedded` 表示嵌入主窗口的面板（Windows 的 WebView2 子视图）；
- * `window` 表示显示在浏览器自身的窗口中（macOS 与 Linux 启动的 Chrome / Edge / Chromium）。
- * 由宿主的引擎决定，同一个宿主进程内不变。
+ * `window` 表示显示在浏览器自身的窗口中（macOS 与 Linux 启动的 Chrome / Edge / Chromium）；
+ * `view` 表示浏览器以无头方式运行，面板经远程查看连接显示画面并转发输入（macOS 与 Linux 安装了专用 Chromium 时）。
+ * 由宿主使用的浏览器决定，随 `host.ready` 上报；宿主重启浏览器（`restart`）后可能改变。
  */
-export type BrowserPresentation = 'embedded' | 'window'
+export type BrowserPresentation = 'embedded' | 'window' | 'view'
 
 /**
  * 宿主注册帧。连接建立后宿主首先发送该帧，服务端据此接受连接。
@@ -120,6 +126,8 @@ export type BrowserUnavailableReason = 'not_found' | 'exited' | 'in_use'
  */
 export interface HostUnavailableFrame {
   type: 'host.unavailable'
+  /** 同 `HostReadyFrame`。没有可用浏览器时服务端仍按它发送 `restart`（安装专用 Chromium 之后）。 */
+  connectionEpoch: number
   reason: BrowserUnavailableReason
 }
 
@@ -146,8 +154,10 @@ export interface BrowserRequestFrame {
    */
   workspaceId?: string
   conversationId?: string
-  /** `create` 的目标地址。 */
+  /** `create` 与 `navigate`（`goto`）的目标地址，按宿主的地址规则解析（网址或本地文件路径）。 */
   url?: string
+  /** `navigate` 必须携带：`goto` / `back` / `forward` / `reload`。与界面的地址栏执行同一条导航路径。 */
+  action?: 'goto' | 'back' | 'forward' | 'reload'
   /** `download.arm` 的已裁决绝对路径。 */
   path?: string
   /**
@@ -203,6 +213,8 @@ export interface BrowserEventFrame {
   workspaceId?: string
   /** `opened` 的初始归属与 `control`（`bind` 之后）的新归属。`null` 表示用户页。 */
   conversationId?: string | null
+  /** `opened` 必须携带：该页是否不列入界面的页签条（`BrowserTabSnapshot.hidden`）。 */
+  hidden?: boolean
   path?: string
   success?: boolean
   reason?: DownloadBlockReason

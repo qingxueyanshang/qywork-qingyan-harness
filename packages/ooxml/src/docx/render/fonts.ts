@@ -35,9 +35,13 @@ import {
 import { type ClearTypeGlyphs, readClearTypeGlyphs } from '../../glyph/cleartype/index.ts'
 import { type MathArg, type MathFont, readMathFont } from '../../math/index.ts'
 import {
+  addStyle,
   emboldened,
   type FontMatch,
   type HostFamilies,
+  pickStyle,
+  type StyleMask,
+  styleBit,
   type TextFace,
   WPS_METRIC_FONTS,
   type WpsMetricFont,
@@ -146,14 +150,20 @@ export function embeddedFaces(doc: DocxDocument, host: HostFamilies): EmbeddedFa
   return out
 }
 
-function addRunFonts(out: Set<string>, p: RunProps): void {
+/** 排版按字段的 `bold`、`italic` 选用 ascii、hAnsi、eastAsia 三处的字体，按 `boldCs`、`italicCs` 选用 cs 的字体。 */
+function addRunFonts(out: Set<string>, p: RunProps, styles?: Map<string, StyleMask>): void {
   out.add(p.fonts.ascii)
   out.add(p.fonts.hAnsi)
   out.add(p.fonts.eastAsia)
   out.add(p.fonts.cs)
+  const latin = styleBit(p.bold, p.italic)
+  addStyle(styles, p.fonts.ascii, latin)
+  addStyle(styles, p.fonts.hAnsi, latin)
+  addStyle(styles, p.fonts.eastAsia, latin)
+  addStyle(styles, p.fonts.cs, styleBit(p.boldCs, p.italicCs))
 }
 
-/** 公式中的字符属性（字段与结构的 `ctrlPr`）用到的字体名。 */
+/** 公式中的字符属性（字段与结构的 `ctrlPr`）用到的字体名。公式中的字形样式另有规则，不记录样式。 */
 function addMathFonts(out: Set<string>, nodes: MathArg<RunProps>): void {
   for (const n of nodes) {
     if (n.kind === 'unsupported') continue
@@ -205,18 +215,22 @@ function addMathFonts(out: Set<string>, nodes: MathArg<RunProps>): void {
   }
 }
 
-/** 块中字段、段落标记、编号与公式用到的字体名；有公式时含数学字体 `mathFont`。 */
+/**
+ * 块中字段、段落标记、编号与公式用到的字体名；有公式时含数学字体 `mathFont`。给出 `styles` 时另记录字段、段落标记与编号
+ * 用到的字形样式；公式与其中的字段不记录，调用方按需要全部样式处理。
+ */
 export function blockFonts(
   blocks: readonly Block[],
   mathFont: string,
   out: Set<string> = new Set(),
+  styles?: Map<string, StyleMask>,
 ): Set<string> {
   for (const b of blocks) {
     if (b.kind !== 'paragraph') continue
-    addRunFonts(out, b.mark)
-    if (b.numbering !== null) addRunFonts(out, b.numbering.props)
+    addRunFonts(out, b.mark, styles)
+    if (b.numbering !== null) addRunFonts(out, b.numbering.props, styles)
     for (const r of b.runs) {
-      addRunFonts(out, r.props)
+      addRunFonts(out, r.props, styles)
       for (const ch of r.text) if (emojiFallback(ch.codePointAt(0)!)) out.add(EMOJI_FALLBACK)
       if (r.math === undefined) continue
       out.add(mathFont)
@@ -259,14 +273,7 @@ export class DocxFonts {
   }
 
   private pick(name: string, bold: boolean, italic: boolean): DocxFace | null {
-    const list = this.byName.get(key(name))
-    if (!list || list.length === 0) return null
-    return (
-      list.find((f) => f.bold === bold && f.italic === italic) ??
-      list.find((f) => f.bold === bold) ??
-      list.find((f) => !f.bold && !f.italic) ??
-      list[0]!
-    )
+    return pickStyle(this.byName.get(key(name)) ?? [], bold, italic)
   }
 
   private register(text: TextFace, f: DocxFace, bold: boolean, italic: boolean): void {

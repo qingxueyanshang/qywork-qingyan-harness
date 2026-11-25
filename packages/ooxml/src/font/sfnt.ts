@@ -120,21 +120,36 @@ function checksum(v: DataView, offset: number, length: number): number {
 /**
  * 第 `index` 个字体的独立字节，可直接交给浏览器 `FontFace`。
  *
- * 单个字体文件原样返回。TTC 中的字体重写为独立的 sfnt：表按标签升序排列并 4 字节对齐，
- * 重新计算各表校验和与 `head.checkSumAdjustment`。合集中各字体共用的表（如 `glyf`）各复制一份。
+ * 单个字体文件原样返回。TTC 中的字体经 `writeSfnt` 重写为独立的 sfnt，合集中各字体共用的表（如 `glyf`）各复制一份。
  */
 export function extractFace(bytes: Uint8Array, index: number): Uint8Array {
   const faces = readFaces(bytes)
   const face = faces[index]
   if (!face) throw new FontFormatError(`合集中没有第 ${index} 个字体`)
   if (view(bytes).getUint32(0) !== TTCF) return bytes
+  return writeSfnt(
+    face.version,
+    [...face.tables.values()].map((t) => ({
+      tag: t.tag,
+      bytes: bytes.subarray(t.offset, t.offset + t.length),
+    })),
+  )
+}
 
-  const tables = [...face.tables.values()].sort((a, b) => (a.tag < b.tag ? -1 : 1))
+/**
+ * 由各表的字节组成独立的 sfnt：表按标签升序排列并 4 字节对齐，重新计算各表校验和与 `head.checkSumAdjustment`。
+ * 传入的 `head` 字节不被修改。
+ */
+export function writeSfnt(
+  version: number,
+  input: readonly { readonly tag: string; readonly bytes: Uint8Array }[],
+): Uint8Array {
+  const tables = [...input].sort((a, b) => (a.tag < b.tag ? -1 : 1))
   const headerLength = 12 + 16 * tables.length
   let size = headerLength
   const placed = tables.map((t) => {
     const at = size
-    size += (t.length + 3) & ~3
+    size += (t.bytes.length + 3) & ~3
     return at
   })
 
@@ -142,7 +157,7 @@ export function extractFace(bytes: Uint8Array, index: number): Uint8Array {
   const v = view(out)
   const selector = Math.floor(Math.log2(tables.length))
   const searchRange = 2 ** selector * 16
-  v.setUint32(0, face.version)
+  v.setUint32(0, version)
   v.setUint16(4, tables.length)
   v.setUint16(6, searchRange)
   v.setUint16(8, selector)
@@ -151,7 +166,7 @@ export function extractFace(bytes: Uint8Array, index: number): Uint8Array {
   let headAt = -1
   tables.forEach((t, i) => {
     const at = placed[i]!
-    out.set(bytes.subarray(t.offset, t.offset + t.length), at)
+    out.set(t.bytes, at)
     if (t.tag === 'head') {
       headAt = at
       // 校验和按 checkSumAdjustment 为 0 计算。
@@ -159,9 +174,9 @@ export function extractFace(bytes: Uint8Array, index: number): Uint8Array {
     }
     const rec = 12 + 16 * i
     for (let k = 0; k < 4; k++) v.setUint8(rec + k, t.tag.charCodeAt(k))
-    v.setUint32(rec + 4, checksum(v, at, t.length))
+    v.setUint32(rec + 4, checksum(v, at, t.bytes.length))
     v.setUint32(rec + 8, at)
-    v.setUint32(rec + 12, t.length)
+    v.setUint32(rec + 12, t.bytes.length)
   })
   if (headAt < 0) throw new FontFormatError('缺少 head 表')
   v.setUint32(headAt + 8, (0xb1b0afba - checksum(v, 0, size)) >>> 0)

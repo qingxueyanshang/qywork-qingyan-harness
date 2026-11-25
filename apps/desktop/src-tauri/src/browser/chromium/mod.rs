@@ -1,4 +1,5 @@
-//! macOS 与 Linux 的浏览器引擎：本机已安装的 Chrome / Edge / Chromium，独立窗口。
+//! macOS 与 Linux 的浏览器引擎：运行环境安装的专用 Chromium（无头，页面由客户端以画面显示），
+//! 或本机已安装的 Chrome / Edge / Chromium（独立窗口）。安装专用 Chromium 后由 `restart` 换用，不需要重启 qywork。
 //!
 //! 外壳以专用 profile 启动浏览器，并与其保持一条自身的 CDP 连接，只承担宿主职责；
 //! 页内观察与动作由服务端按 `host.ready` 中的调试端口另建一条 CDP 连接执行。
@@ -7,8 +8,8 @@
 //!
 //! 1. **每个新页面及其每个跨站子帧都在启动时挂起**（`waitForDebuggerOnStart`），启用 Page 域
 //!    后才放行。帧表与下载归属依赖 Page 域的帧事件，提前放行会遗漏最早出现的帧。
-//! 2. **标记在目标文档之前注入。** 宿主新建的页面先停在 `about:blank`，注入后再导航；页面自行
-//!    打开的新页面在挂起期间注入。直接以目标地址新建页面时，第一份文档在注入之前就开始加载。
+//! 2. **标记在目标文档之前注入。** 宿主新建的页面先停在 `about:blank`，注入后再导航，`about:blank` 本身
+//!    也写入标记；页面自行打开的新页面在挂起期间注入。直接以目标地址新建页面时，第一份文档在注入之前就开始加载。
 //! 3. **下载归属按帧查找页面。** `Browser.downloadWillBegin` 只带 frameId，无法对应到存活页面的帧按用户
 //!    下载处理。保存位置：平时按浏览器默认行为；存在授权期间整个浏览器切换为按 guid 写入暂存目录，
 //!    完成后由宿主移动到授权路径；同一期间用户页面的下载移回用户的下载目录。
@@ -43,8 +44,15 @@ use table::{Popup, Table};
 const NOT_FOUND: &str = "not_found";
 const EXITED: &str = "exited";
 
-/// `host.ready` 报告的显示位置：页面位于浏览器自身的窗口中，面板只列出页签。
-pub const PRESENTATION: &str = "window";
+/// `host.ready` 报告的显示位置：专用 Chromium 无头运行，面板以画面显示（`view`）；
+/// 其他浏览器的页面位于浏览器自身的窗口中，面板只列出页签（`window`）。
+fn presentation(found: Option<&Found>) -> &'static str {
+    if found.is_some_and(|f| f.dedicated.is_some()) {
+        "view"
+    } else {
+        "window"
+    }
+}
 
 /// 宿主新建页面后等待页面附加并放行的上限。附加与放行都在本机毫秒级完成。
 const ATTACH_WAIT: Duration = Duration::from_secs(10);
@@ -76,7 +84,8 @@ fn page_attach() -> Value {
 }
 
 pub struct Engine {
-    inner: Arc<Inner>,
+    /// 当前的浏览器、profile 与监督线程。`restart` 时整体替换。
+    current: Mutex<Arc<Inner>>,
 }
 
 /// 页面在本引擎中的句柄：浏览器的 targetId。会话随进程变化，按需从页表中获取。
@@ -98,6 +107,9 @@ struct Life {
     stopping: bool,
     /// 监督线程仍在运行。退出路径等待它回收浏览器进程。
     supervising: bool,
+    /// 监督线程。`restart` 在其结束后合并它：线程持有的引用释放之后 profile 锁才释放，
+    /// 新的浏览器才能占用同一个 profile。
+    supervisor: Option<std::thread::JoinHandle<()>>,
 }
 
 enum Status {
@@ -108,10 +120,10 @@ enum Status {
 }
 
 impl Status {
-    fn runtime(&self) -> Result<Runtime, &'static str> {
+    fn runtime(&self, presentation: &'static str) -> Result<Runtime, &'static str> {
         match self {
             Status::Running { debug_port, version } => {
-                Ok(Runtime { debug_port: *debug_port, version: version.clone() })
+                Ok(Runtime { debug_port: *debug_port, version: version.clone(), presentation })
             }
             Status::Unavailable(reason) => Err(reason),
             Status::Starting => Err(EXITED),
@@ -120,9 +132,50 @@ impl Status {
 }
 
 impl Engine {
+    pub fn start(_app: &AppHandle) -> Result<Engine, String> {
+        Ok(Engine { current: Mutex::new(Inner::start()?) })
+    }
+
+    fn inner(&self) -> Arc<Inner> {
+        Arc::clone(&self.current.lock().expect("浏览器引擎状态锁被污染"))
+    }
+
+    /// 关闭当前的浏览器，重新查找并启动：运行环境安装专用 Chromium 之后由服务端请求。页面随浏览器关闭，
+    /// 新的浏览器就绪后宿主重发首帧（`engine_changed`），服务端与界面据此更新显示方式。
+    pub fn restart(&self) -> Result<(), String> {
+        let mut current = self.current.lock().expect("浏览器引擎状态锁被污染");
+        current.stop();
+        let supervisor = current.lock().supervisor.take();
+        if let Some(handle) = supervisor {
+            let _ = handle.join();
+        }
+        // 先释放旧的 profile 锁：重新安装同一版本时新旧浏览器使用同一个 profile。
+        *current = Arc::new(Inner::idle());
+        *current = Inner::start()?;
+        Ok(())
+    }
+}
+
+impl Inner {
+    /// 没有浏览器的状态，只在 `restart` 替换期间存在。
+    fn idle() -> Inner {
+        Inner {
+            found: None,
+            profile: None,
+            life: Mutex::new(Life {
+                status: Status::Unavailable(NOT_FOUND),
+                instance: None,
+                stopping: true,
+                supervising: false,
+                supervisor: None,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
     /// 查找浏览器、占用 profile、启动监督线程。未找到浏览器与 profile 被占用都不是错误：
     /// 宿主照常连接服务端，首帧报告 `not_found` 或 `in_use`，界面据此显示原因。
-    pub fn start(_app: &AppHandle) -> Result<Engine, String> {
+    fn start() -> Result<Arc<Inner>, String> {
         let found = launch::discover();
         let (profile, status) = match &found {
             Some(found) => {
@@ -151,23 +204,34 @@ impl Engine {
         let inner = Arc::new(Inner {
             found,
             profile,
-            life: Mutex::new(Life { status, instance: None, stopping: false, supervising }),
+            life: Mutex::new(Life {
+                status,
+                instance: None,
+                stopping: false,
+                supervising,
+                supervisor: None,
+            }),
             changed: Condvar::new(),
         });
         if supervising {
             let supervised = Arc::clone(&inner);
-            std::thread::spawn(move || supervise(&supervised));
+            let handle = std::thread::spawn(move || supervise(&supervised));
+            inner.lock().supervisor = Some(handle);
         }
-        Ok(Engine { inner })
+        Ok(inner)
     }
+}
 
+impl Engine {
     /// 当前的调试端点。首次启动尚无结果时等待。
     pub fn settled(&self) -> Result<Runtime, &'static str> {
-        let mut life = self.inner.lock();
+        let inner = self.inner();
+        let presentation = presentation(inner.found.as_ref());
+        let mut life = inner.lock();
         while matches!(life.status, Status::Starting) && !life.stopping {
-            life = self.inner.changed.wait(life).expect("浏览器引擎状态锁被污染");
+            life = inner.changed.wait(life).expect("浏览器引擎状态锁被污染");
         }
-        life.status.runtime()
+        life.status.runtime(presentation)
     }
 
     pub fn open(&self, _app: &AppHandle, spec: OpenSpec) -> Result<Opened, String> {
@@ -201,15 +265,26 @@ impl Engine {
         }
     }
 
+    /// 停止重启并关闭浏览器，见 `Inner::stop`。
+    pub fn shutdown(&self) {
+        self.inner().stop();
+    }
+
+    fn instance(&self) -> Result<Arc<Instance>, String> {
+        self.inner().lock().instance.clone().ok_or_else(|| "浏览器未运行".to_owned())
+    }
+}
+
+impl Inner {
     /// 停止重启并关闭浏览器。先请求其自行关闭，超时仍在运行才强制终止。
     ///
     /// 等待监督线程回收进程，期限取回收期限的两倍：监督线程自身到期会先强制终止并回收，
     /// 此处的强制终止只在它阻塞于别处时发生，不向可能已被回收的 pid 发送信号。
-    pub fn shutdown(&self) {
+    fn stop(&self) {
         let instance = {
-            let mut life = self.inner.lock();
+            let mut life = self.lock();
             life.stopping = true;
-            self.inner.changed.notify_all();
+            self.changed.notify_all();
             life.instance.clone()
         };
         if let Some(instance) = &instance {
@@ -218,13 +293,13 @@ impl Engine {
             }
         }
         let deadline = Instant::now() + EXIT_WAIT * 2;
-        let mut life = self.inner.lock();
+        let mut life = self.lock();
         while life.supervising {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
             }
-            life = self.inner.changed.wait_timeout(life, left).expect("浏览器引擎状态锁被污染").0;
+            life = self.changed.wait_timeout(life, left).expect("浏览器引擎状态锁被污染").0;
         }
         if life.supervising {
             if let Some(instance) = instance {
@@ -234,12 +309,6 @@ impl Engine {
         }
     }
 
-    fn instance(&self) -> Result<Arc<Instance>, String> {
-        self.inner.lock().instance.clone().ok_or_else(|| "浏览器未运行".to_owned())
-    }
-}
-
-impl Inner {
     fn lock(&self) -> MutexGuard<'_, Life> {
         self.life.lock().expect("浏览器引擎状态锁被污染")
     }
@@ -274,6 +343,7 @@ impl Inner {
 /// 而该线程运行至外壳退出。
 fn supervise(inner: &Arc<Inner>) {
     let (Some(found), Some(profile)) = (&inner.found, &inner.profile) else { return };
+    let presentation = presentation(Some(found));
     let profile = profile.dir().to_path_buf();
     let mut attempt = 0u32;
     loop {
@@ -297,6 +367,7 @@ fn supervise(inner: &Arc<Inner>) {
                     host.engine_changed(Ok(Runtime {
                         debug_port: instance.debug_port,
                         version: instance.version.clone(),
+                        presentation,
                     }));
                 }
                 instance.pump(events);
@@ -667,8 +738,11 @@ impl Instance {
             entry.tab = Some(spec.tab_id.to_owned());
             entry.session.clone()
         };
-        let source = json!({ "source": marker_script(spec.marker) });
-        self.call("Page.addScriptToEvaluateOnNewDocument", source, Some(&session))?;
+        let script = marker_script(spec.marker);
+        self.call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": script }), Some(&session))?;
+        // 当前的 `about:blank` 同样写入：上一条只作用于此后创建的文档，空白页一直停在没有标记的文档上，
+        // 服务端按标记附加（远程查看、AI 接管）时无法识别该页。
+        self.call("Runtime.evaluate", json!({ "expression": script }), Some(&session))?;
         if let Some(url) = url {
             let nav = self.call("Page.navigate", json!({ "url": url }), Some(&session))?;
             let settled = nav.get("errorText").is_some()

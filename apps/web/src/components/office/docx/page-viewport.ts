@@ -12,6 +12,8 @@
  * - 每帧最多绘制一页，其余留到后续帧：一页的绘制可达数十毫秒。待绘制的可见页面在同一帧中全部调用 `prepare`，
  *   资源的读取不随绘制推迟到后续帧。
  * - 离开可见区域的页面释放画布。重新显示（改写后重新加载）时保留已有画布，绘制完成前显示原内容。
+ * - 提供 `layer` 的绘制方为每个可见页面另建一个与画布重合的元素（文字层），在页面就绪后交给 `layer` 一次；
+ *   缩放时只更新它的 CSS 变量 `--total-scale-factor`（每磅的 CSS 像素数），不重建内容。
  */
 
 import { createZoomScroll, type ViewPosition } from '../viewport.ts'
@@ -36,6 +38,8 @@ export interface PagePainter {
   prepare(index: number): boolean
   /** 绘制到已设定像素尺寸的画布上；`scale` 为每磅的画布像素数。 */
   paint(index: number, canvas: HTMLCanvasElement, scale: number): void
+  /** 填充第 `index` 页的文字层。元素的位置与 `--total-scale-factor` 由视口设定。 */
+  layer?(index: number, element: HTMLDivElement): void
 }
 
 export interface PageViewport {
@@ -63,6 +67,7 @@ interface Layout {
 
 interface Sheet {
   readonly canvas: HTMLCanvasElement
+  layer: HTMLDivElement | null
   /** 已绘制内容的像素尺寸与所属的显示序号；尚未绘制时为 `null`。 */
   drawn: { readonly size: string; readonly generation: number } | null
 }
@@ -113,6 +118,7 @@ export function createPageViewport(
     sheet.canvas.width = 0
     sheet.canvas.height = 0
     sheet.canvas.remove()
+    sheet.layer?.remove()
     sheets.delete(index)
   }
 
@@ -171,7 +177,7 @@ export function createPageViewport(
         const canvas = document.createElement('canvas')
         canvas.className = 'doc-page'
         extent.append(canvas)
-        sheet = { canvas, drawn: null }
+        sheet = { canvas, layer: null, drawn: null }
         sheets.set(index, sheet)
       }
       const style = sheet.canvas.style
@@ -179,6 +185,16 @@ export function createPageViewport(
       style.top = `${snap(tops[index]! * scale)}px`
       style.width = `${pw / (dpr * shrink)}px`
       style.height = `${ph / (dpr * shrink)}px`
+      if (painter.layer && !sheet.layer && painter.prepare(index)) {
+        sheet.layer = document.createElement('div')
+        extent.append(sheet.layer)
+        painter.layer(index, sheet.layer)
+      }
+      if (sheet.layer) {
+        sheet.layer.style.left = style.left
+        sheet.layer.style.top = style.top
+        sheet.layer.style.setProperty('--total-scale-factor', String(scale))
+      }
 
       const size = `${pw}x${ph}`
       const drawn = sheet.drawn

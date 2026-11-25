@@ -78,7 +78,10 @@ export {
   browserTab,
   browserTabLabel,
   browserUnavailableText,
+  closeRemotePage,
+  createRemotePage,
   loadRestoredTab,
+  navigateRemotePage,
   openBrowserTab,
   openLinkInPanel,
 } from './browser.ts'

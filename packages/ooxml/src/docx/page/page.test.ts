@@ -17,7 +17,9 @@ import { RecordingCanvas, RecordingContext } from '../../drawingml/paint/test-he
 import type { BitmapGlyph, EmbeddedBitmaps } from '../../font/index.ts'
 import { LOCAL_FONTS } from '../../test-fonts.ts'
 import {
+  ALL_STYLES,
   NO_HOST_FAMILIES,
+  styleBit,
   type TextBlock,
   type TextFragment,
   type TextLine,
@@ -29,7 +31,7 @@ import {
   parseDocx,
   type Section,
 } from '../index.ts'
-import type { DocumentLayout, ParagraphLayout } from '../layout.ts'
+import { type DocumentLayout, LEADER_FONT, type ParagraphLayout } from '../layout.ts'
 import { type DocxFace, DocxFonts, loadDocxFace } from '../render/fonts.ts'
 import { pageImages, paintPage } from '../render/paint.ts'
 import type { CellBox, RowBox, TableLayout } from '../table/layout.ts'
@@ -678,6 +680,33 @@ describe('build：页眉页脚与所需字体', () => {
     const names = requiredFonts(d, NO_HOST_FAMILIES)
     expect(names).toContain('A1')
     expect(names).toContain('T2')
+  })
+
+  /**
+   * 原始失败形状：远程访问时一份只用常规与粗体的 Word 下载了 Calibri、Times New Roman、Cambria 各 4 个样式文件。
+   * 字段的字体按其粗斜体记录样式（cs 按 `w:bCs`、`w:iCs`），制表符前导等其他来源的字体为全部样式。
+   */
+  test('requiredFonts：给出 styles 时记录各字体名需要的字形样式', async () => {
+    const fonts = (name: string, cs: string) =>
+      `<w:rFonts w:ascii="${name}" w:hAnsi="${name}" w:eastAsia="${name}" w:cs="${cs}"/>`
+    const d = await doc(
+      p(r('a', fonts('A1', 'C1'))) +
+        p(r('b', `${fonts('A1', 'C1')}<w:b/>`)) +
+        p(r('c', `${fonts('B1', 'C1')}<w:i/><w:iCs/>`)) +
+        p(
+          r('x	y', fonts('A1', 'C1')),
+          '<w:tabs><w:tab w:val="left" w:leader="dot" w:pos="4000"/></w:tabs>',
+        ) +
+        SECT(),
+    )
+    const styles = new Map<string, number>()
+    const names = requiredFonts(d, NO_HOST_FAMILIES, styles)
+    expect(styles.get('A1')).toBe(styleBit(false, false) | styleBit(true, false))
+    expect(styles.get('B1')).toBe(styleBit(false, true))
+    expect(styles.get('C1')).toBe(styleBit(false, false) | styleBit(false, true))
+    expect(styles.get(LEADER_FONT)).toBe(ALL_STYLES)
+    for (const name of names) expect(styles.has(name)).toBe(true)
+    expect(requiredFonts(d, NO_HOST_FAMILIES)).toEqual(names)
   })
 
   test('requiredFonts：主机有的字体名不列出替代字体，主机没有的字体名列出前缀匹配的结果', async () => {

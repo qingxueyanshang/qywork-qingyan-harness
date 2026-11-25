@@ -44,9 +44,11 @@ import type { ClearTypeDisplay, ClearTypeGlyphs, PixelData } from '../../glyph/c
 import { readMetafile } from '../../metafile/index.ts'
 import { fontsAvailable } from '../../test-fonts.ts'
 import {
+  ALL_STYLES,
   type FontSource,
   type HostFamilies,
   NO_HOST_FAMILIES,
+  styleBit,
   type TextFace,
 } from '../../text/index.ts'
 import { parsePptx } from '../load.ts'
@@ -1481,6 +1483,39 @@ describe('求值阶段为绘制补充的内容', () => {
     const s = find(p, 10)
     const first = s.kind === 'shape' ? s.text?.paragraphs[0] : undefined
     expect([first?.end.latin, first?.end.ea]).toEqual(['Arial', ''])
+  })
+
+  /**
+   * 原始失败形状：远程访问时一份 PPT 下载了 11 个字体文件，常规之外的样式多数不使用。
+   * 字段的字体按其粗斜体记录样式，西文缺字时的字体随字段，`MISSING_LATIN` 为全部样式。
+   */
+  test('presentationFonts：给出 styles 时记录各字体名需要的字形样式', async () => {
+    const latin = (name: string, attrs = '') =>
+      `<a:rPr lang="en-US"${attrs}><a:latin typeface="${name}"/></a:rPr>`
+    const p = await parse({
+      slides: [
+        {
+          xml: slideXml(
+            sp(10, {
+              txBox: true,
+              spPr: xfrm(0, 0, 10, 10),
+              body: text(
+                para(run('a', latin('Calibri'))) +
+                  para(run('b', latin('Calibri', ' b="1"'))) +
+                  para(run('c', latin('Cambria', ' i="1"'))),
+              ),
+            }),
+          ),
+        },
+      ],
+    })
+    const styles = new Map<string, number>()
+    const names = presentationFonts(p, NO_HOST_FAMILIES, styles)
+    expect(styles.get('Calibri')).toBe(styleBit(false, false) | styleBit(true, false))
+    expect(styles.get('Cambria')).toBe(styleBit(false, true))
+    expect(styles.get(MISSING_LATIN)).toBe(ALL_STYLES)
+    for (const name of names) expect(styles.has(name)).toBe(true)
+    expect(presentationFonts(p, NO_HOST_FAMILIES)).toEqual(names)
   })
 
   test('竖排文字、无法解码的图片（含图片项目符号）与未绘制的效果（预设阴影）分别计数；eaVert、可以绘制的图片项目符号与形状的内部阴影不计数', async () => {

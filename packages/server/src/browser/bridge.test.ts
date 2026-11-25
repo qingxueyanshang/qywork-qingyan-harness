@@ -24,7 +24,10 @@ import { NATIVE_BROWSER_PATH, NATIVE_HOST_KEY_HEADER } from '@qywork/core'
 import { until } from '@qywork/core/until.test-helper'
 import type { QyConfig } from '@qywork/runtime'
 import { ContentStore, contentPathFor, Store, upsertWorkspace } from '@qywork/store'
+import type { ServerWebSocket } from 'bun'
+import type { SocketData } from '../deps.ts'
 import { serve } from '../server.ts'
+import { BrowserBridge } from './bridge.ts'
 
 const HOST_KEY = 'browser-host-key-for-tests'
 
@@ -242,6 +245,40 @@ test('宿主 host.ready 之后能力可用，运行时版本低于下限则不�
 })
 
 /**
+ * 原始失败形状：电脑上没有 Chrome 时宿主报告没有可用浏览器，首帧不带纪元，服务端无法请求宿主换用刚安装的专用 Chromium。
+ * `restart` 按该帧的纪元发送并取得结果；其他操作仍在本地拒绝。
+ */
+test('没有可用浏览器时仍可请求 restart，其他操作在本地拒绝', async () => {
+  const bridge = new BrowserBridge('key')
+  const sent: BrowserRequestFrame[] = []
+  const ws = {
+    send: (text: string) => sent.push(JSON.parse(text) as BrowserRequestFrame),
+    close: () => {},
+  } as unknown as ServerWebSocket<SocketData>
+  bridge.open(ws)
+  bridge.message(
+    ws,
+    JSON.stringify({ type: 'host.unavailable', connectionEpoch: 7, reason: 'not_found' }),
+  )
+  await expect(bridge.request('create', { workspaceId: 'w', url: 'about:blank' })).rejects.toThrow(
+    '浏览器宿主未连接',
+  )
+  const restart = bridge.request('restart')
+  expect(sent).toEqual([expect.objectContaining({ op: 'restart', connectionEpoch: 7 })])
+  bridge.message(
+    ws,
+    JSON.stringify({
+      type: 'browser.result',
+      requestId: sent[0]?.requestId,
+      connectionEpoch: 7,
+      ok: true,
+      data: {},
+    }),
+  )
+  await expect(restart).resolves.toEqual({})
+})
+
+/**
  * 宿主已连接但没有可用浏览器（未找到，或浏览器进程退出）时，能力下线并附带原因；
  * 浏览器重新启动后宿主在同一连接上重发 `host.ready`，能力恢复，原因清除。
  */
@@ -270,7 +307,7 @@ test('host.unavailable 撤销能力并报告原因，同一连接上的 host.rea
   const pending = handle.browser?.portFor('cv_bridge', WS).open('http://127.0.0.1:1/page')
   await host.next()
   const beforeExit = seen.length
-  host.send({ type: 'host.unavailable', reason: 'exited' })
+  host.send({ type: 'host.unavailable', connectionEpoch: 4, reason: 'exited' })
   expect((await failure(pending)).message).toMatch(/没有可用的浏览器/)
   await until(() => seen.length > beforeExit, '宿主帧被处理')
   expect(await handle.browser?.portFor('cv_a1', WS).tabs()).toEqual([])
@@ -390,6 +427,7 @@ test('重连后取得完整的存活页快照，旧快照不残留', async () =>
         marker: 'm9',
         workspaceId: WS,
         conversationId: null,
+        hidden: false,
       },
     ],
   })

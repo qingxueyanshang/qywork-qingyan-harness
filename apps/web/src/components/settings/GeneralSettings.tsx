@@ -1,5 +1,5 @@
 import { isDefaultPersonalization, type PermissionMode } from '@qywork/core'
-import { createSignal, For, Show } from 'solid-js'
+import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 import { suspendUntil } from '../../lib/resource.ts'
 import {
   client,
@@ -68,14 +68,19 @@ const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
  * 已安装时只显示路径，不显示用途。缺失的后果只在缺失时才需要阅读。依赖齐全的机器上本节应为
  * 四行路径，而不是四段说明（B7：删除这句后用户是否仍能使用？能 → 删除）。
  *
- * 按钮只在服务端声明可以安装时出现（`canInstall` = Windows + 有 winget + 已知包 id），
- * 不提供点击即报错的按钮（B5）。
+ * 按钮只在服务端声明可以安装时出现（`canInstall`：本机有可用的包管理器与终端、该依赖有包名），
+ * 不提供点击即报错的按钮（B5）。由 qywork 自行下载的一项（内置浏览器）在下载期间显示进度，每秒重新读取一次。
  */
 function EnvironmentRows() {
   void reloadEnvironment()
   const deps = () => environment() ?? []
   const [busy, setBusy] = createSignal('')
   const [result, setResult] = createSignal('')
+  createEffect(() => {
+    if (!deps().some((d) => d.progress !== undefined)) return
+    const timer = setTimeout(() => void reloadEnvironment(), 1000)
+    onCleanup(() => clearTimeout(timer))
+  })
 
   async function install(id: string) {
     setBusy(id)
@@ -86,6 +91,7 @@ function EnvironmentRows() {
         body: JSON.stringify({ id }),
       })
       setResult(r.note)
+      void reloadEnvironment()
     } catch (e) {
       setResult(e instanceof Error ? e.message : String(e))
     } finally {
@@ -107,7 +113,13 @@ function EnvironmentRows() {
             <div class="setting-row-text">
               <span class="setting-row-label">
                 {d.label}
-                {d.path === null ? (d.required ? ' · 需要安装' : ' · 未安装（可选）') : ' · 已安装'}
+                {d.progress !== undefined
+                  ? ` · 下载中 ${Math.round(d.progress * 100)}%`
+                  : d.path === null
+                    ? d.required
+                      ? ' · 需要安装'
+                      : ' · 未安装（可选）'
+                    : ' · 已安装'}
               </span>
               {/* 已安装时只显示路径：排查同一条命令在终端中能运行而在应用中不能运行的问题时，
                   唯一有用的信息是当前使用的是哪一个可执行文件。 */}

@@ -1,4 +1,4 @@
-/** 覆盖图片预览的刷新位置、资源切换、加载失败恢复与缩放快捷键；实际布局由浏览器检查。 */
+/** 覆盖图片预览的刷新位置、资源切换、加载失败恢复、缩放快捷键与按显示尺寸取缩小的版本；实际布局由浏览器检查。 */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
@@ -40,7 +40,7 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 
-async function mount() {
+async function mount(pixels: { w: number; h: number } | null = null) {
   const { createSignal } = await import('solid-js')
   const { render } = await import('solid-js/web')
   const { default: FileImageView } = await import('./FileImageView.tsx')
@@ -61,7 +61,7 @@ async function mount() {
     () => (
       <PreviewToolsContext.Provider value={slot}>
         <span class="preview-tools">{tools()?.()}</span>
-        <FileImageView src={preview().src} path={preview().path} />
+        <FileImageView src={preview().src} path={preview().path} pixels={pixels} />
       </PreviewToolsContext.Provider>
     ),
     host,
@@ -206,4 +206,21 @@ test('图片被改写后按路径保留缩放与阅读位置', async () => {
   load(1000, 10000)
   await new Promise((resolve) => requestAnimationFrame(resolve))
   expect(viewport.scrollTop).toBe(3000)
+})
+
+/**
+ * 原始失败形状：远程访问时打开 9.8 MB 的图片，按原图传输，差网络下 32 秒才显示。
+ * 给出原图宽高时先取按窗口宽度缩小的版本；放大到 100% 时另取原图，解码完成后替换；缩放比例按原图宽高计算。
+ */
+test('给出原图宽高时先取缩小的版本，放大超过该版本时换为原图，比例按原图计算', async () => {
+  const { image, load, button } = await mount({ w: 4000, h: 2000 })
+  const first = new URL(image.getAttribute('src')!, location.href)
+  expect(first.searchParams.get('w')).toBe(
+    String(Math.max(512, 2 ** Math.ceil(Math.log2(innerWidth)))),
+  )
+  load(1024, 512)
+  button('100%').click()
+  expect(image.style.width).toBe('4000px')
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  expect(new URL(image.getAttribute('src')!, location.href).searchParams.has('w')).toBe(false)
 })

@@ -7,9 +7,12 @@
  *
  * 页签条由 `syncBrowserTabs` 按镜像同步，每个页面按自身的 `workspaceId` 归入对应
  * 工作区的条目，因此整页刷新后各工作区的原生页面仍显示在各自的页签条上。
+ *
+ * 桌面外壳以外的客户端无法读取宿主的推送：镜像取自服务端的 `browser.tabs` 事件（`projectRemoteTabs`），
+ * 新建、关闭与导航经 `/api/browser/pages` 交给宿主，页面经查看连接显示（`RemoteBrowserPanel`）。
  */
 
-import type { BrowserCapability } from '@qywork/core'
+import type { BrowserCapability, BrowserTabView } from '@qywork/core'
 import { type Accessor, createMemo, createRoot, createSignal } from 'solid-js'
 import {
   activateBrowserPage,
@@ -22,6 +25,7 @@ import {
   parkBrowserView,
 } from '../browser.ts'
 import { localHtmlUrl } from '../links.ts'
+import { client } from './client.ts'
 import { isDesktopShell } from './shell.ts'
 import { setState, state } from './state.ts'
 import {
@@ -48,14 +52,11 @@ export function browserTab(tabId: string): NativeTab | undefined {
 }
 
 /**
- * 当前客户端是否可以使用内置浏览器（手动浏览）。
- *
- * 须同时满足两个条件：界面运行在桌面外壳中（宿主位于该外壳内，页签命令才能调用），
- * 且服务端报告宿主已连接。宿主未连接时不降级为 iframe：iframe 是另一种能力，
- * 不是同一功能的备用路径。
+ * 当前客户端是否可以使用内置浏览器（手动浏览）：服务端报告宿主已连接。桌面外壳经外壳调用宿主，
+ * 其他客户端经服务端远程查看。宿主未连接时不降级为 iframe：iframe 是另一种能力，不是同一功能的备用路径。
  */
 export function browserReady(): boolean {
-  return isDesktopShell() && state.capabilities?.browser.connected === true
+  return state.capabilities?.browser.connected === true
 }
 
 /**
@@ -106,8 +107,11 @@ export function browserTabLabel(tabId: string): string | undefined {
   return tab ? labelOf(tab) : undefined
 }
 
-/** 隐藏页（文件页的 HTML 预览等）留在镜像中供其打开者读取缩放比例，不进入页签条，也不随页签关闭。 */
-function project(list: NativeTab[]): void {
+/**
+ * 隐藏页（文件页的 HTML 预览等）留在镜像中供其打开者读取缩放比例，不进入页签条，也不随页签关闭。
+ * `close` 为关闭页签时关闭页面的方式：桌面外壳调用宿主，其他客户端经服务端。
+ */
+function project(list: NativeTab[], close: (tabId: string) => Promise<unknown>): void {
   setTabs(list)
   const shown = list.filter((t) => !t.hidden)
   syncBrowserTabs(
@@ -122,7 +126,60 @@ function project(list: NativeTab[]): void {
   )
   // 关闭页签时一并关闭原生页面。宿主中已不存在的页面在 `syncBrowserTabs` 中
   // 已先移除登记，不会执行到此处。
-  for (const t of shown) holdPanelTab(t.tabId, () => void closeBrowserPage(t.tabId).catch(() => {}))
+  for (const t of shown) holdPanelTab(t.tabId, () => void close(t.tabId).catch(() => {}))
+}
+
+/** 经服务端关闭页面（桌面外壳以外的客户端）。 */
+export function closeRemotePage(tabId: string): Promise<unknown> {
+  return client.api(`/api/browser/pages?tabId=${encodeURIComponent(tabId)}`, { method: 'DELETE' })
+}
+
+/** 经服务端导航（桌面外壳以外的客户端）。失败时以宿主的说明拒绝（如地址无法解析）。 */
+export function navigateRemotePage(
+  tabId: string,
+  action: 'goto' | 'back' | 'forward' | 'reload',
+  url?: string,
+): Promise<unknown> {
+  return client.api('/api/browser/pages/navigate', {
+    method: 'POST',
+    body: JSON.stringify({ tabId, action, ...(url ? { url } : {}) }),
+  })
+}
+
+/** 新建后待切换到的页：服务端的清单可能先于新建的响应到达，也可能在其后到达，两处都检查。 */
+let showWhenListed: { workspaceId: string; tabId: string } | null = null
+
+/**
+ * 服务端推送的页签清单（`browser.tabs`），只在桌面外壳以外的客户端采用：桌面外壳读取宿主的推送。
+ * 清单不带创建序号、缩放与历史，按清单顺序编号，其余取默认值；远程查看的界面不使用它们。
+ */
+export function projectRemoteTabs(list: readonly BrowserTabView[]): void {
+  if (isDesktopShell()) return
+  project(
+    list.map((t, i) => ({
+      ...t,
+      createdSeq: i + 1,
+      zoom: 1,
+      canGoBack: true,
+      canGoForward: true,
+      openerTabId: null,
+      hidden: false,
+    })),
+    closeRemotePage,
+  )
+  const pending = showWhenListed
+  if (pending && list.some((t) => t.tabId === pending.tabId)) {
+    showWhenListed = null
+    showPanelTab(pending.workspaceId, pending.tabId)
+  }
+}
+
+/** 经服务端在当前工作区新建页面。`hidden` 的页不列入页签条（文件页的 HTML 预览）。 */
+export function createRemotePage(url: string | undefined, hidden = false): Promise<BrowserTabView> {
+  return client.api<BrowserTabView>('/api/browser/pages', {
+    method: 'POST',
+    body: JSON.stringify({ ...(url ? { url } : {}), ...(hidden ? { hidden } : {}) }),
+  })
 }
 
 /**
@@ -139,9 +196,15 @@ export async function openBrowserTab(url?: string): Promise<void> {
   // 没有当前工作区时页面没有归属，宿主也会拒绝。
   const workspaceId = workspace()?.id
   if (!workspaceId) return
+  if (!isDesktopShell()) {
+    const tab = await createRemotePage(url)
+    if (tabs().some((t) => t.tabId === tab.tabId)) showPanelTab(workspaceId, tab.tabId)
+    else showWhenListed = { workspaceId, tabId: tab.tabId }
+    return
+  }
   const tab = await openBrowserPage(url, workspaceId)
   const list = await listBrowserTabs()
-  project(list)
+  project(list, closeBrowserPage)
   if (list.some((t) => t.tabId === tab.tabId && t.workspaceId === workspaceId)) {
     showPanelTab(workspaceId, tab.tabId)
   }
@@ -162,7 +225,7 @@ export async function loadRestoredTab(workspaceId: string, id: string): Promise<
     void closeBrowserPage(tab.tabId).catch(() => {})
     return
   }
-  project(await listBrowserTabs())
+  project(await listBrowserTabs(), closeBrowserPage)
 }
 
 /**
@@ -181,8 +244,8 @@ function comparableUrl(url: string): string {
  * 在右侧面板中打开正文中的链接。
  *
  * 桌面外壳中本地 HTML 与 HTTP 链接都交给内置浏览器，页面嵌在面板中还是位于独立窗口中由宿主决定；
- * 其他客户端的 HTTP 链接使用网页预览。宿主不可用或打开页面失败时投递已有的错误通知，
- * 不把 file URL 交给远端 iframe。
+ * 其他客户端在宿主已连接时同样交给内置浏览器（远程查看），否则 HTTP 链接使用网页预览。宿主不可用或打开页面失败时
+ * 投递已有的错误通知，不把 file URL 交给远端 iframe。
  *
  * 当前工作区已有页显示该地址时切换到该页，不新建第二页（同 `openPreviewTab`）。页面位于独立窗口中时
  * 一并把该页所在的窗口置于前台：只切换页签时，浏览器窗口没有任何变化。应用启动时恢复、尚未加载的页
@@ -228,6 +291,20 @@ export function openLinkInPanel(url: string): void {
     })
     return
   }
+  if (ws && browserReady()) {
+    const target = local ?? url
+    const open = tabs().find(
+      (t) => t.workspaceId === ws.id && comparableUrl(t.url) === comparableUrl(target),
+    )
+    if (open) {
+      showPanelTab(ws.id, open.tabId)
+      return
+    }
+    void openBrowserTab(target).catch((error: unknown) => {
+      failed(`无法打开预览：${errorText(error)}`)
+    })
+    return
+  }
   if (local) {
     failed('本地网页预览需要桌面端。')
     return
@@ -256,9 +333,9 @@ export function openLinkInPanel(url: string): void {
 export function initBrowserProjection(): void {
   if (!isDesktopShell()) return
   parkBrowserView()
-  void onBrowserTabs(project).catch(() => {})
+  void onBrowserTabs((list) => project(list, closeBrowserPage)).catch(() => {})
   void listBrowserTabs()
-    .then(project)
+    .then((list) => project(list, closeBrowserPage))
     .catch(() => {})
 }
 

@@ -53,6 +53,7 @@ const TerminalPanel = lazy(() => import('./TerminalPanel.tsx'))
 
 // 同样懒加载：不打开浏览器页的用户无需承担它的首屏加载成本。
 const BrowserPanel = lazy(() => import('./BrowserPanel.tsx'))
+const RemoteBrowserPanel = lazy(() => import('./remote-browser/RemoteBrowserPanel.tsx'))
 
 // 网页预览页：供没有内置浏览器的端使用。
 const PreviewPanel = lazy(() => import('./PreviewPanel.tsx'))
@@ -105,7 +106,12 @@ const TAB_VIEWS: {
   readonly [K in PanelTab['kind']]: Component<{ tab: PanelTab & { kind: K }; visible: boolean }>
 } = {
   terminal: (p) => <TerminalPanel id={p.tab.id} />,
-  browser: (p) => <BrowserPanel id={p.tab.id} visible={p.visible} />,
+  browser: (p) =>
+    isDesktopShell() ? (
+      <BrowserPanel id={p.tab.id} visible={p.visible} />
+    ) : (
+      <RemoteBrowserPanel id={p.tab.id} />
+    ),
   preview: (p) => <PreviewPanel id={p.tab.id} />,
   conversation: (p) => <ConversationPanel id={p.tab.id} />,
   cli: (p) => <CliPanel id={p.tab.id} />,
@@ -140,7 +146,7 @@ const [officePick, setOfficePick] = createSignal<OfficeFormat | null>(null)
  *
  * 各行的可用条件如下，不要按标签推测：终端依赖 Rust 侧的 PTY，只在桌面端可用；内置浏览器由
  * 桌面外壳的宿主承载（Windows 嵌入面板，macOS 与 Linux 显示在浏览器的独立窗口中），
- * 宿主连接后才可用，其他端改用 HTTP 网页预览（iframe，只读）。无限画布只在鼠标端提供入口（`canvasAvailable`）；
+ * 宿主连接后才可用，其他端经服务端远程查看；宿主未连接时其他端改用 HTTP 网页预览（iframe，只读）。无限画布只在鼠标端提供入口（`canvasAvailable`）；
  * Word、PPT 与 Excel 打开工作区文件选择框（只列出 `packages/server/src/files.ts` 的 `classify` 归入 docx、pptx
  * 或 xlsx 格式的文件），选中后新开文件预览页。
  */
@@ -174,14 +180,14 @@ const PREVIEW_SOURCES: {
   },
   {
     /*
-     * 网页预览**只在没有桌面外壳的端提供**，不按宿主是否连接判定。
-     * 按可用性判定时，外壳上的宿主启动失败后会改用 iframe：该页面
-     * 外观相同，但没有登录状态、不受 AI 控制，用户无法区分两者。
+     * 网页预览**只在没有桌面外壳、且宿主未连接的端提供**。桌面外壳上不按宿主是否连接判定：
+     * 宿主启动失败后改用 iframe 时，该页面外观相同，但没有登录状态、不受 AI 控制，用户无法区分两者。
+     * 其他端在宿主连接后使用内置浏览器（远程查看）：iframe 中的 localhost 指向手机自身，不是电脑。
      */
     key: 'preview',
     label: '网页预览',
     icon: IconGlobe,
-    show: () => !isDesktopShell(),
+    show: () => !isDesktopShell() && !browserReady(),
     open: () => openPanelTab('preview'),
   },
   { key: 'word', label: 'Word', icon: IconFile, open: () => setOfficePick('docx') },
@@ -534,21 +540,29 @@ export default function SidePanel() {
  * 每一页自带边界（`HoldBoundary`）：xterm 的包体积超过 300 kB，没有边界时组件挂起会使
  * 整棵树短暂变空（同 `App.tsx` 中的处理）。不要换成 Suspense：该页显示之后才创建的内容（文件页切换到源码）
  * 声明的首次读取会使整页再次换为加载状态。
+ *
+ * 各页按 id 渲染，不按页签对象：网页的标题与地址变化时页签对象被替换，按对象渲染会重建该页的正文，
+ * 远程画面（`RemoteView`）随之重新连接，重连期间画面为空、输入丢失。
  */
 function TabPanes(props: { visible: string | null }) {
   const shown = createMemo<ReadonlySet<string>>((seen) => {
     const id = activePanelTab()
     return id === null || seen.has(id) ? seen : new Set([...seen, id])
   }, new Set())
+  const ids = createMemo(() => panelTabs().map((t) => t.id))
   return (
-    <For each={panelTabs()}>
-      {(t) => (
-        <Show when={t.kind === 'terminal' || t.kind === 'cli' || shown().has(t.id)}>
-          <div class="tab-pane" classList={{ active: props.visible === t.id }}>
-            <HoldBoundary fallback={<div class="pane-loading" />}>
-              <Dynamic component={tabView(t)} tab={t} visible={props.visible === t.id} />
-            </HoldBoundary>
-          </div>
+    <For each={ids()}>
+      {(id) => (
+        <Show when={panelTabs().find((t) => t.id === id)}>
+          {(t) => (
+            <Show when={t().kind === 'terminal' || t().kind === 'cli' || shown().has(id)}>
+              <div class="tab-pane" classList={{ active: props.visible === id }}>
+                <HoldBoundary fallback={<div class="pane-loading" />}>
+                  <Dynamic component={tabView(t())} tab={t()} visible={props.visible === id} />
+                </HoldBoundary>
+              </div>
+            </Show>
+          )}
         </Show>
       )}
     </For>

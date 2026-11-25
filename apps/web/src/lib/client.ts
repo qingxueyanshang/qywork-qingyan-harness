@@ -24,7 +24,7 @@ import type {
   HelloOkFrame,
   ServerCapabilities,
 } from '@qywork/core'
-import { decodePairingUrl } from '@qywork/core'
+import { BROWSER_VIEW_PATH, decodePairingUrl } from '@qywork/core'
 import { workspace } from './store/ui.ts'
 
 export type ConnectionState = 'connecting' | 'ready' | 'reconnecting' | 'unauthorized' | 'closed'
@@ -118,6 +118,24 @@ export interface SocketLike {
 export interface ClientDeps {
   endpoint: Endpoint
   open(url: string): SocketLike
+}
+
+/**
+ * 工作区文件原始字节的接口路径，供 `raw` 读取与 `fileUrl` 拼接。`version` 为内容的版本（如修改时间）：
+ * 非空时服务端允许浏览器按地址长期缓存，文件改写后版本改变、地址随之改变。不知道版本时传空串，服务端禁止缓存。
+ */
+export function rawFilePath(path: string, version: string | number): string {
+  return `/api/files/raw?path=${encodeURIComponent(path)}&v=${encodeURIComponent(version)}`
+}
+
+/**
+ * 工作区文件的直链（`fileUrl`）加上宽度 `width`：位图由服务端缩小到该宽度后返回，原图不宽于该宽度时返回原图。
+ * 远程访问时画布卡片与图片预览按显示尺寸取图。
+ */
+export function scaledFileUrl(url: string, width: number): string {
+  const u = new URL(url, location.href)
+  u.searchParams.set('w', String(Math.ceil(width)))
+  return u.toString()
 }
 
 /**
@@ -535,9 +553,25 @@ export class QyClient {
    * `version` 为内容的版本（如修改时间），必填：媒体元素与按地址缓存的读数以地址识别内容，
    * 地址不随内容变化时，同一路径的文件被改写后仍显示旧内容。一次性读取不需要地址，使用 `raw`。
    */
+  /**
+   * 远程查看内置浏览器页面的连接地址（`BROWSER_VIEW_PATH`）。令牌放在查询串中，理由同 `fileUrl`：
+   * 该连接不发送 hello，服务端在升级时校验。
+   */
+  browserViewUrl(tabId: string): string {
+    const wsBase = this.endpoint.base.replace(/^http/, 'ws')
+    return `${wsBase}${BROWSER_VIEW_PATH}?tabId=${encodeURIComponent(tabId)}&token=${encodeURIComponent(this.endpoint.token)}`
+  }
+
+  /** 上传一个交给内置浏览器页面的文件，返回编号（查看连接的 `files` 回答使用）。 */
+  async uploadBrowserFile(tabId: string, file: File): Promise<string> {
+    const path = `/api/browser/uploads?tabId=${encodeURIComponent(tabId)}&name=${encodeURIComponent(file.name)}`
+    const res = await this.raw(path, { method: 'POST', body: file })
+    if (!res.ok) throw new ApiError(res.status, path, await res.text().catch(() => ''))
+    return ((await res.json()) as { upload: string }).upload
+  }
+
   fileUrl(path: string, version: string | number): string {
-    const query = `/api/files/raw?path=${encodeURIComponent(path)}&v=${encodeURIComponent(version)}`
-    return `${this.endpoint.base}${withWorkspace(query)}&token=${encodeURIComponent(this.endpoint.token)}`
+    return `${this.endpoint.base}${withWorkspace(rawFilePath(path, version))}&token=${encodeURIComponent(this.endpoint.token)}`
   }
 
   /**

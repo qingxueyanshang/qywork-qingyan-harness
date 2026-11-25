@@ -303,6 +303,14 @@ export const IconTerminal = (p: IconProps) => (
   </Svg>
 )
 
+/** 键盘：键位与空格键。 */
+export const IconKeyboard = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2.8" y="6" width="18.4" height="12" rx="2.4" />
+    <path d="M6.8 10h.01M10.4 10h.01M13.6 10h.01M17.2 10h.01M8.4 14.4h7.2" />
+  </Svg>
+)
+
 /** 无限画布：一个画框，四角向外延伸，表示边界之外仍有内容。 */
 export const IconCanvas = (p: IconProps) => (
   <Svg {...p}>

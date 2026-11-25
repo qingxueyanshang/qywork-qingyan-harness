@@ -15,6 +15,8 @@ pub struct TabSnapshot {
     pub marker: String,
     pub workspace_id: String,
     pub conversation_id: Option<String>,
+    /// 不列入界面页签条的页：文件页的 HTML 预览与服务端内部渲染用的页。
+    pub hidden: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,9 +36,11 @@ pub struct HostReady {
 
 /// 宿主已连接，但当前没有可用的浏览器：未找到浏览器，或浏览器进程已退出。
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HostUnavailable {
     #[serde(rename = "type")]
     pub kind: &'static str,
+    pub connection_epoch: u64,
     pub reason: &'static str,
 }
 
@@ -66,6 +70,9 @@ pub struct RequestFrame {
     pub conversation_id: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// `navigate` 必须携带：`goto` / `back` / `forward` / `reload`，与界面地址栏的导航执行同一路径。
+    #[serde(default)]
+    pub action: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
     /// `download.arm` / `download.disarm` 使用的本次下载身份。服务端每次生成一个不复用的值。
@@ -126,6 +133,9 @@ pub struct EventFrame {
     pub workspace_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<Option<String>>,
+    /// `opened` 必须携带：该页是否不列入界面的页签条。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +162,7 @@ impl EventFrame {
             marker: None,
             workspace_id: None,
             conversation_id: None,
+            hidden: None,
             path: None,
             success: None,
             reason: None,
@@ -211,6 +222,7 @@ mod tests {
             workspace_id: None,
             conversation_id: None,
             url: None,
+            action: None,
             path: None,
             download_id: None,
             hidden: false,
@@ -276,6 +288,7 @@ mod tests {
                     marker: "9a3f".into(),
                     workspace_id: "ws_a".into(),
                     conversation_id: Some("cv_a1".into()),
+                    hidden: false,
                 },
                 TabSnapshot {
                     tab_id: "bt_2".into(),
@@ -284,6 +297,7 @@ mod tests {
                     marker: "b1c4".into(),
                     workspace_id: "ws_a".into(),
                     conversation_id: None,
+                    hidden: false,
                 },
             ],
         };
@@ -292,7 +306,11 @@ mod tests {
 
     #[test]
     fn host_unavailable_encodes_to_the_sample_bytes() {
-        let hello = Hello::Unavailable(HostUnavailable { kind: "host.unavailable", reason: "not_found" });
+        let hello = Hello::Unavailable(HostUnavailable {
+            kind: "host.unavailable",
+            connection_epoch: 3,
+            reason: "not_found",
+        });
         assert_eq!(serde_json::to_value(&hello).unwrap(), sample("hostUnavailable"));
     }
 
@@ -327,6 +345,7 @@ mod tests {
         opened.marker = Some("9a3f".into());
         opened.workspace_id = Some("ws_a".into());
         opened.conversation_id = Some(Some("cv_a1".into()));
+        opened.hidden = Some(false);
         assert_eq!(serde_json::to_value(&opened).unwrap(), sample("opened"));
 
         // 终态携带被消费授权的身份；服务端按该身份认领，不按 tabId。

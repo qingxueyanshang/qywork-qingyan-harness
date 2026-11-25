@@ -1,5 +1,9 @@
+import { createHash } from 'node:crypto'
+import { readdirSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import solid from 'vite-plugin-solid'
 
 /** sidecar 的端口。由 `scripts/dev.ts` 传入，单独运行 vite 时使用默认值。 */
@@ -14,12 +18,57 @@ const AGENT_PORT = process.env.QYWORK_PORT ?? '7717'
  */
 const COORDINATED_RELOAD = process.env.QYWORK_COORDINATED_RELOAD === '1'
 
+/**
+ * pdf.js 在其 Worker 中按「目录地址 + 文件名」读取的数据：未嵌入字体的 PDF 所需的字符映射表（中文文档常见）与标准字体，
+ * JPEG 2000、JBIG2 图片与 ICC 色彩的解码模块。按原文件名发布在 `assets/pdfjs-<内容哈希>/` 下：文件名不能带各自的哈希；
+ * 目录带全部内容的哈希，云端与浏览器按 `assets/` 长期缓存，更换 pdf.js 版本后不会取到其他版本的解码模块。
+ * 脚本沙箱（quickjs）不发布：预览不执行 PDF 中的脚本。
+ */
+const PDFJS_ROOT = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
+const PDFJS_FILES = new Map<string, Buffer>(
+  ['cmaps', 'standard_fonts', 'wasm', 'iccs'].flatMap((dir) =>
+    readdirSync(join(PDFJS_ROOT, dir))
+      .filter((name) => !/quickjs/i.test(name))
+      .map((name) => [`${dir}/${name}`, readFileSync(join(PDFJS_ROOT, dir, name))] as const),
+  ),
+)
+const PDFJS_BASE = `assets/pdfjs-${createHash('sha256')
+  .update(
+    [...PDFJS_FILES]
+      .map(([rel, bytes]) => `${rel}\u0000${createHash('sha256').update(bytes).digest('hex')}`)
+      .join('\n'),
+  )
+  .digest('hex')
+  .slice(0, 12)}/`
+
+function pdfjsData(): Plugin {
+  return {
+    name: 'pdfjs-data',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url ?? '').split('?')[0] ?? ''
+        if (!path.startsWith(`/${PDFJS_BASE}`)) return next()
+        const bytes = PDFJS_FILES.get(path.slice(PDFJS_BASE.length + 1))
+        res.statusCode = bytes ? 200 : 404
+        res.setHeader('content-type', 'application/octet-stream')
+        res.end(bytes ?? '')
+      })
+    },
+    generateBundle() {
+      for (const [rel, bytes] of PDFJS_FILES) {
+        this.emitFile({ type: 'asset', fileName: `${PDFJS_BASE}${rel}`, source: bytes })
+      }
+    },
+  }
+}
+
 export default defineConfig(({ command }) => ({
   define: {
     __QYWORK_UPDATE_ENDPOINT__:
       command === 'serve' ? (process.env.QYWORK_UPDATE_ENDPOINT ?? 'null') : 'null',
+    __PDFJS_DATA__: JSON.stringify(PDFJS_BASE),
   },
-  plugins: [solid()],
+  plugins: [solid(), pdfjsData()],
   server: {
     port: 5180,
     // 必须显式绑定 127.0.0.1：不设置 host 时 vite 只监听 `::1`，而 Tauri CLI 探测

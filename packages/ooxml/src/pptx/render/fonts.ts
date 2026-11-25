@@ -42,30 +42,76 @@ import {
 } from '../../glyph/cleartype/index.ts'
 import { MATH_SETTINGS_DEFAULTS, type MathFont, readMathFont } from '../../math/index.ts'
 import type { MetafileFace, MetafileFonts } from '../../metafile/index.ts'
-import type { FontMatch, FontSource, HostFamilies } from '../../text/index.ts'
+import {
+  ALL_STYLES,
+  type FontMatch,
+  type FontSource,
+  type HostFamilies,
+  pickStyle,
+  type StyleMask,
+} from '../../text/index.ts'
 import type { Presentation, Shape } from '../model.ts'
 
-function addShape(out: Set<string>, s: Shape): void {
-  if (s.kind === 'shape' && s.text !== null) collectTextFonts(out, s.text)
-  else if (s.kind === 'chart') collectChartFonts(out, s.chart)
-  else if (s.kind === 'diagram') collectDiagramFonts(out, s.diagram)
-  else if (s.kind === 'group') for (const c of s.children) addShape(out, c)
+/** 形状与表格的文字记录样式（`styles`）；图表与 SmartArt 的字体另加入 `all`，按全部样式取得。 */
+function addShape(
+  out: Set<string>,
+  s: Shape,
+  styles: Map<string, StyleMask>,
+  all: Set<string>,
+): void {
+  const whole = (collect: (into: Set<string>) => void) => {
+    const names = new Set<string>()
+    collect(names)
+    for (const name of names) {
+      out.add(name)
+      all.add(name)
+    }
+  }
+  if (s.kind === 'shape' && s.text !== null) collectTextFonts(out, s.text, styles)
+  else if (s.kind === 'chart') whole((into) => collectChartFonts(into, s.chart))
+  else if (s.kind === 'diagram') whole((into) => collectDiagramFonts(into, s.diagram))
+  else if (s.kind === 'group') for (const c of s.children) addShape(out, c, styles, all)
   else if (s.kind === 'table') {
-    for (const row of s.rows) for (const cell of row.cells) collectTextFonts(out, cell.text)
+    for (const row of s.rows) for (const cell of row.cells) collectTextFonts(out, cell.text, styles)
   }
 }
 
 /**
  * 演示文稿中出现的全部字体名（含图元文件文字的字体），以及主机没有其中的字体名时 WPS 演示的替代规则所用的字体名
  * （`presentationFontNames`，`host` 为主机字体的族名），按首次出现的顺序，不含空串；末项为 `MISSING_LATIN`。
+ *
+ * 给出 `styles` 时写入每个字体名需要的字形样式：文本框与表格的字段按其粗斜体（见 `collectTextFonts`），替代字体随原字体名；
+ * 图表、SmartArt、图元文件与 `MISSING_LATIN` 为全部样式。调用方只取得排版会选用的字体文件（`facesForStyles`）。
  */
-export function presentationFonts(p: Presentation, host: HostFamilies): string[] {
+export function presentationFonts(
+  p: Presentation,
+  host: HostFamilies,
+  styles?: Map<string, StyleMask>,
+): string[] {
   const out = new Set<string>()
-  for (const slide of p.slides) for (const s of slide.shapes) addShape(out, s)
-  for (const name of p.metafileFonts) out.add(name)
-  for (const name of [...out]) for (const n of presentationFontNames(name, host)) out.add(n)
+  const runStyles = new Map<string, StyleMask>()
+  const all = new Set<string>()
+  for (const slide of p.slides) for (const s of slide.shapes) addShape(out, s, runStyles, all)
+  for (const name of p.metafileFonts) {
+    out.add(name)
+    all.add(name)
+  }
+  for (const name of [...out]) {
+    for (const n of presentationFontNames(name, host)) {
+      out.add(n)
+      // 替代字体与度量字体按原字体名的样式选用。
+      runStyles.set(n, (runStyles.get(n) ?? 0) | (runStyles.get(name) ?? ALL_STYLES))
+      if (all.has(name)) all.add(n)
+    }
+  }
   out.delete(MISSING_LATIN)
   out.add(MISSING_LATIN)
+  all.add(MISSING_LATIN)
+  if (styles) {
+    for (const name of out) {
+      styles.set(name, all.has(name) ? ALL_STYLES : (runStyles.get(name) ?? ALL_STYLES))
+    }
+  }
   return [...out]
 }
 
@@ -91,16 +137,6 @@ export interface SlideFonts extends FontSource {
   readonly families: HostFamilies
   /** 族名（`FontMatch.family`）为 `family` 的各字形；绘制时按族名取得点阵。 */
   family(family: string): readonly SlideFace[]
-}
-
-function pick(list: readonly SlideFace[], bold: boolean, italic: boolean): SlideFace | null {
-  return (
-    list.find((f) => f.bold === bold && f.italic === italic) ??
-    list.find((f) => f.bold === bold) ??
-    list.find((f) => !f.bold && !f.italic) ??
-    list[0] ??
-    null
-  )
 }
 
 /**
@@ -129,7 +165,7 @@ export class SlideFontSet implements SlideFonts {
     families: HostFamilies,
   ): SlideFontSet | null {
     for (const name of fallbacks) {
-      const fallback = pick(fonts.get(name) ?? [], false, false)
+      const fallback = pickStyle(fonts.get(name) ?? [], false, false)
       if (fallback !== null) return new SlideFontSet(fonts, fallback, families)
     }
     return null
@@ -143,7 +179,7 @@ export class SlideFontSet implements SlideFonts {
   }
 
   face(name: string, bold: boolean, italic: boolean): SlideFace | null {
-    return pick(this.byName.get(name) ?? [], bold, italic)
+    return pickStyle(this.byName.get(name) ?? [], bold, italic)
   }
 
   family(family: string): readonly SlideFace[] {

@@ -141,6 +141,49 @@
   background: #fff;
   box-shadow: 0 0 0 1px var(--border-subtle);
 }
+/*
+ * PDF 的文字层：透明文字与画布上的字形重合，用于选择与复制。pdf.js 的 `TextLayer` 按页面宽高的百分比放置各段文字，
+ * 写入 `--font-height`、`--scale-x`、`--rotate` 与 `--min-font-size`；`--total-scale-factor`（每磅的 CSS 像素数）由页面视口设定。
+ * 这些变量名由 pdf.js 读写，不能改名。
+ */
+.doc-text {
+  position: absolute;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.doc-text :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+.doc-text > :not(.markedContent),
+.doc-text .markedContent span:not(.markedContent) {
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.doc-text .markedContent {
+  display: contents;
+}
+.doc-text ::selection {
+  background: rgb(0 100 255 / 0.25);
+}
 /* 面板放大时让出输入框触发条的高度，原因同 `.sheet-tabs`。 */
 @media (min-width: 821px) {
   .app.panel-max .doc-view > .office-boundary {

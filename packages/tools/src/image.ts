@@ -96,6 +96,44 @@ export async function shrinkImage(
 }
 
 /**
+ * 按宽度缩小的图片：远程访问时界面按显示尺寸取图（服务端 `/api/files/raw` 的 `w`），原图只在放大查看时传输。
+ *
+ * 原图不宽于 `width` 或无法解码时原样返回。缩小后不透明时取 PNG 与 JPEG 中较小者（照片类 JPEG 小一个数量级，见文件头），
+ * 有透明像素时只用 PNG；结果不小于原文件时返回原文件。
+ */
+export async function imageAtWidth(
+  bytes: Uint8Array,
+  mime: string,
+  width: number,
+): Promise<{ bytes: Uint8Array; mime: string }> {
+  const size = imageSizeOf(bytes)
+  if (!size || size.width <= width) return { bytes, mime }
+  try {
+    const photon = await import('@silvia-odwyer/photon-node')
+    const img = photon.PhotonImage.new_from_byteslice(bytes)
+    const height = Math.max(1, Math.round((img.get_height() * width) / img.get_width()))
+    const out = photon.resize(img, width, height, photon.SamplingFilter.Lanczos3)
+    const png = out.get_bytes()
+    let best = { bytes: png, mime: 'image/png' }
+    const pixels = out.get_raw_pixels()
+    let opaque = true
+    for (let i = 3; i < pixels.length; i += 4) {
+      if (pixels[i]! < 255) {
+        opaque = false
+        break
+      }
+    }
+    if (opaque) {
+      const jpeg = out.get_bytes_jpeg(JPEG_QUALITY)
+      if (jpeg.length < png.length) best = { bytes: jpeg, mime: 'image/jpeg' }
+    }
+    return best.bytes.length < bytes.length ? best : { bytes, mime }
+  } catch {
+    return { bytes, mime }
+  }
+}
+
+/**
  * 图片缩小发送时附在回执或附件说明中的一句，写明原图与发送尺寸。未缩小（含只改编码）时为空。
  *
  * 模型只看到缩小后的图，不说明时它会把无法看清的细节判为「没有」：实测白字外的浅色描边

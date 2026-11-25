@@ -28,7 +28,13 @@ import {
   preview,
   renameEntry,
 } from '../files.ts'
+import { scaledImage } from '../media-jobs.ts'
 import { type ApiHandler, json } from './types.ts'
+
+/** `/api/files/raw` 的 `w` 可缩小的位图类型；GIF 只取第一帧，SVG 无需缩小，均原样返回。 */
+const SCALABLE = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/bmp'])
+/** `w` 的上限：界面请求的宽度不超过画布解码档位的上限（4096）与图片预览的显示宽度。 */
+const MAX_SCALED_WIDTH = 16384
 
 /**
  * 解析后的目标是否为项目根目录本身。`.`、`./`、`a/..` 都解析为根目录；仅检查输入是否为空串时，这些写法均可通过。
@@ -181,17 +187,29 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 原始字节。PDF 预览使用该接口：界面取回后经 `createObjectURL` 交给 iframe。
-   * 文件改写后同一地址对应另一份内容，因此禁止浏览器缓存。
+   * 原始字节。带非空的版本 `v`（界面传入修改时间或画布记录的版本）时地址随内容变化，按一年缓存并标为不可变：
+   * 远程访问时再次打开同一文件不再经隧道传输。不带版本时同一地址在文件改写后对应另一份内容，禁止浏览器缓存。
+   * 带宽度 `w` 的位图返回缩小到该宽度的版本（`scaledImage`，在计算线程中执行并缓存），界面按显示尺寸取图，原图只在放大查看时传输。
    */
   if (p === '/api/files/raw') {
     const rel = q.get('path')
     if (!rel) return json({ error: 'path required', message: '缺少路径' }, 400)
+    const width = q.has('w') ? Number(q.get('w')) : null
+    if (width !== null && !(Number.isInteger(width) && width > 0 && width <= MAX_SCALED_WIDTH)) {
+      return json({ error: 'invalid', message: '宽度不合法' }, 422)
+    }
     const abs = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
     const raw = await openRaw(abs, rel)
     if (!raw) return json({ error: 'not_found', message: '文件不存在' }, 404)
+    const cache = q.get('v') ? 'private, max-age=31536000, immutable' : 'no-store'
+    if (width !== null && SCALABLE.has(raw.mime)) {
+      const out = await scaledImage(abs, raw.mime, width)
+      return new Response(out.bytes, {
+        headers: { 'content-type': out.mime, 'cache-control': cache },
+      })
+    }
     return new Response(raw.body, {
-      headers: { 'content-type': raw.mime, 'cache-control': 'no-store' },
+      headers: { 'content-type': raw.mime, 'cache-control': cache },
     })
   }
 

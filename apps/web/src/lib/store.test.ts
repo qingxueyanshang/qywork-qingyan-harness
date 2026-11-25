@@ -1005,13 +1005,29 @@ describe('整页刷新后恢复页面状态', () => {
  * 随应用重启保留；sessionStorage 属于主窗口的 WebView，重启后为空。新模块实例中没有活动工作区，
  * 用例先设置工作区再读取页签。
  */
-async function restart(): Promise<typeof import('./store/ui.ts')> {
+/**
+ * 模拟应用重启：清空会话存储后重新加载 `ui.ts`。`shell` 为真时按桌面外壳加载：内置浏览器页只在桌面外壳中改为恢复记录。
+ */
+async function restart(opts: { shell?: boolean } = {}): Promise<typeof import('./store/ui.ts')> {
   flushSession()
   session.clear()
   refreshes += 1
-  const ui = await import(`./store/ui.ts?refresh=${refreshes}`)
-  ui.setWorkspace(WS_A)
-  return ui
+  const g = globalThis as Record<string, unknown>
+  const previous = g.__TAURI_INTERNALS__
+  if (opts.shell) {
+    g.__TAURI_INTERNALS__ = {
+      metadata: { currentWebview: { label: 'main' } },
+      invoke: async () => [],
+      transformCallback: () => 0,
+    }
+  }
+  try {
+    const ui = await import(`./store/ui.ts?refresh=${refreshes}`)
+    ui.setWorkspace(WS_A)
+    return ui
+  } finally {
+    g.__TAURI_INTERNALS__ = previous
+  }
 }
 
 describe('应用重启后恢复面板的页签', () => {
@@ -1074,7 +1090,7 @@ describe('应用重启后恢复面板的页签', () => {
       { id: 'bt_2', title: '乙', url: 'http://b.test/', workspaceId: WS_A.id, createdSeq: later },
     ])
     setSidePanel({ tab: 'bt_1' })
-    const ui = await restart()
+    const ui = await restart({ shell: true })
     const [first, canvas, second] = ui.panelTabs()
     expect([first, canvas, second]).toMatchObject([
       { kind: 'browser', title: '甲', url: 'http://a.test/x', live: false },
@@ -1101,7 +1117,7 @@ describe('应用重启后恢复面板的页签', () => {
     syncBrowserTabs([
       { id: 'bt_1', title: '甲', url: 'http://a.test/', workspaceId: WS_A.id, createdSeq: 1 },
     ])
-    const ui = await restart()
+    const ui = await restart({ shell: true })
     const restored = ui.panelTabs()[0]!.id
     const host = (url: string) => ({
       id: 'bt_1',
@@ -1122,17 +1138,38 @@ describe('应用重启后恢复面板的页签', () => {
     expect(ui.activePanelTab()).toBe(restored)
   })
 
+  /**
+   * 原始失败形状：桌面外壳以外的客户端每次加载都按应用启动处理，浏览器页改为恢复记录，显示时在电脑上按记录新建页面，
+   * 电脑上的页面随加载次数成倍增加。这些客户端的页面在电脑上，不随本页面加载重启，保留原 id，由服务端的清单对账。
+   */
+  test('桌面外壳以外的客户端重新加载时浏览器页原样保留，由服务端的清单对账', async () => {
+    reset()
+    syncBrowserTabs([
+      { id: 'bt_1', title: '甲', url: 'http://a.test/', workspaceId: WS_A.id, createdSeq: 1 },
+      { id: 'bt_2', title: '乙', url: 'http://b.test/', workspaceId: WS_A.id, createdSeq: 2 },
+    ])
+    const ui = await restart()
+    expect(ui.panelTabs()).toMatchObject([
+      { id: 'bt_1', kind: 'browser', live: true },
+      { id: 'bt_2', kind: 'browser', live: true },
+    ])
+    ui.syncBrowserTabs([
+      { id: 'bt_2', title: '乙', url: 'http://b.test/', workspaceId: WS_A.id, createdSeq: 2 },
+    ])
+    expect(ui.panelTabs().map((t) => t.id)).toEqual(['bt_2'])
+  })
+
   test('整页刷新不改写恢复的记录，再次重启时恢复的页仍为未加载', async () => {
     reset()
     syncBrowserTabs([
       { id: 'bt_1', title: '甲', url: 'http://a.test/', workspaceId: WS_A.id, createdSeq: 1 },
     ])
-    const started = await restart()
+    const started = await restart({ shell: true })
     const restored = started.panelTabs()[0]!.id
     const refreshed = await refresh()
     refreshed.setWorkspace(WS_A)
     expect(refreshed.panelTabs()).toMatchObject([{ id: restored, live: false }])
-    const again = await restart()
+    const again = await restart({ shell: true })
     expect(again.panelTabs()).toMatchObject([
       { kind: 'browser', title: '甲', url: 'http://a.test/', live: false },
     ])

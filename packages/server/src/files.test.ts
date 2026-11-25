@@ -1,6 +1,6 @@
 /**
  * 覆盖 `files.ts`：`listTree` / `createEntry` / `renameEntry` / `deleteEntry` /
- * `findByName` / `classify` / `preview` / `openRaw`；以及 `api/workspace-fs.ts` 的路径解析
+ * `findByName` / `classify` / `preview`（含图片的原图宽高）/ `openRaw`；以及 `api/workspace-fs.ts` 的路径解析
  * 与原始字节接口。
  *
  * 锁定以下行为：文件树不遗漏任何条目（依赖树、构建产物、以点开头的条目全部列出，
@@ -15,6 +15,8 @@ import { describe, expect, test } from 'bun:test'
 import { lstat, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { deflateSync } from 'node:zlib'
+import { imageSizeOf } from '@qywork/core'
 import { handleWorkspaceFsApi } from './api/workspace-fs.ts'
 import {
   classify,
@@ -509,12 +511,17 @@ describe('文件接口的路径解析', () => {
     expect(await stat(join(dirname(dir), 'moved')).catch(() => null)).toBeNull()
   })
 
-  /** 文件改写后同一地址对应另一份内容，浏览器缓存会使预览停留在旧版本。 */
-  test('原始字节按类型返回、禁止缓存；目录返回 404', async () => {
+  /**
+   * 不带版本时文件改写后同一地址对应另一份内容，浏览器缓存会使预览停留在旧版本。
+   * 带版本时地址随内容变化。原始失败形状：远程访问时再次打开同一文件，原图与 Office 文件经隧道重新传输。
+   */
+  test('原始字节按类型返回；不带版本时禁止缓存，带版本时长期缓存；目录返回 404', async () => {
     const dir = await workspace()
     await writeFile(join(dir, 'x.pdf'), '%PDF-1.4 x')
-    const get = async (path: string) => {
-      const url = new URL(`http://x/api/files/raw?path=${encodeURIComponent(path)}`)
+    const get = async (path: string, version = '') => {
+      const url = new URL(
+        `http://x/api/files/raw?path=${encodeURIComponent(path)}${version ? `&v=${version}` : ''}`,
+      )
       return (await handleWorkspaceFsApi(url, new Request(url.href), {
         workspaceRoot: dir,
       } as never)) as Response
@@ -523,9 +530,75 @@ describe('文件接口的路径解析', () => {
     expect(res.headers.get('content-type')).toBe('application/pdf')
     expect(res.headers.get('cache-control')).toBe('no-store')
     expect(await res.text()).toBe('%PDF-1.4 x')
+    const versioned = await get('x.pdf', '1795529226896.3')
+    expect(versioned.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
+    expect(await versioned.text()).toBe('%PDF-1.4 x')
     // 原始失败形状：SVG 以 text/plain 返回，`<img>` 加载失败，预览只能显示源码。
     await writeFile(join(dir, 'a.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>')
     expect((await get('a.svg')).headers.get('content-type')).toBe('image/svg+xml')
     expect((await get('src')).status).toBe(404)
   })
+
+  /**
+   * 原始失败形状：远程访问时 9.8 MB 的图片按原图传输，差网络下 32 秒才显示。预览结果带原图宽高，
+   * 界面按显示尺寸带宽度 `w` 取图，服务端返回缩小的版本；原图不宽于 `w` 时返回原图。
+   */
+  test('图片预览带原图宽高；带宽度时返回缩小的版本，原图不更宽时返回原图；宽度不合法时 422', async () => {
+    const dir = await workspace()
+    const bytes = opaquePng(640, 320)
+    await writeFile(join(dir, 'photo.png'), bytes)
+    expect((await preview(join(dir, 'photo.png'), 'photo.png')).pixels).toEqual({ w: 640, h: 320 })
+    const get = async (query: string) => {
+      const url = new URL(`http://x/api/files/raw?path=photo.png&v=1${query}`)
+      return (await handleWorkspaceFsApi(url, new Request(url.href), {
+        workspaceRoot: dir,
+      } as never)) as Response
+    }
+    const small = await get('&w=160')
+    expect(small.headers.get('cache-control')).toBe('private, max-age=31536000, immutable')
+    const scaled = new Uint8Array(await small.arrayBuffer())
+    expect(imageSizeOf(scaled)).toEqual({ width: 160, height: 80 })
+    expect(scaled.length).toBeLessThan(bytes.length)
+    expect(new Uint8Array(await (await get('&w=1024')).arrayBuffer())).toEqual(bytes)
+    expect((await get('&w=0')).status).toBe(422)
+    expect((await get('&w=abc')).status).toBe(422)
+  })
 })
+
+/** `width`×`height` 的不透明 RGB PNG，像素为不可压缩的噪声：使缩小后的结果必然小于原文件。 */
+function opaquePng(width: number, height: number): Uint8Array<ArrayBuffer> {
+  const raw = new Uint8Array((width * 3 + 1) * height)
+  let seed = 1
+  for (let i = 0; i < raw.length; i++) {
+    seed = (seed * 1103515245 + 12345) >>> 0
+    raw[i] = i % (width * 3 + 1) === 0 ? 0 : seed >>> 24
+  }
+  const chunk = (type: string, data: Uint8Array) => {
+    const body = new Uint8Array(4 + data.length)
+    body.set(new TextEncoder().encode(type), 0)
+    body.set(data, 4)
+    const out = new Uint8Array(12 + data.length)
+    const v = new DataView(out.buffer)
+    v.setUint32(0, data.length)
+    out.set(body, 4)
+    v.setUint32(8 + data.length, Bun.hash.crc32(body))
+    return out
+  }
+  const ihdr = new Uint8Array(13)
+  new DataView(ihdr.buffer).setUint32(0, width)
+  new DataView(ihdr.buffer).setUint32(4, height)
+  ihdr.set([8, 2, 0, 0, 0], 8)
+  const parts = [
+    new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', new Uint8Array(0)),
+  ]
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+  let at = 0
+  for (const p of parts) {
+    out.set(p, at)
+    at += p.length
+  }
+  return out
+}

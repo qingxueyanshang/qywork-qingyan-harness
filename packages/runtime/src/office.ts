@@ -58,13 +58,26 @@ export function officeDir(): string | null {
 }
 
 /**
- * Python 解释器：配置中指定时使用指定值，否则在 PATH 中查找。
+ * qywork 自己的 Python 虚拟环境（全局数据目录的 `python/`）。macOS 与 Linux 上运行环境把文档库安装到这里：
+ * 较新的发行版与 Homebrew 的系统 Python 标记为外部管理（PEP 668），拒绝 `pip install --user`。
+ */
+export function officeVenv(): string {
+  return join(configDir(), 'python')
+}
+
+/**
+ * Python 解释器：配置中指定时使用指定值，其次是 qywork 的虚拟环境（`officeVenv`），最后在 PATH 中查找。
  *
  * Windows 上排除 `WindowsApps` 目录：该目录中的 `python.exe` 是商店别名，未安装 Python 时
  * 运行它会打开商店页面而不是报错。
  */
 export function findPython(config: QyConfig): string | null {
   if (config.officePython) return existsSync(config.officePython) ? config.officePython : null
+  const venv = join(
+    officeVenv(),
+    process.platform === 'win32' ? join('Scripts', 'python.exe') : join('bin', 'python3'),
+  )
+  if (existsSync(venv)) return venv
   const names = process.platform === 'win32' ? ['python.exe'] : ['python3', 'python']
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (!dir || /[\\/]WindowsApps[\\/]?$/i.test(dir)) continue

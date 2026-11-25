@@ -233,6 +233,8 @@ function updatePanel(wsId: string, next: (cur: WorkspacePanel) => WorkspacePanel
  *   而当前会话不随应用重启恢复。
  * - 内置浏览器页改为宿主中没有对应页面的记录（`live: false`），保留标题、地址与位置，id 改由本层分配：
  *   宿主的 tabId 随新进程从 `bt_1` 重新计数，沿用旧 id 会与新建的页重复。已是该状态的页同样重新分配 id。
+ *   只在桌面外壳中如此：其他客户端的页面在电脑上，不随本页面加载重启，浏览器页原样保留，由服务端的清单对账
+ *   （`browser.tabs`）；改为恢复记录时，每次加载都会在电脑上按记录新建一份页面。
  * - 其余页原样保留：它们的内容按路径、地址或标识重新读取。
  * - 全部页的创建序号改为不大于 0 的值并保持原顺序，理由见 `createdSeq`。
  *
@@ -251,7 +253,7 @@ function restoredPanels(
       .filter((t) => !gone.includes(t))
       .map((t): PanelTab => {
         seq += 1
-        if (t.kind !== 'browser') return { ...t, createdSeq: seq }
+        if (t.kind !== 'browser' || !isDesktopShell()) return { ...t, createdSeq: seq }
         browsers += 1
         const id = `browser-${browsers}`
         ids.set(t.id, id)

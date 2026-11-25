@@ -13,7 +13,7 @@ import {
   Show,
   Switch,
 } from 'solid-js'
-import { ApiError } from '../lib/client.ts'
+import { ApiError, rawFilePath } from '../lib/client.ts'
 import {
   createReadonlyEditor,
   languageFor,
@@ -26,6 +26,8 @@ import { renderMarkdown } from '../lib/markdown.ts'
 import { loaded, suspendUntil } from '../lib/resource.ts'
 import {
   absPath,
+  browserPresentation,
+  browserReady,
   client,
   explainApiError,
   fileSelectRequest,
@@ -41,12 +43,14 @@ import { type PreviewTools, PreviewToolsContext, type ToolsRender } from './prev
 import { patchView, readView } from './preview/view-state.ts'
 import ZoomControl from './preview/ZoomControl.tsx'
 import { bindZoomInputs, ZOOM_STEP } from './preview/zoom-input.ts'
+import RemoteHtmlPreview from './remote-browser/RemoteHtmlPreview.tsx'
 
-// 懒加载：表格、演示文稿与文档的解析与绘制代码只在打开对应文件时下载。使用处以 `HoldBoundary` 包裹，不要换成 Suspense：
-// 代码下载与首次解析要挂起到文件页的 `HoldSwitch`，切换文件时保留上一个文件；换成 Suspense 时先显示加载条。
+// 懒加载：表格、演示文稿、文档与 PDF（桌面外壳以外）的解析与绘制代码只在打开对应文件时下载。使用处以 `HoldBoundary` 包裹，
+// 不要换成 Suspense：代码下载与首次解析要挂起到文件页的 `HoldSwitch`，切换文件时保留上一个文件；换成 Suspense 时先显示加载条。
 const SheetView = lazy(() => import('./office/SheetView.tsx'))
 const SlideView = lazy(() => import('./office/pptx/SlideView.tsx'))
 const DocView = lazy(() => import('./office/docx/DocView.tsx'))
+const PdfPages = lazy(() => import('./preview/PdfPages.tsx'))
 
 interface PreviewResult {
   path: string
@@ -58,6 +62,8 @@ interface PreviewResult {
   language?: string
   office?: OfficeFormat
   entries?: string[]
+  /** 图片的原图像素宽高，文件头不可读时缺省。 */
+  pixels?: { w: number; h: number }
   truncated: boolean
   note?: string
 }
@@ -92,8 +98,11 @@ export default function FileView(props: { path: string; refresh?: number; onClos
   const [source, setSource] = createSignal(false)
   const markdown = () => loaded(result)?.language === 'markdown'
   const svg = () => loaded(result)?.kind === 'image' && /\.svg$/i.test(props.path)
-  /** HTML 的预览由内置浏览器的引擎显示（`HtmlPreview`），只在桌面端提供；其他客户端只显示源码。 */
-  const html = () => loaded(result)?.language === 'html' && isDesktopShell()
+  /**
+   * HTML 的预览由内置浏览器的引擎显示：桌面外壳中为 `HtmlPreview`；其他客户端在宿主连接时，以及桌面外壳中浏览器无头运行时
+   * （显示方式 `view`）为远程画面（`RemoteHtmlPreview`）；宿主未连接时只显示源码。
+   */
+  const html = () => loaded(result)?.language === 'html' && (isDesktopShell() || browserReady())
   // 选中请求（画布摘录卡）按源码位置计算，只能在源码视图中执行；请求可能先于预览结果到达，两者都就绪后再判断。
   createEffect(() => {
     const req = fileSelectRequest()
@@ -228,8 +237,13 @@ export default function FileView(props: { path: string; refresh?: number; onClos
                     onRendered={rendered}
                   />
                 </Match>
-                <Match when={html() && !source()}>
+                <Match
+                  when={html() && !source() && isDesktopShell() && browserPresentation() !== 'view'}
+                >
                   <HtmlPreview path={r().path} mtime={r().mtime} />
+                </Match>
+                <Match when={html() && !source()}>
+                  <RemoteHtmlPreview path={r().path} mtime={r().mtime} />
                 </Match>
                 <Match when={r().kind === 'text' || r().kind === 'tabular'}>
                   <CodeView
@@ -243,7 +257,9 @@ export default function FileView(props: { path: string; refresh?: number; onClos
                   <SvgSource path={r().path} mtime={r().mtime} zoom={textZoom()} />
                 </Match>
                 <Match when={r().kind === 'pdf'}>
-                  <PdfView path={r().path} mtime={r().mtime} />
+                  <HoldBoundary fallback={<div class="preview-loading" />}>
+                    <PdfPages path={r().path} mtime={r().mtime} />
+                  </HoldBoundary>
                 </Match>
                 <Match when={r().office === 'xlsx'}>
                   <HoldBoundary fallback={<div class="preview-loading" />}>
@@ -261,7 +277,11 @@ export default function FileView(props: { path: string; refresh?: number; onClos
                   </HoldBoundary>
                 </Match>
                 <Match when={r().kind === 'image'}>
-                  <FileImageView src={client.fileUrl(r().path, r().mtime)} path={r().path} />
+                  <FileImageView
+                    src={client.fileUrl(r().path, r().mtime)}
+                    path={r().path}
+                    pixels={r().pixels ?? null}
+                  />
                 </Match>
                 <Match when={r().kind === 'video'}>
                   <MediaView kind="video" src={client.fileUrl(r().path, r().mtime)} />
@@ -326,7 +346,7 @@ function SvgSource(props: { path: string; mtime: number; zoom: number }) {
   const [text] = createResource(
     () => JSON.stringify([props.path, props.mtime]),
     async () => {
-      const url = `/api/files/raw?path=${encodeURIComponent(props.path)}`
+      const url = rawFilePath(props.path, props.mtime)
       const res = await client.raw(url)
       if (!res.ok) throw new ApiError(res.status, url, await res.text().catch(() => ''))
       return res.text()
@@ -342,72 +362,6 @@ function SvgSource(props: { path: string; mtime: number; zoom: number }) {
       }
     >
       <CodeView content={loaded(text) ?? ''} path={props.path} wrap zoom={props.zoom} />
-    </Show>
-  )
-}
-
-/**
- * PDF：取得原始字节并生成 blob URL 交给 iframe，由 WebView 内置的阅读器渲染。图片与音视频使用直链（`client.fileUrl`）。
- *
- * - 使用 blob URL，不使用直链或 data URI：桌面端 CSP 的 `frame-src` 只放行 `blob:`；data URI 还需要把整个文件以 base64 写入 JSON。
- * - 只在路径或修改时间变化时重新获取。判据必须经过 memo 且为字符串：预览每次重新获取都返回一个新对象，
- *   直接依赖它时，会话中任何一次写文件都会使阅读器重新加载并回到第一页；只判断修改时间时，
- *   在同一个预览中切换到修改时间恰好相同的另一个文件不会重新获取，显示的仍是上一个文件。
- * - blob URL 被替换时立即撤销，卸载时撤销最后一个：不撤销时整份字节会占用内存直到整页刷新。
- */
-function PdfView(props: { path: string; mtime: number }) {
-  const [src, setSrc] = createSignal<string | null>(null)
-  const [error, setError] = createSignal<string | null>(null)
-  const source = createMemo(() => JSON.stringify([props.path, props.mtime]))
-
-  const replace = (next: string | null) => {
-    const old = src()
-    setSrc(next)
-    if (old) URL.revokeObjectURL(old)
-  }
-
-  /** 只采用最后一次请求的结果：文件连续改写时，先发出的请求可能后返回。 */
-  let generation = 0
-  createEffect(
-    on(source, () => {
-      const mine = ++generation
-      const url = `/api/files/raw?path=${encodeURIComponent(props.path)}`
-      void (async () => {
-        const res = await client.raw(url)
-        if (!res.ok) throw new ApiError(res.status, url, await res.text().catch(() => ''))
-        return URL.createObjectURL(await res.blob())
-      })().then(
-        (next) => {
-          if (mine !== generation) {
-            URL.revokeObjectURL(next)
-            return
-          }
-          setError(null)
-          replace(next)
-        },
-        (err: unknown) => {
-          if (mine !== generation) return
-          replace(null)
-          setError(err instanceof Error ? err.message : String(err))
-        },
-      )
-    }),
-  )
-  onCleanup(() => {
-    generation += 1
-    replace(null)
-  })
-
-  return (
-    <Show
-      when={src()}
-      fallback={
-        <Show when={error()} fallback={<div class="preview-loading" />}>
-          {(msg) => <div class="preview-note">{msg()}</div>}
-        </Show>
-      }
-    >
-      {(u) => <iframe class="preview-frame" src={u()} title={props.path} />}
     </Show>
   )
 }

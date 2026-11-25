@@ -1370,14 +1370,44 @@ describe('变更页按轮次分组', () => {
 /**
  * 新开预览看板上各行对应的页面类型。
  *
- * 内置浏览器由桌面外壳的宿主承载，其他端无法承载：即使服务端报告宿主已连接，
- * 也不在这些端提供内置浏览器入口，否则点击后必然无法显示网页（B5）。
- *
- * 「网页预览」一行**按端提供，不按宿主是否连接提供**：它是其他端实际具备的能力，
- * 不是内置浏览器的备用路线。
+ * 内置浏览器由桌面外壳的宿主承载；其他端在服务端报告宿主已连接时经远程查看使用它，此时不提供网页预览：
+ * 网页预览的 iframe 中 localhost 指向手机自身，打开电脑上的本机服务必然失败。宿主未连接时其他端提供网页预览。
  */
 describe('看板按当前端实际具备的能力列出各行', () => {
-  test('非桌面外壳时提供网页预览，服务端报告宿主已连接也不提供内置浏览器', async () => {
+  test('非桌面外壳且宿主未连接时提供网页预览，不提供内置浏览器与终端', async () => {
+    const store = await import('../lib/store/index.ts')
+    const originalApi = store.client.api
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async () => ({
+      nodes: [],
+    })
+    restoreApi = () => {
+      ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
+    }
+    store.setState('capabilities', {
+      sandbox: { backend: 'none', active: false, reason: '' },
+      browser: { connected: false, runtimeSupported: true },
+    })
+    store.setWorkspace({ id: 'ws_board', root: 'C:work', name: 'work' })
+    store.setSidePanel('files')
+
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+
+    host.querySelector<HTMLButtonElement>('[aria-label="新开预览"]')?.click()
+    await waitFor(
+      () => host.querySelectorAll('.board-item').length > 0,
+      () => host.innerHTML,
+    )
+    const labels = [...host.querySelectorAll('.board-label')].map((el) => el.textContent)
+    expect(labels).toContain('网页预览')
+    expect(labels).not.toContain('浏览器')
+    expect(labels).not.toContain('终端')
+  })
+
+  test('非桌面外壳且服务端报告宿主已连接时提供内置浏览器，不提供网页预览', async () => {
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async () => ({
@@ -1408,11 +1438,57 @@ describe('看板按当前端实际具备的能力列出各行', () => {
       () => host.innerHTML,
     )
     const labels = [...host.querySelectorAll('.board-label')].map((el) => el.textContent)
-    expect(labels).toContain('网页预览')
-    expect(labels).not.toContain('浏览器')
-    // 终端同理：PTY 在外壳的 Rust 侧，网页端没有。
+    expect(labels).toContain('浏览器')
+    expect(labels).not.toContain('网页预览')
+    // 终端：PTY 在外壳的 Rust 侧，网页端没有。
     expect(labels).not.toContain('终端')
   })
+})
+
+/**
+ * 原始失败形状：网页标题变化时页签对象被替换，按对象渲染的正文随之重建，远程画面重新连接，重连期间的轻点丢失。
+ */
+test('浏览器页的标题与地址变化时正文不重建', async () => {
+  const { mock } = await import('bun:test')
+  let mounts = 0
+  mock.module('./remote-browser/RemoteBrowserPanel.tsx', () => ({
+    default: (props: { id: string }) => {
+      mounts += 1
+      const el = document.createElement('div')
+      el.className = 'remote-stub'
+      el.dataset.id = props.id
+      return el
+    },
+  }))
+  const store = await import('../lib/store/index.ts')
+  const ui = await import('../lib/store/ui.ts')
+  store.setWorkspace({ id: 'ws_title', root: 'C:work', name: 'work' })
+  const tab = (title: string, url: string) => ({
+    id: 'bt_title',
+    title,
+    url,
+    workspaceId: 'ws_title',
+    createdSeq: 1,
+  })
+  ui.syncBrowserTabs([tab('测试页', 'http://a.test/')])
+  store.setSidePanel({ tab: 'bt_title' })
+
+  const { render } = await import('solid-js/web')
+  const { default: SidePanel } = await import('./SidePanel.tsx')
+  const host = document.createElement('div')
+  document.body.append(host)
+  dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+  await waitFor(
+    () => host.querySelector('.remote-stub') !== null,
+    () => host.innerHTML.slice(0, 300),
+  )
+  const first = host.querySelector('.remote-stub')
+  ui.syncBrowserTabs([tab('clicked', 'http://a.test/#x')])
+  await new Promise((r) => setTimeout(r, 0))
+  expect(host.querySelector('.remote-stub')).toBe(first)
+  expect(mounts).toBe(1)
+  expect(host.querySelector('.side-tab .tab-name')?.textContent).toBe('clicked')
+  ui.syncBrowserTabs([])
 })
 
 describe('从可多开的页切换到固定页签', () => {
@@ -1603,43 +1679,48 @@ describe('文件预览的切换与 PDF', () => {
   })
 
   /**
-   * PDF 的字节单独获取后交给 iframe。会话中写入其他文件会使预览重新获取一次，
-   * 源文件未变化（修改时间相同）时不重新获取字节，阅读器不重新加载。
+   * 所有客户端（包括桌面外壳）以页面视图（`PdfPages`，pdf.js 按页绘制）显示 PDF，不交给 iframe。
+   * 原始失败形状：手机浏览器不在页面中完整显示嵌入的 PDF（iOS Safari 只显示第一页，Android Chrome 不显示），
+   * Linux 的系统网页组件没有 PDF 阅读器。本例在桌面外壳中运行：外壳与其他客户端走同一条路径。
+   * 页面视图本身依赖 pdf.js 与画布，以替身代替；其分段读取由 `preview/pdf-source.test.ts` 锁定，绘制由浏览器复测验证。
    */
-  test('PDF 按修改时间获取字节，写入其他文件时不重新加载', async () => {
+  test('桌面外壳同样以页面视图显示 PDF，不使用 iframe', async () => {
+    const { mock } = await import('bun:test')
+    mock.module('./preview/PdfPages.tsx', () => ({
+      default: (props: { path: string; mtime: number }) => {
+        const el = document.createElement('div')
+        el.className = 'pdf-pages-stub'
+        el.dataset.source = `${props.path}@${props.mtime}`
+        return el
+      },
+    }))
     const store = await import('../lib/store/index.ts')
     const originalApi = store.client.api
     const originalRaw = store.client.raw
-    let mtime = 1
     const rawCalls: string[] = []
-    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
-      path: string,
-    ) => {
-      if (!path.startsWith('/api/files/preview')) throw new Error(`未预期请求：${path}`)
-      return {
-        path: 'r.pdf',
-        kind: 'pdf',
-        mime: 'application/pdf',
-        size: 9,
-        mtime,
-        truncated: false,
-      }
-    }
+    ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async () => ({
+      path: 'r.pdf',
+      kind: 'pdf',
+      mime: 'application/pdf',
+      size: 9,
+      mtime: 3,
+      truncated: false,
+    })
     ;(store.client as unknown as { raw: (path: string) => Promise<Response> }).raw = async (
       path: string,
     ) => {
       rawCalls.push(path)
-      return new Response('%PDF-1.4', { headers: { 'content-type': 'application/pdf' } })
+      return new Response('%PDF-1.4')
     }
-    // happy-dom 的 iframe 无法加载 `blob:` 地址，会在后台报错；因此替换为它能加载的空白页。
-    const { createObjectURL, revokeObjectURL } = URL
-    URL.createObjectURL = () => 'about:blank'
-    URL.revokeObjectURL = () => {}
     restoreApi = () => {
       ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
       ;(store.client as unknown as { raw: typeof originalRaw }).raw = originalRaw
-      URL.createObjectURL = createObjectURL
-      URL.revokeObjectURL = revokeObjectURL
+    }
+    const g = globalThis as Record<string, unknown>
+    const previousShell = g.__TAURI_INTERNALS__
+    g.__TAURI_INTERNALS__ = { metadata: { currentWebview: { label: 'main' } } }
+    restoreShell = () => {
+      g.__TAURI_INTERNALS__ = previousShell
     }
 
     const { render } = await import('solid-js/web')
@@ -1650,24 +1731,13 @@ describe('文件预览的切换与 PDF', () => {
       () => <FileView path="r.pdf" refresh={store.state.fileVersion} />,
       host as unknown as HTMLElement,
     )
-
     await waitFor(
-      () => host.querySelector('iframe.preview-frame') !== null,
-      () => `raw=${rawCalls.join(',')} html=${host.innerHTML.slice(0, 300)}`,
+      () => host.querySelector('.pdf-pages-stub') !== null,
+      () => `html=${host.innerHTML.slice(0, 300)}`,
     )
-    expect(rawCalls).toEqual([`/api/files/raw?path=${encodeURIComponent('r.pdf')}`])
-
-    // 预览的重新获取与其后的渲染只经过微任务，读取字节在渲染中同步发起：让出一轮事件循环后即可判定。
-    store.setState('fileVersion', 1)
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(rawCalls).toHaveLength(1)
-
-    mtime = 2
-    store.setState('fileVersion', 2)
-    await waitFor(
-      () => rawCalls.length === 2,
-      () => `raw=${rawCalls.join(',')}`,
-    )
+    expect(host.querySelector<HTMLElement>('.pdf-pages-stub')?.dataset.source).toBe('r.pdf@3')
+    expect(host.querySelector('iframe')).toBeNull()
+    expect(rawCalls).toEqual([])
   })
 
   /**

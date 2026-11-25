@@ -355,19 +355,21 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
     parsed: {
       ok: true,
       fonts: ['宋体', 'SimSun', '黑体'],
+      styles: [],
       embedded: [],
       unsupported: { chart: 2, decimalTab: 3 },
     },
     pages: docPages(REPORT_SIZES.map((size) => docPage(size))),
   },
   revised: {
-    parsed: { ok: true, fonts: ['宋体'], embedded: [], unsupported: {} },
+    parsed: { ok: true, fonts: ['宋体'], styles: [], embedded: [], unsupported: {} },
     pages: docPages(REPORT_SIZES.map((size, i) => docPage(size, i === 0 ? 1 : 0))),
   },
   embedded: {
     parsed: {
       ok: true,
       fonts: ['宋体', '方正小标宋简体'],
+      styles: [],
       embedded: [{ family: '方正小标宋简体', bold: false, italic: false, bytes: tinyFont() }],
       unsupported: {},
     },
@@ -377,6 +379,7 @@ const DOCX_RESULTS: Record<string, { parsed: DocxParsed; pages?: DocumentPages }
     parsed: {
       ok: true,
       fonts: [],
+      styles: [],
       embedded: [],
       unsupported: {
         frame: 1,
@@ -644,6 +647,7 @@ async function fakeServer(opts: {
   const raw: string[] = []
   const finds: URLSearchParams[] = []
   const fontRequests: string[] = []
+  const fontFiles: URLSearchParams[] = []
   const originalApi = store.client.api
   const originalRaw = store.client.raw
   ;(store.client as unknown as { api: (path: string) => Promise<unknown> }).api = async (
@@ -664,7 +668,7 @@ async function fakeServer(opts: {
       return { matches: opts.find?.(query) ?? [], truncated: false }
     }
     if (path.startsWith('/api/files/preview')) {
-      const file = decodeURIComponent(path.split('path=')[1] ?? '')
+      const file = new URL(path, 'http://x').searchParams.get('path') ?? ''
       return {
         path: file,
         kind: 'office',
@@ -680,16 +684,19 @@ async function fakeServer(opts: {
   ;(store.client as unknown as { raw: (path: string) => Promise<Response> }).raw = async (
     path: string,
   ) => {
-    if (path.startsWith('/api/fonts/file')) return new Response(tinyFont())
+    if (path.startsWith('/api/fonts/file')) {
+      fontFiles.push(new URL(path, 'http://x').searchParams)
+      return new Response(tinyFont())
+    }
     raw.push(path)
-    const file = decodeURIComponent(path.split('path=')[1] ?? '')
+    const file = new URL(path, 'http://x').searchParams.get('path') ?? ''
     return new Response(await opts.bytes(file))
   }
   restores.push(() => {
     ;(store.client as unknown as { api: typeof originalApi }).api = originalApi
     ;(store.client as unknown as { raw: typeof originalRaw }).raw = originalRaw
   })
-  return { raw, finds, store, families, loads, fontRequests }
+  return { raw, finds, store, families, loads, fontRequests, fontFiles }
 }
 
 async function mountFileView(path: () => string, refresh: () => number) {
@@ -1515,6 +1522,48 @@ describe('文档预览', () => {
     expect(layout.files).toHaveLength(1)
     expect([...layout.files[0]!]).toEqual([...tinyFont()])
     expect(layout.fallback).toBe('宋体')
+  })
+
+  /** 只取得排版会选用的样式：选用顺序为同粗斜体、同粗细、常规、第一个，与 `DocxFonts` 相同。 */
+  test('按需要的样式选取字体：主机缺少的样式取排版会改用的字体', async () => {
+    const { facesForStyles: selectFaces } = await import('@qywork/ooxml/text')
+    const face = (bold: boolean, italic: boolean) => ({ id: `${+bold}${+italic}`, bold, italic })
+    const all = [face(false, false), face(true, false), face(false, true), face(true, true)]
+    const ids = (list: { id: string }[]) => list.map((f) => f.id)
+    // 位序：常规 1、斜体 2、粗体 4、粗斜体 8。
+    expect(ids(selectFaces(all, 1 | 4))).toEqual(['00', '10'])
+    expect(ids(selectFaces(all, 0b1111))).toEqual(['00', '10', '01', '11'])
+    // 没有粗斜体时改用粗体，没有斜体时改用常规。
+    expect(ids(selectFaces(all.slice(0, 2), 8))).toEqual(['10'])
+    expect(ids(selectFaces(all.slice(0, 2), 2))).toEqual(['00'])
+    // 只有粗体时一律取它。
+    expect(ids(selectFaces([face(true, false)], 1))).toEqual(['10'])
+  })
+
+  /**
+   * 原始失败形状：远程访问时打开一份 Word，主机字体按整套下载（18 个字体文件、约 40 MB），差网络下等待两分钟。
+   * 字体按该文档用到的字裁剪：请求带文档路径与修改时间，文档改写后以新的版本重新请求。
+   */
+  test('主机字体按预览中的文档裁剪：请求带文档路径与修改时间，文档改写后重新请求', async () => {
+    fakeWorker()
+    let mtime = 1
+    const server = await fakeServer({ bytes: () => 'report', mtime: () => mtime })
+    const { createSignal } = await import('solid-js')
+    const [refresh, setRefresh] = createSignal(0)
+    const host = await mountFileView(() => 'docs/b.docx', refresh)
+    await waitFor(
+      () => server.fontFiles.length === 1,
+      () => host.innerHTML.slice(0, 300),
+    )
+    expect(server.fontFiles[0]!.get('doc')).toBe('docs/b.docx')
+    expect(server.fontFiles[0]!.get('v')).toBe('1')
+    mtime = 2
+    setRefresh(1)
+    await waitFor(
+      () => server.fontFiles.length === 2,
+      () => `${server.fontFiles.length} ${host.innerHTML.slice(0, 300)}`,
+    )
+    expect(server.fontFiles[1]!.get('v')).toBe('2')
   })
 
   test('三类失败各显示一句原因，不显示页面与能力边界', async () => {

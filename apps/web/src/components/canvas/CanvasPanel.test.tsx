@@ -791,6 +791,48 @@ describe('画布：节点操作', () => {
     ])
   })
 
+  test('触屏：单指拖动空白处平移视口并取消选中，不框选', async () => {
+    const { host, server, refs } = await mount(FILES)
+    const stage = host.querySelector('.canvas-stage')!
+    const touch = { pointerType: 'touch' }
+    pointer(node(host, refs.$a!), 'pointerdown', 10, 10, touch)
+    pointer(stage, 'pointerup', 10, 10, touch)
+    expect(host.querySelector(`[data-node="${refs.$a!}"].selected`)).not.toBeNull()
+    const before = offset(host)
+    pointer(stage, 'pointerdown', 600, 500, touch)
+    pointer(stage, 'pointermove', 640, 530, touch)
+    expect(host.querySelector('.canvas-marquee')).toBeNull()
+    pointer(stage, 'pointerup', 640, 530, touch)
+    expect(offset(host)).toEqual({ x: before.x + 40, y: before.y + 30 })
+    expect(host.querySelector('[data-node].selected')).toBeNull()
+    expect(server.ops).toHaveLength(0)
+  })
+
+  test('触屏：双指按间距缩放，两指中点下的画布位置不变；第二根手指按下时取消正在拖动的节点', async () => {
+    const { host, server, refs } = await mount(FILES)
+    const stage = host.querySelector('.canvas-stage')!
+    const z = zoom(host)
+    const before = offset(host)
+    // 第一根手指拖动节点，第二根手指按下后节点回到原位，松开后不提交位置。
+    pointer(node(host, refs.$a!), 'pointerdown', 100, 100, { pointerType: 'touch', pointerId: 1 })
+    pointer(stage, 'pointermove', 120, 110, { pointerType: 'touch', pointerId: 1 })
+    pointer(stage, 'pointerdown', 200, 100, { pointerType: 'touch', pointerId: 2 })
+    pointer(stage, 'pointermove', 320, 110, { pointerType: 'touch', pointerId: 2 })
+    // 两指由 (120, 110)、(200, 100) 移到 (120, 110)、(320, 110)：中点由 (160, 105) 移到 (220, 110)。
+    const nz = Math.min(3, (z * 200) / Math.hypot(80, 10))
+    expect(zoom(host)).toBeCloseTo(nz, 6)
+    const world = { x: (160 - before.x) / z, y: (105 - before.y) / z }
+    const after = offset(host)
+    expect(after.x + world.x * nz).toBeCloseTo(220, 6)
+    expect(after.y + world.y * nz).toBeCloseTo(110, 6)
+    pointer(stage, 'pointerup', 320, 110, { pointerType: 'touch', pointerId: 2 })
+    pointer(stage, 'pointermove', 400, 300, { pointerType: 'touch', pointerId: 1 })
+    pointer(stage, 'pointerup', 400, 300, { pointerType: 'touch', pointerId: 1 })
+    expect(offset(host)).toEqual(after)
+    await Promise.resolve()
+    expect(server.ops).toHaveLength(0)
+  })
+
   test('拖动时向其余节点的边对齐：相距数个像素内时吸附并绘制对齐线，松开指针时提交对齐后的位置', async () => {
     const { host, server, refs } = await mount(FILES)
     const stage = host.querySelector('.canvas-stage')!
@@ -3725,7 +3767,11 @@ describe('画布：生成卡与生成面板', () => {
 
     await change([{ op: 'update', id: refs.$a!, path: '新图片.png' }])
     await waitFor(
-      () => fetched.slice(before).includes(store.client.fileUrl('新图片.png', '')),
+      // 卡片按显示尺寸取缩小的版本：地址为直链加宽度。
+      () =>
+        fetched
+          .slice(before)
+          .some((u) => new URL(u).searchParams.get('path') === '新图片.png' && u.includes('&w=')),
       () => fetched.slice(before).join('\n'),
     )
     expect(editor.firstChild === tag).toBe(true)

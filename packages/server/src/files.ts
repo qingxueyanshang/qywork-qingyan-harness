@@ -9,8 +9,10 @@
 
 import { mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
+import type { CanvasPixels } from '@qywork/core'
 import { openZip } from '@qywork/ooxml/zip'
 import { IGNORED_DIRS } from '@qywork/tools'
+import { mediaSizeOf } from './media-size.ts'
 
 export type PreviewKind =
   | 'text'
@@ -51,6 +53,8 @@ export interface PreviewResult {
   office?: OfficeFormat
   /** 仅 ZIP 结构的归档有：成员路径，按中央目录顺序，目录以 `/` 结尾。 */
   entries?: string[]
+  /** 仅图片有，且只在文件头可读时给出：原图的像素宽高。界面据此按显示尺寸取缩小的版本（`/api/files/raw` 的 `w`）。 */
+  pixels?: CanvasPixels
   truncated: boolean
   /** 无法内联时给出的说明，UI 直接显示。 */
   note?: string
@@ -446,14 +450,11 @@ export async function preview(abs: string, relPath: string): Promise<PreviewResu
    * `frame-src` 只允许 `blob:`，data URI 的 iframe 在打包版中显示空白；内联还需把整份文件以
    * base64 写入该 JSON 响应，生成的 4K 图片与视频常超过数 MB，只能截断而无法显示。
    */
-  if (
-    kind === 'pdf' ||
-    kind === 'image' ||
-    kind === 'audio' ||
-    kind === 'video' ||
-    kind === 'office'
-  )
-    return base
+  if (kind === 'image') {
+    const pixels = await mediaSizeOf(abs)
+    return pixels ? { ...base, pixels } : base
+  }
+  if (kind === 'pdf' || kind === 'audio' || kind === 'video' || kind === 'office') return base
 
   if (kind === 'text' || kind === 'tabular') {
     // 只读取上限以内的字节：整文件读入后再截断，内存占用会随文件大小增长。

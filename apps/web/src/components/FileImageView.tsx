@@ -1,4 +1,14 @@
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+  untrack,
+} from 'solid-js'
+import { scaledFileUrl } from '../lib/client.ts'
 import { suspendUntil } from '../lib/resource.ts'
 import { usePreviewTools } from './preview/tools.ts'
 import { readView, writeView } from './preview/view-state.ts'
@@ -18,11 +28,26 @@ interface ViewRecord {
   top: number
 }
 
+/** 取缩小版本的宽度档位：2 的幂，最小 512。放大越过当前档位时才取更高一档，缩小时不重新获取。 */
+function tierOf(px: number): number {
+  let t = 512
+  while (t < px) t *= 2
+  return t
+}
+
 /**
  * 图片的缩放只依赖原始尺寸与预览区尺寸，文件树和路径栏不参与计算。缩放控件经 `usePreviewTools` 放在文件页的标题行中。
  * `src` 带有修改时间作为版本，文件改写后变化；视图状态按 `path` 记录，改写后保留缩放与位置。
+ *
+ * `pixels` 为原图宽高（预览接口读取文件头所得）。给出时按显示所需的设备像素取缩小的版本（`scaledFileUrl`），
+ * 远程访问时原图只在放大到超过缩小版本时传输；更高一档的版本在另建的图片上加载并解码完成后才替换，替换时不变空。
+ * 缩放比例按原图宽高计算，不按显示中版本的 `naturalWidth`。
  */
-export default function FileImageView(props: { src: string; path: string }) {
+export default function FileImageView(props: {
+  src: string
+  path: string
+  pixels?: { w: number; h: number } | null
+}) {
   let viewport!: HTMLDivElement
   let image!: HTMLImageElement
   const [size, setSize] = createSignal({ width: 0, height: 0 })
@@ -39,22 +64,38 @@ export default function FileImageView(props: { src: string; path: string }) {
   const [failed, setFailed] = createSignal(false)
   /** 图片与预览区的尺寸都已取得：此前缩放比例无从计算，缩放控件与快捷键都不响应。 */
   const ready = () => size().width > 0 && space().width > 0 && !failed()
+  /** 原图宽高：预览接口给出时取之，否则取加载完成的图片的 `naturalWidth`。 */
+  const natural = (img: HTMLImageElement) =>
+    props.pixels
+      ? { width: props.pixels.w, height: props.pixels.h }
+      : { width: img.naturalWidth, height: img.naturalHeight }
+  /** 打开时按记录的缩放模式估计所需宽度：适应窗口与适应宽度不超过窗口宽度。`Infinity` 为原图。 */
+  const initialTier = () => {
+    const pixels = props.pixels
+    if (!pixels) return Number.POSITIVE_INFINITY
+    const saved = readView<ViewRecord>(props.path)?.mode
+    const css = typeof saved === 'number' ? pixels.w * saved : Math.min(pixels.w, innerWidth)
+    const t = tierOf(css * devicePixelRatio)
+    return t >= pixels.w ? Number.POSITIVE_INFINITY : t
+  }
+  /** 显示中版本的宽度档位。 */
+  const [tier, setTier] = createSignal(untrack(initialTier))
+  const urlOf = (t: number) => (Number.isFinite(t) ? scaledFileUrl(props.src, t) : props.src)
   /*
    * 首次加载与解码声明为首次读取：切换文件时文件页保留上一个文件，到图片可以显示。
    * 加载与解码在页面文档中另建的图片上进行，完成后写入尺寸：下方的 `<img>` 由 JSX 模板克隆，属于模板的文档，
    * 所在区域挂起期间不加载，区域显示后才开始加载。另建的图片完成后，`<img>` 显示时从缓存取得。
    */
   const first = new Image()
-  first.src = props.src
+  first.src = urlOf(tier())
   first.decode().then(
     () => {
-      if (size().width === 0 && first.naturalWidth > 0)
-        setSize({ width: first.naturalWidth, height: first.naturalHeight })
+      if (size().width === 0 && first.naturalWidth > 0) setSize(natural(first))
     },
     () => undefined,
   )
   suspendUntil(() => size().width > 0 || failed())
-  const source = createMemo(() => props.src)
+  const source = createMemo(() => urlOf(tier()))
   const scale = createMemo(() => {
     const current = mode()
     if (typeof current === 'number') return current
@@ -100,15 +141,37 @@ export default function FileImageView(props: { src: string; path: string }) {
     viewport.scrollLeft = 0
     viewport.scrollTop = 0
   }
+  // 经 memo 取值：预览结果刷新时 `src` 不变，不重置缩放与位置。
+  const original = createMemo(() => props.src)
   createEffect(
-    on(source, () => {
+    on(original, () => {
       restoring = readView<ViewRecord>(props.path) ?? null
+      setTier(initialTier())
       setSize({ width: 0, height: 0 })
       setMode(restoring?.mode ?? 'fit')
       setFailed(false)
       resetScroll()
     }),
   )
+  // 放大到超过当前版本时取更高一档：在另建的图片上加载并解码，完成后再替换显示中的版本。
+  let upgrading: HTMLImageElement | null = null
+  createEffect(() => {
+    const pixels = props.pixels
+    const current = tier()
+    if (!pixels || !Number.isFinite(current) || !ready()) return
+    let next = tierOf(size().width * scale() * devicePixelRatio)
+    if (next <= current) return
+    if (next >= pixels.w) next = Number.POSITIVE_INFINITY
+    const img = new Image()
+    upgrading = img
+    img.src = urlOf(next)
+    img.decode().then(
+      () => {
+        if (upgrading === img) setTier(next)
+      },
+      () => undefined,
+    )
+  })
   createEffect(on(mode, save, { defer: true }))
 
   const selectMode = (next: 'fit' | 'width' | number) => {
@@ -207,10 +270,7 @@ export default function FileImageView(props: { src: string; path: string }) {
               visibility: scale() ? 'visible' : 'hidden',
             }}
             onLoad={(event) => {
-              setSize({
-                width: event.currentTarget.naturalWidth,
-                height: event.currentTarget.naturalHeight,
-              })
+              setSize(natural(event.currentTarget))
               const at = restoring
               restoring = null
               if (!at) return

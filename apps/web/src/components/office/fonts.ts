@@ -4,11 +4,13 @@
  *
  * - 排版度量与绘制必须来自同一份字节：调用方从 `HostFace.bytes` 读取度量，绘制按 `family` 引用已注册的 `FontFace`。
  * - 主机上没有的字体（404）与字体名不合法（422）按缺失处理，结果中该字体名没有字形；其他失败抛出。
- * - 主机字体在页面中只下载、注册一次：按字体名缓存家族，按内容哈希缓存单个字体。文档以另一个名称引用已注册的字体
- *   （如 `SimSun` 与 `宋体`）时不重复下载，`family` 为首次注册时的族名。
+ * - 字体按预览中的文档用到的字裁剪（`FontDocument`，服务端 `font-subset.ts`），字形编号与度量不变。
+ * - 按字体名缓存家族，按「内容哈希 + 文档 + 版本」缓存单个字体：同一文档以另一个名称引用同一字体（如 `SimSun` 与 `宋体`）
+ *   时不重复下载。每份裁剪结果以带序号的族名注册（`family`）：同一字体对不同文档的裁剪包含的字形不同，同名注册时
+ *   浏览器只采用其中一份。
  */
 
-import type { HostFamilies } from '@qywork/ooxml/text'
+import { ALL_STYLES, facesForStyles, type HostFamilies } from '@qywork/ooxml/text'
 import { ApiError } from '../../lib/client.ts'
 import { client } from '../../lib/store/index.ts'
 
@@ -28,9 +30,18 @@ interface FaceInfo {
   readonly italic: boolean
 }
 
+/** 预览中的文档：工作区路径与修改时间。 */
+export interface FontDocument {
+  readonly path: string
+  readonly mtime: number
+}
+
+/** 注册族名的序号，使每份裁剪结果的族名不同。 */
+let faceSerial = 0
+
 /** 字体名到该家族各字体的内容哈希。 */
 const families = new Map<string, Promise<readonly FaceInfo[]>>()
-/** 内容哈希到已注册的字体。 */
+/** 「内容哈希 + 文档 + 版本」到已注册的字体。 */
 const faces = new Map<string, Promise<HostFace>>()
 
 function familyOf(name: string): Promise<readonly FaceInfo[]> {
@@ -48,18 +59,20 @@ function familyOf(name: string): Promise<readonly FaceInfo[]> {
   return pending
 }
 
-function faceOf(name: string, info: FaceInfo): Promise<HostFace> {
-  let pending = faces.get(info.id)
+function faceOf(name: string, info: FaceInfo, doc: FontDocument): Promise<HostFace> {
+  const key = `${info.id}\u0000${doc.path}\u0000${doc.mtime}`
+  let pending = faces.get(key)
   if (!pending) {
     pending = (async () => {
-      const url = `/api/fonts/file?name=${encodeURIComponent(name)}&id=${encodeURIComponent(info.id)}`
+      const url = `/api/fonts/file?name=${encodeURIComponent(name)}&id=${encodeURIComponent(info.id)}&doc=${encodeURIComponent(doc.path)}&v=${encodeURIComponent(doc.mtime)}`
       const res = await client.raw(url)
       if (!res.ok) throw new ApiError(res.status, url, await res.text().catch(() => ''))
       const bytes = new Uint8Array(await res.arrayBuffer())
-      await registerFace(name, bytes, info.bold, info.italic)
-      return { family: name, bold: info.bold, italic: info.italic, bytes }
+      const family = `${name} ${++faceSerial}`
+      await registerFace(family, bytes, info.bold, info.italic)
+      return { family, bold: info.bold, italic: info.italic, bytes }
     })()
-    remember(faces, info.id, pending)
+    remember(faces, key, pending)
   }
   return pending
 }
@@ -105,15 +118,21 @@ export function loadHostFamilies(): Promise<HostFamilies> {
   return client.api<HostFamilies>('/api/fonts/families')
 }
 
-/** 取得 `names` 中各字体名在主机上的字体；主机上没有的字体名对应空数组。 */
+/**
+ * 取得 `names` 中各字体名在主机上的字体，按 `doc` 用到的字裁剪；主机上没有的字体名对应空数组。
+ * 给出 `styles` 时每个字体名只取得所列样式会选用的字体（`facesForStyles`），未列出的字体名取得全部样式。
+ */
 export async function loadHostFaces(
   names: readonly string[],
+  doc: FontDocument,
+  styles?: ReadonlyMap<string, number>,
 ): Promise<Map<string, readonly HostFace[]>> {
   const unique = [...new Set(names)]
   const results = await Promise.all(
     unique.map(async (name) => {
       const infos = await familyOf(name)
-      return [name, await Promise.all(infos.map((info) => faceOf(name, info)))] as const
+      const wanted = facesForStyles(infos, styles?.get(name) ?? ALL_STYLES)
+      return [name, await Promise.all(wanted.map((info) => faceOf(name, info, doc)))] as const
     }),
   )
   return new Map(results)

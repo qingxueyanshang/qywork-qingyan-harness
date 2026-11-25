@@ -84,6 +84,12 @@ stored.set(
   ),
 )
 
+// 应用启动发生在桌面外壳中：浏览器页只在桌面外壳中恢复为未加载的页（`ui.ts` 的 `restoredPanels`）。
+g.__TAURI_INTERNALS__ = {
+  metadata: { currentWebview: { label: 'main' } },
+  invoke: async () => [],
+  transformCallback: () => 0,
+}
 const {
   browserTab,
   browserTabLabel,
@@ -91,9 +97,11 @@ const {
   loadRestoredTab,
   openBrowserTab,
   openLinkInPanel,
+  projectRemoteTabs,
 } = await import('./browser.ts')
 const { closePanelTab, panelTabs, setSidePanel, setWorkspace, sidePanel, syncBrowserTabs } =
   await import('./ui.ts')
+delete g.__TAURI_INTERNALS__
 const { setState, state } = await import('./state.ts')
 
 interface Invoke {
@@ -657,5 +665,113 @@ describe('隐藏页', () => {
     await flush()
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_shown'])
     expect(browserTab('bt_preview')?.hidden).toBe(true)
+  })
+})
+
+/**
+ * 桌面外壳以外的客户端：页签清单取自服务端的 `browser.tabs`，新建、关闭经 `/api/browser/pages`，正文链接交给远程浏览器。
+ * 原始失败形状：这些客户端无法使用内置浏览器，网页预览的 iframe 中 localhost 指向手机自身。
+ */
+describe('桌面外壳以外的客户端', () => {
+  const previous = state.capabilities
+  let restoreApi: (() => void) | undefined
+  afterEach(() => {
+    restoreApi?.()
+    restoreApi = undefined
+    setState('capabilities', previous)
+    setState('notice', null)
+    projectRemoteTabs([])
+    reset()
+  })
+
+  /** 记录接口请求；新建页面返回 `created`。 */
+  async function stubApi(created: { tabId: string; workspaceId: string }) {
+    const { client } = await import('./client.ts')
+    const calls: { path: string; method: string; body: unknown }[] = []
+    const original = client.api
+    ;(client as unknown as { api: (p: string, i?: RequestInit) => Promise<unknown> }).api = async (
+      path,
+      init,
+    ) => {
+      calls.push({
+        path,
+        method: init?.method ?? 'GET',
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      })
+      if (path === '/api/browser/pages' && init?.method === 'POST') {
+        return { ...created, url: 'about:blank', title: '' }
+      }
+      return { ok: true }
+    }
+    restoreApi = () => {
+      client.api = original
+    }
+    return calls
+  }
+
+  const view = (tabId: string, workspaceId: string, url = 'http://a.test/') => ({
+    tabId,
+    url,
+    title: '',
+    workspaceId,
+  })
+
+  test('页签按服务端的清单同步，关闭页签经服务端关闭页面', async () => {
+    reset()
+    const calls = await stubApi({ tabId: 'bt_r1', workspaceId: WS_A.id })
+    setWorkspace(WS_A)
+    projectRemoteTabs([view('bt_r1', WS_A.id), view('bt_r2', WS_B.id)])
+    expect(panelTabs().map((t) => t.id)).toEqual(['bt_r1'])
+    closePanelTab('bt_r1')
+    await flush()
+    expect(calls).toContainEqual({
+      path: '/api/browser/pages?tabId=bt_r1',
+      method: 'DELETE',
+      body: null,
+    })
+  })
+
+  test('新建页面后切换到该页：清单先于或晚于新建的响应到达都切换', async () => {
+    reset()
+    setState('capabilities', {
+      sandbox: { backend: 'none', active: false, reason: '' },
+      browser: { connected: true, runtimeSupported: true },
+    } as never)
+    setWorkspace(WS_A)
+    const calls = await stubApi({ tabId: 'bt_late', workspaceId: WS_A.id })
+    await openBrowserTab('http://x.test/')
+    expect(calls[0]).toEqual({
+      path: '/api/browser/pages',
+      method: 'POST',
+      body: { url: 'http://x.test/' },
+    })
+    expect(sidePanel()).not.toEqual({ tab: 'bt_late' })
+    projectRemoteTabs([view('bt_late', WS_A.id)])
+    expect(sidePanel()).toEqual({ tab: 'bt_late' })
+
+    restoreApi?.()
+    await stubApi({ tabId: 'bt_early', workspaceId: WS_A.id })
+    projectRemoteTabs([view('bt_late', WS_A.id), view('bt_early', WS_A.id)])
+    await openBrowserTab()
+    expect(sidePanel()).toEqual({ tab: 'bt_early' })
+  })
+
+  test('宿主已连接时正文链接交给远程浏览器，已打开的地址切换到该页', async () => {
+    reset()
+    setState('capabilities', {
+      sandbox: { backend: 'none', active: false, reason: '' },
+      browser: { connected: true, runtimeSupported: true },
+    } as never)
+    setWorkspace(WS_A)
+    const calls = await stubApi({ tabId: 'bt_link_r', workspaceId: WS_A.id })
+    projectRemoteTabs([view('bt_open', WS_A.id, 'http://open.test/')])
+    openLinkInPanel('http://open.test/')
+    expect(sidePanel()).toEqual({ tab: 'bt_open' })
+    expect(calls).toEqual([])
+
+    openLinkInPanel('http://localhost:3000/')
+    await flush()
+    expect(calls[0]).toMatchObject({ method: 'POST', body: { url: 'http://localhost:3000/' } })
+    expect(panelTabs().some((t) => t.kind === 'preview')).toBe(false)
   })
 })

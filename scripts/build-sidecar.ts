@@ -20,6 +20,11 @@ import { externalBinPath } from './external-bin.ts'
 
 const ROOT = join(import.meta.dir, '..')
 const ENTRY = join(ROOT, 'packages/cli/src/index.ts')
+/**
+ * 服务进程的计算线程脚本，与入口脚本同目录输出为 `media-worker.js`（`packages/server/src/media-jobs.ts` 按此名称加载）。
+ * 打包器不识别 `new Worker`，线程脚本须作为入口列出，否则产物中没有它，图片缩小与字体请求全部失败。
+ */
+const WORKER = join(ROOT, 'packages/server/src/media-worker.ts')
 
 /**
  * 把图片库 photon 的 wasm 放入脚本目录。
@@ -164,8 +169,10 @@ async function main(): Promise<number> {
   let webEmbedded = false
 
   const result = await Bun.build({
-    entrypoints: [ENTRY],
+    entrypoints: [ENTRY, WORKER],
     outdir: scriptDir,
+    // 两个入口位于不同目录：按文件名输出到脚本目录根部，不保留源码的目录结构。
+    naming: '[name].[ext]',
     target: 'bun',
     // 体积是选择 Tauri 的理由之一。
     minify: true,
@@ -191,6 +198,10 @@ async function main(): Promise<number> {
     return 1
   }
 
+  if (!(await Bun.file(join(scriptDir, 'media-worker.js')).exists())) {
+    process.stderr.write('构建产物中没有计算线程脚本 media-worker.js\n')
+    return 1
+  }
   if (!(await Bun.file(entry).exists())) {
     process.stderr.write(`构建产物中没有入口脚本：${entry}\n`)
     return 1

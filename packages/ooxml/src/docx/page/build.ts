@@ -57,8 +57,10 @@ import {
 } from '../../math/index.ts'
 import { readMetafile } from '../../metafile/index.ts'
 import {
+  ALL_STYLES,
   type HostFamilies,
   type LineArea,
+  type StyleMask,
   type TextFace,
   type TextLine,
   WPS_METRIC_FONTS,
@@ -67,6 +69,7 @@ import {
 import { borderStrokes } from '../border.ts'
 import {
   contextSpacing,
+  EMOJI_FALLBACK,
   LEADER_FONT,
   lineAt,
   numberingText,
@@ -341,17 +344,31 @@ function graphicFontNames(graphics: readonly DrawingGraphic[]): string[] {
  * 文档所需的全部字体名：正文、表格、文本框、各节引用的页眉页脚、图表、SmartArt 与图元文件，以及主机没有其中的字体时所用的替代字体
  * （`substitutes`，数学字体的替代为 Cambria Math）与 WPS 按自带度量排版时的绘制字体（`wpsMetricFontNames`）。调用方据此
  * 预先取得字体文件。`host` 为主机字体的族名：主机有的字体名不列出其替代字体，主机没有的字体名按它做前缀匹配。
+ *
+ * 给出 `styles` 时写入每个字体名需要的字形样式（`StyleMask`）：字段、段落标记与编号的字体按其粗斜体，替代字体与 WPS
+ * 度量字体随原字体名；制表符前导、公式、表情回退、图表、SmartArt 与图元文件的字体为全部样式。调用方只取得排版会选用的字体文件。
  */
-export function requiredFonts(doc: DocxDocument, host: HostFamilies): string[] {
+export function requiredFonts(
+  doc: DocxDocument,
+  host: HostFamilies,
+  styles?: Map<string, StyleMask>,
+): string[] {
   const names = new Set<string>()
+  /** 字段、段落标记与编号记录的样式；其余字体名为全部样式。 */
+  const runStyles = new Map<string, StyleMask>()
+  /** 有带前导符的制表位：前导符的字体与字段的字体可能同名，单独记录。 */
+  let leader = false
   const visit = (blocks: readonly Block[]) => {
-    blockFonts(blocks, doc.settings.math.font, names)
+    blockFonts(blocks, doc.settings.math.font, names, runStyles)
     for (const b of blocks) {
       if (b.kind === 'table') {
         for (const r of b.rows) for (const c of r.cells) visit(c.content)
         continue
       }
-      if (b.props.tabs.some((t) => t.leader !== null)) names.add(LEADER_FONT)
+      if (b.props.tabs.some((t) => t.leader !== null)) {
+        names.add(LEADER_FONT)
+        leader = true
+      }
       for (const a of b.anchors) if (a.drawing !== null) visitNode(a.drawing)
     }
   }
@@ -361,18 +378,35 @@ export function requiredFonts(doc: DocxDocument, host: HostFamilies): string[] {
   }
   visit(doc.body)
   for (const part of Object.values(doc.parts)) visit(part)
+  /** 跟随 `from` 的样式加入 `name`：替代字体与度量字体按原字体名的样式选用。 */
+  const follow = (name: string, from: string) => {
+    names.add(name)
+    runStyles.set(name, (runStyles.get(name) ?? 0) | (runStyles.get(from) ?? ALL_STYLES))
+  }
   const present = new Set(host.names)
   for (const name of [...names]) {
     if (present.has(name.trim().toLowerCase())) continue
     const metric = WPS_METRIC_FONTS.get(name)?.writer ?? null
-    if (metric !== null) for (const n of wpsMetricFontNames(metric)) names.add(n)
+    if (metric !== null) for (const n of wpsMetricFontNames(metric)) follow(n, name)
     for (const use of ['other', 'eastAsia'] as const)
-      for (const c of substitutes(name, use, doc.fontTable, host.local)) names.add(c.name)
+      for (const c of substitutes(name, use, doc.fontTable, host.local)) follow(c.name, name)
   }
-  if (names.has(doc.settings.math.font)) names.add(MATH_SETTINGS_DEFAULTS.font)
+  const all = new Set<string>()
+  if (leader) all.add(LEADER_FONT)
+  if (names.has(doc.settings.math.font)) {
+    all.add(doc.settings.math.font)
+    all.add(MATH_SETTINGS_DEFAULTS.font)
+  }
+  if (names.has(EMOJI_FALLBACK)) all.add(EMOJI_FALLBACK)
   const { graphics, metafiles } = documentGraphics(doc)
-  for (const name of graphicFontNames(graphics)) names.add(name)
-  for (const name of metafileFontNames(doc, metafiles)) names.add(name)
+  for (const name of graphicFontNames(graphics)) all.add(name)
+  for (const name of metafileFontNames(doc, metafiles)) all.add(name)
+  for (const name of all) names.add(name)
+  if (styles) {
+    for (const name of names) {
+      styles.set(name, all.has(name) ? ALL_STYLES : (runStyles.get(name) ?? ALL_STYLES))
+    }
+  }
   return [...names]
 }
 

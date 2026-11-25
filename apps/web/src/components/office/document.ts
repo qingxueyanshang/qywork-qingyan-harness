@@ -19,8 +19,9 @@ import {
   on,
   onCleanup,
 } from 'solid-js'
-import { ApiError } from '../../lib/client.ts'
+import { ApiError, rawFilePath } from '../../lib/client.ts'
 import { client, explainApiError } from '../../lib/store/index.ts'
+import type { FontDocument } from './fonts.ts'
 
 /** 主线程发给 Worker 的消息：`id` 用于对应回复。 */
 export interface WorkerRequest<T> {
@@ -97,7 +98,7 @@ export function connectWorker<Req extends { readonly kind: string }, Replies>(
  */
 export function createDocumentLoader<T extends object>(
   source: () => { readonly path: string; readonly mtime: number },
-  load: (bytes: ArrayBuffer, signal: AbortSignal) => Promise<T | string>,
+  load: (bytes: ArrayBuffer, signal: AbortSignal, source: FontDocument) => Promise<T | string>,
   show: (doc: T) => void,
 ): Accessor<string | null> {
   const [error, setError] = createSignal<string | null>(null)
@@ -112,11 +113,12 @@ export function createDocumentLoader<T extends object>(
       const controller = new AbortController()
       loading = controller
       const { signal } = controller
-      const url = `/api/files/raw?path=${encodeURIComponent(source().path)}`
+      const from = { path: source().path, mtime: source().mtime }
+      const url = rawFilePath(from.path, from.mtime)
       void (async () => {
         const res = await client.raw(url, { signal })
         if (!res.ok) throw new ApiError(res.status, url, await res.text().catch(() => ''))
-        return load(await res.arrayBuffer(), signal)
+        return load(await res.arrayBuffer(), signal, from)
       })().then(
         (next) => {
           if (signal.aborted) return

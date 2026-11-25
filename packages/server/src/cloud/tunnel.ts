@@ -16,7 +16,9 @@ import {
   decodeData,
   encodeData,
   log,
+  OWN_WINDOWS,
   parseControl,
+  peerWindows,
   pumpBody,
   sendableCloseCode,
   TUNNEL_CLOSE,
@@ -25,10 +27,12 @@ import {
   TUNNEL_PATH,
   TUNNEL_PING_MS,
   TUNNEL_PROTOCOL_VERSION,
+  TunnelBudget,
   type TunnelControl,
   TunnelCredit,
   TunnelInbound,
   type TunnelNotifyEvent,
+  TunnelOutbound,
   type TunnelPush,
   type TunnelSender,
   tunnelHeaders,
@@ -86,6 +90,14 @@ const OFFLINE_MESSAGE: Record<number, string> = {
  */
 const SLOW_REQUEST_MS = 1000
 
+/**
+ * 有响应体在途时探测往返的间隔（毫秒）：发送调度按往返中的最小值与送达速率计算在途上限。
+ * 空闲时每 `IDLE_PROBE_MS` 探测一次，连接建立时立即探测一次：有数据在途时的样本都含排队时间，最小往返须来自空闲时的样本，
+ * 否则在途上限把排队时间当作线路本身的往返，排队一直存在。
+ */
+const PROBE_MS = 250
+const IDLE_PROBE_MS = 10_000
+
 /** 日志中的请求路径不带查询串：媒体直链的查询串含令牌。 */
 function pathOf(path: string): string {
   const q = path.indexOf('?')
@@ -115,8 +127,16 @@ export class TunnelClient {
   private current: TunnelStatus = { state: 'connecting' }
   private readonly backoff: (attempt: number) => number
   private readonly slowRequestMs: number
+  /** 本条连接的发送调度（`TunnelOutbound`），收到 `welcome` 后按云端声明的窗口建立。 */
+  private outbound: TunnelOutbound | null = null
+  /** 云端声明的窗口；未声明时按 `peerWindows` 的缺省值。 */
+  private peer = peerWindows({})
+  /** 本端接收请求体的排队量；云端声明了窗口时按本端的 `connectionWindow` 检查。 */
+  private budget = new TunnelBudget()
+  /** 未收到应答的 `ping` 的发出时刻：同一时刻只有一个，往返按它计算。 */
+  private pingSentAt: number | null = null
   private readonly sender: TunnelSender = {
-    data: (frame) => this.ws?.send(frame),
+    data: (frame) => this.outbound?.data(frame) ?? false,
     control: (frame) => this.send(frame),
   }
 
@@ -151,7 +171,12 @@ export class TunnelClient {
   }
 
   private send(frame: TunnelControl): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(frame))
+    if (this.ws?.readyState !== WebSocket.OPEN) return
+    if (frame.type === 'ping') {
+      if (this.pingSentAt !== null) return
+      this.pingSentAt = Date.now()
+    }
+    this.ws.send(JSON.stringify(frame))
   }
 
   private connect(): void {
@@ -170,6 +195,14 @@ export class TunnelClient {
         ws.terminate()
       } else this.send({ type: 'ping' })
     }, TUNNEL_PING_MS)
+    // 有响应体在途时按 `PROBE_MS` 探测往返，供发送调度按排队延迟收放在途上限。
+    let probedAt = 0
+    const probe = setInterval(() => {
+      if (!this.outbound) return
+      if (!this.outbound.busy && Date.now() - probedAt < IDLE_PROBE_MS) return
+      probedAt = Date.now()
+      this.send({ type: 'ping' })
+    }, PROBE_MS)
     ws.onopen = () => {
       ws.send(
         JSON.stringify({
@@ -177,6 +210,7 @@ export class TunnelClient {
           protocol: TUNNEL_PROTOCOL_VERSION,
           key: this.opts.key,
           remote: this.opts.localPort !== null,
+          ...OWN_WINDOWS,
         }),
       )
     }
@@ -187,8 +221,12 @@ export class TunnelClient {
     }
     ws.onclose = (e) => {
       clearInterval(heartbeat)
+      clearInterval(probe)
       if (this.ws !== ws) return
       this.ws = null
+      this.outbound?.close()
+      this.outbound = null
+      this.pingSentAt = null
       const streams = this.streams.size
       this.dropAll()
       this.closed(e.code, e.reason, streams)
@@ -233,10 +271,32 @@ export class TunnelClient {
     const frame = parseControl(raw)
     if (!frame) return
     switch (frame.type) {
-      case 'welcome':
-        log.info('tunnel', '隧道已连接', { attempt: this.attempt })
+      case 'welcome': {
+        const ws = this.ws
+        if (!ws) return
+        this.peer = peerWindows(frame)
+        this.budget = new TunnelBudget(
+          frame.window === undefined ? Number.POSITIVE_INFINITY : OWN_WINDOWS.connectionWindow,
+        )
+        // 不声明窗口的云端每读取 256 KB 才归还：不按速率控制在途上限，见 `TunnelOutbound`。
+        this.outbound = new TunnelOutbound(
+          { send: (f) => ws.readyState === WebSocket.OPEN && ws.send(f) },
+          this.peer.connection,
+          frame.window !== undefined,
+        )
+        this.send({ type: 'ping' })
+        log.info('tunnel', '隧道已连接', {
+          attempt: this.attempt,
+          window: this.peer.stream,
+          connectionWindow: Number.isFinite(this.peer.connection) ? this.peer.connection : null,
+        })
         this.attempt = 0
         this.setStatus({ state: 'online' })
+        return
+      }
+      case 'pong':
+        if (this.pingSentAt !== null) this.outbound?.rtt(Date.now() - this.pingSentAt)
+        this.pingSentAt = null
         return
       case 'pair.request':
         this.send({ type: 'pair.reply', rid: frame.rid, ...this.opts.pairing() })
@@ -257,6 +317,7 @@ export class TunnelClient {
       case 'window': {
         const stream = this.streams.get(frame.sid)
         if (stream?.kind === 'http') stream.credit.grant(frame.bytes)
+        this.outbound?.acked(frame.sid, frame.bytes)
         return
       }
       case 'end': {
@@ -315,10 +376,12 @@ export class TunnelClient {
       else log.warn('tunnel', outcome === 'closed' ? '请求中途关闭' : '请求失败', fields)
     }
     const abort = new AbortController()
-    const credit = new TunnelCredit()
+    const credit = new TunnelCredit(this.peer.stream)
     const inbound = new TunnelInbound(
       (bytes) => this.send({ type: 'window', sid, bytes }),
       () => {},
+      OWN_WINDOWS.window,
+      this.budget,
     )
     this.streams.set(sid, { kind: 'http', inbound, credit, abort })
     const hasBody = open.method !== 'GET' && open.method !== 'HEAD'
@@ -356,7 +419,9 @@ export class TunnelClient {
               },
             }),
           ) ?? null
-        if (await pumpBody(counted, sid, credit, this.sender)) {
+        const sent = await pumpBody(counted, sid, credit, this.sender)
+        this.outbound?.finish(sid)
+        if (sent) {
           this.streams.delete(sid)
           record('done')
         } else record('closed')
@@ -401,6 +466,7 @@ export class TunnelClient {
       stream.abort.abort()
       stream.credit.close()
       stream.inbound.fail(new Error('流已关闭'))
+      this.outbound?.finish(sid)
     } else {
       stream.local.close(sendableCloseCode(code), reason)
     }

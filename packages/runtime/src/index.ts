@@ -103,6 +103,7 @@ export {
   type OfficeHost,
   type OfficeStatus,
   officeDir,
+  officeVenv,
 } from './office.ts'
 // 提示词装配：agent 的前缀审计测试经动态 import 取得真实实现进行审计
 export { buildSystemPrompt, buildTailNotes } from './prompt.ts'

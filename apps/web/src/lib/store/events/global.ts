@@ -8,6 +8,7 @@ import { produce } from 'solid-js/store'
 import { loadAnnouncements } from '../announcements.ts'
 import { setPersonalizationChange } from '../appearance/personalization.ts'
 import { setPetsChange } from '../appearance/pet.ts'
+import { projectRemoteTabs } from '../browser.ts'
 import { setExportRequests } from '../canvas.ts'
 import { openFileInPanel } from '../files.ts'
 import { setConfigChange } from '../settings.ts'
@@ -73,6 +74,13 @@ export const globalEvents = handlers({
   'browser.state': {
     process(ev) {
       setState('capabilities', (caps) => (caps ? { ...caps, browser: ev.browser } : caps))
+    },
+  },
+
+  /* 内置浏览器的页签清单：只有桌面外壳以外的客户端采用，见 `projectRemoteTabs`。 */
+  'browser.tabs': {
+    process(ev) {
+      projectRemoteTabs(ev.tabs)
     },
   },
 

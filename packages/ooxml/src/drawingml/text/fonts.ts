@@ -20,11 +20,15 @@ import type { BitmapGlyph } from '../../font/index.ts'
 import type { CoverageGlyph, GlyphRun, PixelCanvas } from '../../glyph/cleartype/index.ts'
 import { MATH_SETTINGS_DEFAULTS, mathPropsOf } from '../../math/index.ts'
 import {
+  ALL_STYLES,
+  addStyle,
   emboldened,
   type FontMatch,
   type FontSource,
   type HostFamilies,
   prefixFont,
+  type StyleMask,
+  styleBit,
   type TextFace,
   WPS_METRIC_FONTS,
   wpsMetricFontNames,
@@ -422,36 +426,59 @@ export class FaceCache {
   }
 }
 
-/** 字体名及其替代的符号字体（`MISSING_SYMBOL`）加入 `out`，不含空串。 */
-function addName(out: Set<string>, name: string): void {
+/** 字体名及其替代的符号字体（`MISSING_SYMBOL`）加入 `out`，不含空串；两者在 `styles` 中记录 `mask`。 */
+function addName(
+  out: Set<string>,
+  name: string,
+  styles: Map<string, StyleMask> | undefined,
+  mask: StyleMask,
+): void {
   if (name === '') return
   out.add(name)
+  addStyle(styles, name, mask)
   const symbol = MISSING_SYMBOL.get(name)
-  if (symbol !== undefined) out.add(symbol)
+  if (symbol === undefined) return
+  out.add(symbol)
+  addStyle(styles, symbol, mask)
 }
 
-function addRun(out: Set<string>, s: RunStyle): void {
-  for (const name of [s.latin, s.ea, s.cs, s.sym]) addName(out, name)
-  if (s.latinCharset !== undefined) out.add(missingLatin(s.latinCharset))
+/** 排版按字段的 `bold`、`italic` 选用四种字体与西文缺字时的字体（`missingLatin`）。 */
+function addRun(
+  out: Set<string>,
+  s: RunStyle,
+  styles: Map<string, StyleMask> | undefined,
+  mask: StyleMask = styleBit(s.bold, s.italic),
+): void {
+  for (const name of [s.latin, s.ea, s.cs, s.sym]) addName(out, name, styles, mask)
+  if (s.latinCharset === undefined) return
+  const latin = missingLatin(s.latinCharset)
+  out.add(latin)
+  addStyle(styles, latin, mask)
 }
 
-function addBullet(out: Set<string>, b: Bullet): void {
-  if (b.kind === 'char' || b.kind === 'number') addName(out, b.font)
+function addBullet(out: Set<string>, b: Bullet, styles: Map<string, StyleMask> | undefined): void {
+  if (b.kind === 'char' || b.kind === 'number') addName(out, b.font, styles, ALL_STYLES)
 }
 
 /**
  * 文本框用到的字体名加入 `out`：各字段、段落结束符与项目符号的字体及其替代的符号字体，有公式时另加公式各字段的字体与数学字体，
- * 不含空串。
+ * 不含空串。给出 `styles` 时记录各字体名需要的字形样式：字段与段落结束符的字体按其粗斜体，项目符号与公式的字体为全部样式。
  */
-export function collectTextFonts(out: Set<string>, t: TextBody): void {
+export function collectTextFonts(
+  out: Set<string>,
+  t: TextBody,
+  styles?: Map<string, StyleMask>,
+): void {
   for (const p of t.paragraphs) {
-    addBullet(out, p.bullet)
-    addRun(out, p.end)
+    addBullet(out, p.bullet, styles)
+    addRun(out, p.end, styles)
     for (const r of p.runs) {
-      addRun(out, r.style)
+      addRun(out, r.style, styles)
       if (r.kind !== 'math') continue
       out.add(MATH_SETTINGS_DEFAULTS.font)
-      for (const zone of r.zones) for (const s of mathPropsOf(zone)) addRun(out, s)
+      addStyle(styles, MATH_SETTINGS_DEFAULTS.font, ALL_STYLES)
+      for (const zone of r.zones)
+        for (const s of mathPropsOf(zone)) addRun(out, s, styles, ALL_STYLES)
     }
   }
 }

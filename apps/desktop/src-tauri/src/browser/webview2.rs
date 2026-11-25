@@ -26,7 +26,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use webview2_com::{
     take_pwstr, BrowserProcessExitedEventHandler, ContextMenuRequestedEventHandler,
-    DownloadStartingEventHandler, HistoryChangedEventHandler, NewWindowRequestedEventHandler,
+    DownloadStartingEventHandler, ExecuteScriptCompletedHandler, HistoryChangedEventHandler,
+    NewWindowRequestedEventHandler,
     SourceChangedEventHandler, StateChangedEventHandler, WindowCloseRequestedEventHandler,
     ZoomFactorChangedEventHandler,
 };
@@ -47,7 +48,7 @@ use super::{marker_script, DownloadVerdict, Opened, OpenSpec, Runtime};
 type Wv = Wry;
 
 /// `host.ready` 上报的显示位置：页面是主窗口中的子视图，由界面放入面板。
-pub const PRESENTATION: &str = "embedded";
+const PRESENTATION: &str = "embedded";
 
 /// 子视图的浏览器参数。`additional_browser_args` 会整体替换 wry 的默认值，因此包含其中的
 /// `msWebOOUI`、`msPdfOOUI`、`msSmartScreenProtection` 三项。
@@ -61,8 +62,7 @@ const DEFAULT_SIZE: (f64, f64) = (1280.0, 800.0);
 
 /// 创建页面后等待目标文档加载的时间上限，只用于 `OpenSpec::await_document` 或 `await_load` 为真的页。
 ///
-/// `add_child` 返回时子视图仍处于 `about:blank`，注入的标记在目标文档创建后才存在；
-/// 实测该间隔约为 700 ms。不等待就返回时，调用方无法立即按标记识别页面。
+/// `add_child` 返回时子视图仍处于 `about:blank`，目标文档约 700 ms 后才创建（实测）。
 const FIRST_LOAD_WAIT: Duration = Duration::from_secs(20);
 
 /// 子视图创建完成并绑定下载与右键菜单钩子的等待上限。
@@ -212,7 +212,11 @@ impl Engine {
         if self.profile.is_none() {
             return Err(profile::IN_USE);
         }
-        Ok(Runtime { debug_port: self.debug_port, version: self.runtime_version.clone() })
+        Ok(Runtime {
+            debug_port: self.debug_port,
+            version: self.runtime_version.clone(),
+            presentation: PRESENTATION,
+        })
     }
 
     /// 创建一个子视图。**不得在主线程调用**：`add_child` 内部是 `run_on_main_thread`
@@ -309,7 +313,9 @@ impl Engine {
         // 在等待首个文档之前绑定：文档加载后即可能发起下载或请求右键菜单，此时钩子必须已经存在。
         // 绑定或交付失败时回收该子视图：`add_child` 已将其附加到窗口，直接返回错误会留下一个
         // 不在存活表中、界面也无法关闭的视图。
-        if let Err(e) = bind_hooks(&webview, spec.tab_id, window) {
+        if let Err(e) = bind_hooks(&webview, spec.tab_id, window)
+            .and_then(|()| mark_document(&webview, spec.marker))
+        {
             close_view(webview);
             return Err(e);
         }
@@ -615,6 +621,35 @@ fn bind_hooks(
     .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
     rx.recv_timeout(HOOK_WAIT)
         .map_err(|_| "内置浏览器的页面未在期限内创建完成".to_owned())?
+}
+
+/// 在子视图当前的文档中写入标记，等待执行完成。
+///
+/// `initialization_script` 只作用于此后创建的文档：新建的子视图停在没有标记的初始文档上，空白页一直如此，
+/// 有目标地址的页在目标文档创建之前同样如此。服务端在这段时间内按标记附加（远程查看、AI 接管）时无法识别该页。
+fn mark_document(view: &Webview<Wv>, marker: &str) -> Result<(), String> {
+    let script = HSTRING::from(marker_script(marker));
+    let (tx, rx) = channel::<Result<(), String>>();
+    view.with_webview(move |platform| {
+        let core = match unsafe { platform.controller().CoreWebView2() } {
+            Ok(core) => core,
+            Err(e) => {
+                let _ = tx.send(Err(format!("无法取得 CoreWebView2：{e}")));
+                return;
+            }
+        };
+        let done = tx.clone();
+        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |result, _| {
+            let _ = done.send(result.map_err(|e| format!("写入页面标记失败：{e}")));
+            Ok(())
+        }));
+        if let Err(e) = unsafe { core.ExecuteScript(&script, &handler) } {
+            let _ = tx.send(Err(format!("写入页面标记失败：{e}")));
+        }
+    })
+    .map_err(|e| format!("无法取得子视图的原生句柄：{e}"))?;
+    rx.recv_timeout(HOOK_WAIT)
+        .map_err(|_| "写入页面标记未在期限内完成".to_owned())?
 }
 
 /// 主窗口四边的缩放边框窗口的类名。该窗口由 Tauri 为无装饰窗口创建，覆盖整个客户区，区域只保留四条边。

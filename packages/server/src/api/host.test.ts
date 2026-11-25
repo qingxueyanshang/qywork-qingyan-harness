@@ -4,13 +4,20 @@ import { tmpdir } from 'node:os'
 import { join, win32 } from 'node:path'
 import type { EnvDependency } from '@qywork/core'
 import type { OfficeHost, OfficeStatus, QyConfig } from '@qywork/runtime'
-import {
-  handleHostApi,
-  installArgv,
-  pipInstallArgv,
-  probeEnvironment,
-  resolveWinget,
-} from './host.ts'
+import { resolveWinget, terminalArgv } from '../host-env/managers.ts'
+import { handleHostApi, pipCommand, probeEnvironment } from './host.ts'
+
+/** Windows 上安装一个 winget 包时打开的窗口与其中的命令。 */
+const wingetWindow = (exe: string, id: string, label: string) =>
+  terminalArgv(
+    `Install ${label}`,
+    [exe, 'install', '--id', id, '-e', '--source', 'winget'],
+    null,
+    'win32',
+  )
+/** Windows 上安装文档库时打开的窗口与其中的命令。 */
+const pipWindow = (python: string) =>
+  terminalArgv('Install Office libraries', pipCommand(python, 'win32'), null, 'win32')
 
 describe('winget 执行位置', () => {
   const localAppData = 'C:\\Users\\Test User\\AppData\\Local'
@@ -44,7 +51,8 @@ describe('winget 执行位置', () => {
     )
     env.PATH = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
     const script = `
-      import { resolveWinget, handleHostApi } from ${JSON.stringify(import.meta.resolve('./host.ts'))};
+      import { resolveWinget } from ${JSON.stringify(import.meta.resolve('../host-env/managers.ts'))};
+      import { handleHostApi } from ${JSON.stringify(import.meta.resolve('./host.ts'))};
       const resolved = resolveWinget();
       let launched = null;
       Bun.spawn = (args) => { launched = args; return { unref() {} }; };
@@ -65,7 +73,7 @@ describe('winget 执行位置', () => {
     expect(out.status).toBe(available ? 200 : 409)
     if (available) {
       expect(out.body.started).toBe(true)
-      expect(out.launched).toEqual(installArgv(actualAlias, 'Git.Git'))
+      expect(out.launched).toEqual(wingetWindow(actualAlias, 'Git.Git', 'git'))
       expect(out.launched).toContain(actualAlias)
     } else {
       expect(out.launched).toBeNull()
@@ -77,7 +85,7 @@ describe('winget 执行位置', () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-winget '))
     const stub = join(root, 'winget.cmd')
     await writeFile(stub, '@echo off\r\necho %*\r\nexit /b 0\r\n')
-    const argv = installArgv(stub, 'Git.Git')
+    const argv = wingetWindow(stub, 'Git.Git', 'git') ?? []
     // 执行安装窗口内的命令；测试替身只返回参数，不启动窗口或安装软件。
     const inner = argv.slice(argv.indexOf('cmd'))
     inner[inner.indexOf('/k')] = '/c'
@@ -155,9 +163,9 @@ describe('Office 依赖三行', () => {
     const venv = await mkdtemp(join(tmpdir(), 'qywork-venv-'))
     await mkdir(join(venv, 'Scripts'))
     await writeFile(join(venv, 'pyvenv.cfg'), 'include-system-site-packages = false\n')
-    expect(pipInstallArgv(join(venv, 'Scripts', 'python.exe'))).not.toContain('--user')
+    expect(pipCommand(join(venv, 'Scripts', 'python.exe'), 'win32')).not.toContain('--user')
     const plain = await mkdtemp(join(tmpdir(), 'qywork-python-'))
-    expect(pipInstallArgv(join(plain, 'python.exe'))).toContain('--user')
+    expect(pipCommand(join(plain, 'python.exe'), 'win32')).toContain('--user')
   })
 
   test('pip 安装命令在含空格的解释器与清单目录下照常执行', async () => {
@@ -165,7 +173,7 @@ describe('Office 依赖三行', () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-python '))
     const stub = join(root, 'python.cmd')
     await writeFile(stub, '@echo off\r\necho %*\r\nexit /b 0\r\n')
-    const argv = pipInstallArgv(stub)
+    const argv = pipWindow(stub) ?? []
     const inner = argv.slice(argv.indexOf('cmd'))
     inner[inner.indexOf('/k')] = '/c'
     const result = Bun.spawnSync(inner, { cwd: root, stdout: 'pipe', stderr: 'pipe' })

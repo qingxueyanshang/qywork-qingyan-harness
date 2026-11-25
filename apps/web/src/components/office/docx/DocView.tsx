@@ -42,6 +42,7 @@ import { suspendUntil } from '../../../lib/resource.ts'
 import { readView, writeView } from '../../preview/view-state.ts'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from '../document.ts'
 import {
+  type FontDocument,
   type HostFace,
   loadClearType,
   loadHostFaces,
@@ -185,7 +186,11 @@ function decode(d: Doc, i: number): Promise<void> {
   return done
 }
 
-async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | string> {
+async function loadDoc(
+  bytes: ArrayBuffer,
+  signal: AbortSignal,
+  source: FontDocument,
+): Promise<Doc | string> {
   const channel = connectWorker<DocxRequest, DocxReplies>(
     new Worker(new URL('./docx-worker.ts', import.meta.url), { type: 'module' }),
   )
@@ -199,7 +204,7 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
     const parsed = await channel.request({ kind: 'parse', bytes, host: hostFamilies }, [bytes])
     if (!parsed.ok) return failureText(parsed.failure)
     const [loaded, clearType] = await Promise.all([
-      loadHostFaces([...parsed.fonts, FALLBACK]),
+      loadHostFaces([...parsed.fonts, FALLBACK], source, new Map(parsed.styles)),
       loadClearType(),
     ])
     const host = new Map(loaded)

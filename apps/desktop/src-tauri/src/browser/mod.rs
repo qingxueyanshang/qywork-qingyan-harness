@@ -83,6 +83,8 @@ pub enum DownloadVerdict {
 pub struct Runtime {
     pub debug_port: u16,
     pub version: String,
+    /// `host.ready` 的显示方式，由引擎按使用的浏览器决定（见 `native-browser.ts` 的 `BrowserPresentation`）。
+    pub presentation: &'static str,
 }
 
 /// 创建页面时交给引擎的参数：页面 id、注入的标记、目标地址，以及两项按创建者区分的行为。
@@ -93,13 +95,14 @@ pub struct OpenSpec<'a> {
     /// 目标地址。页面请求的新窗口中是页面请求的地址：导航由打开它的页发起，
     /// 引擎只按它等待首个文档并作为返回的地址。
     pub url: &'a str,
-    /// 该页不应置于前台。AI 创建的页为真，用户新建的页为假。
+    /// 该页不应置于前台。经服务端新建的页（AI 与远程客户端）为真，用户在桌面上新建的页为假：
+    /// 远程客户端新建的页置于前台时，浏览器窗口出现在电脑的前台。
     /// 嵌入式引擎的页一律不获取焦点，放入面板后才可见，因此忽略该字段。
     #[cfg_attr(windows, allow(dead_code))]
     pub background: bool,
-    /// 返回前等待目标文档加载（上限 `FIRST_LOAD_WAIT`）。AI 创建的页为真：服务端随即按标记附加，
-    /// 标记在目标文档创建后才存在。用户新建的页为假：界面在返回后才显示面板，等待会使面板
-    /// 推迟到网页加载完成后才出现（网络较慢时为数秒）；用户页只在 AI 接管时才按标记附加。
+    /// 返回前等待目标文档加载（上限 `FIRST_LOAD_WAIT`）。AI 创建的页为真：服务端随即附加并读取页面，
+    /// 不等待时读取到的是 `about:blank`。用户新建的页为假：界面在返回后才显示面板，等待会使面板
+    /// 推迟到网页加载完成后才出现（网络较慢时为数秒）。
     pub await_document: bool,
     /// 返回前等待目标文档加载完成（上限 `FIRST_LOAD_WAIT`），不只是开始加载。隐藏页（文件页的 HTML 预览）为真：
     /// 界面在返回后立即把页面摆放到预览区域，加载完成之前摆放时显示的是引擎尚未绘制的背景。
@@ -150,6 +153,7 @@ impl Tab {
             marker: self.marker.clone(),
             workspace_id: self.workspace_id.clone(),
             conversation_id: self.conversation_id.clone(),
+            hidden: self.hidden,
         }
     }
 }
@@ -260,12 +264,16 @@ impl BrowserHost {
                 host_instance_id: self.instance_id.clone(),
                 connection_epoch: state.connection_epoch,
                 platform: std::env::consts::OS,
-                presentation: engine::PRESENTATION,
+                presentation: runtime.presentation,
                 runtime_version: runtime.version,
                 debug_port: runtime.debug_port,
                 tabs: state.tabs.iter().map(|(id, tab)| tab.snapshot(id)).collect(),
             }),
-            Err(reason) => Hello::Unavailable(HostUnavailable { kind: "host.unavailable", reason }),
+            Err(reason) => Hello::Unavailable(HostUnavailable {
+                kind: "host.unavailable",
+                connection_epoch: state.connection_epoch,
+                reason,
+            }),
         }
     }
 
@@ -389,10 +397,21 @@ impl BrowserHost {
             "create" => {
                 let url = frame.url.clone().ok_or("create 缺少 url")?;
                 let workspace_id = workspace_of(frame, "create")?;
-                self.create(app, &url, workspace_id, frame.conversation_id.clone(), frame.hidden)
+                let conversation_id = frame.conversation_id.clone();
+                self.create(app, &url, workspace_id, conversation_id, frame.hidden, true)
                     .map(|(data, _)| data)
             }
             "close" => self.close(frame.tab_id.as_deref().ok_or("close 缺少 tabId")?),
+            // 运行环境安装专用 Chromium 之后换用它。嵌入式引擎不需要也不接受。
+            #[cfg(not(windows))]
+            "restart" => self.engine.restart().map(|()| ResultData::default()),
+            // 远程客户端的地址栏：与界面的 `browser_navigate` 执行同一条导航路径，地址按同一规则解析。
+            "navigate" => {
+                let page = self.page(frame.tab_id.as_deref().ok_or("navigate 缺少 tabId")?)?;
+                let action = frame.action.as_deref().ok_or("navigate 缺少 action")?;
+                self.engine.navigate(&page, action, frame.url.as_deref())?;
+                Ok(ResultData::default())
+            }
             "bind" => self.bind(
                 frame.tab_id.as_deref().ok_or("bind 缺少 tabId")?,
                 &workspace_of(frame, "bind")?,
@@ -434,8 +453,9 @@ impl BrowserHost {
         workspace_id: String,
         conversation_id: Option<String>,
         hidden: bool,
+        background: bool,
     ) -> Result<(ResultData, u64), String> {
-        self.open_tab(url, workspace_id, conversation_id, hidden, None, |spec| {
+        self.open_tab(url, workspace_id, conversation_id, hidden, background, None, |spec| {
             self.engine.open(app, spec)
         })
     }
@@ -449,6 +469,7 @@ impl BrowserHost {
         workspace_id: String,
         conversation_id: Option<String>,
         hidden: bool,
+        background: bool,
         opener: Option<String>,
         build: impl FnOnce(OpenSpec) -> Result<Opened, String>,
     ) -> Result<(ResultData, u64), String> {
@@ -466,7 +487,7 @@ impl BrowserHost {
             tab_id: &tab_id,
             marker: &marker,
             url,
-            background: by_ai,
+            background,
             await_document: by_ai,
             await_load: hidden,
         })?;
@@ -502,6 +523,7 @@ impl BrowserHost {
             f.marker = Some(snapshot.marker.clone());
             f.workspace_id = Some(snapshot.workspace_id.clone());
             f.conversation_id = Some(snapshot.conversation_id.clone());
+            f.hidden = Some(snapshot.hidden);
         });
         self.changed();
         #[cfg(windows)]
@@ -760,7 +782,8 @@ impl BrowserHost {
             (opener.workspace_id.clone(), opener.conversation_id.clone(), opener.hidden)
         };
         let opener = Some(opener_tab.to_owned());
-        self.open_tab(url, workspace_id, conversation_id, hidden, opener, |spec| {
+        // 嵌入式引擎忽略 `background`。
+        self.open_tab(url, workspace_id, conversation_id, hidden, false, opener, |spec| {
             self.engine.open_window(&self.app, spec, window)
         })
         .map(|_| ())
@@ -891,7 +914,8 @@ pub fn user_open(
     }
     // 不提供地址时创建空白标签页，地址由用户在地址栏中输入。
     let target = url.unwrap_or(address::BLANK);
-    let (data, created_seq) = host.create(app, target, workspace_id.to_owned(), None, hidden)?;
+    let (data, created_seq) =
+        host.create(app, target, workspace_id.to_owned(), None, hidden, false)?;
     Ok(TabView {
         tab_id: data.tab_id.unwrap_or_default(),
         url: data.url.unwrap_or_default(),

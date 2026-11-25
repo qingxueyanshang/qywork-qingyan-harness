@@ -4,8 +4,9 @@
  *
  * - `GET /api/fonts?name=<字体名>`：该家族在主机上的各个字体，`{ faces: [{ id, bold, italic }] }`。
  *   `id` 是下发字节的 SHA-256。主机上没有该家族时返回 404。
- * - `GET /api/fonts/file?name=<字体名>&id=<SHA-256>`：单个字体的字节，`.ttc` 中的字体拆为独立的 sfnt。
- *   地址由内容决定，响应按一年缓存并标为不可变；文件内容改变后哈希随之改变，原地址返回 404。
+ * - `GET /api/fonts/file?name=<字体名>&id=<SHA-256>[&doc=<工作区路径>&v=<修改时间>]`：单个字体的字节，`.ttc` 中的字体拆为
+ *   独立的 sfnt；带 `doc` 时按该文档用到的字裁剪（`font-subset.ts`）。地址由内容决定，响应按一年缓存并标为不可变；
+ *   字体文件内容改变后哈希随之改变，原地址返回 404。
  * - `GET /api/fonts/smoothing`：`{ clearType: { contrast } | null }`，每次请求时读取系统的当前值（见 `fontSmoothing`），
  *   不缓存。系统接口调用失败时返回 500。
  * - `GET /api/fonts/families`：主机字体的族名（`hostFamilies`），`{ local, names, language }`：`local` 为各字体按界面语言
@@ -15,7 +16,8 @@
  * 边界：
  * - 只读取系统与当前用户的字体目录（`fontRoots`），以及 Windows 注册表中登记的字体文件（`registeredFonts`），
  *   不跟随符号链接。字体名只用于查询内存中的索引，不参与拼接路径；含 `..`、`/`、`\` 或控制字符的参数返回 422。
- * - 字节与哈希在每次请求时由文件计算，响应后释放，不常驻、不落盘。
+ * - 字节在每次请求时由文件生成，响应后释放，不常驻、不落盘；哈希按文件的修改时间与大小缓存在内存中。读取、拆分、哈希与裁剪
+ *   在计算线程中执行（`media-jobs.ts`），不占用服务进程的主线程。
  * - 索引（家族名到文件与合集序号）只在内存中。每次请求核对已扫描目录的修改时间与注册表两个键的最后写入时间，
  *   有变化即重建：字体安装到上述目录或登记到注册表后，下一次请求即可见。原地覆盖同名文件不改变目录修改时间，
  *   此时家族名沿用索引中的值，字节与哈希仍取自当前文件。
@@ -23,7 +25,6 @@
  */
 
 import { dlopen, FFIType, ptr } from 'bun:ffi'
-import { createHash } from 'node:crypto'
 import type { Dirent } from 'node:fs'
 import { type FileHandle, lstat, open, readdir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -40,6 +41,9 @@ import {
   type TableRecord,
   tableRecord,
 } from '@qywork/ooxml/font'
+import { resolveInWorkspace } from '@qywork/tools'
+import { faceDigest, faceFile } from '../media-jobs.ts'
+import { documentCodePoints } from './font-subset.ts'
 import { type ApiHandler, json } from './types.ts'
 
 /** 系统与当前用户的字体目录。环境变量缺失时略去对应目录。 */
@@ -384,10 +388,6 @@ export async function faceBytes(face: HostFace): Promise<Uint8Array> {
   return extractFace(new Uint8Array(await readFile(face.path)), face.index)
 }
 
-function sha256(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex')
-}
-
 /** 系统的字体平滑设置：Windows `SystemParametersInfoW` 的三项读取结果。 */
 export interface SmoothingParameters {
   /** `SPI_GETFONTSMOOTHING`：字体平滑是否开启。 */
@@ -452,7 +452,7 @@ export function readSmoothingParameters(
   }
 }
 
-export const handleFontsApi: ApiHandler = async (url, req) => {
+export const handleFontsApi: ApiHandler = async (url, req, d) => {
   const p = url.pathname
   if (req.method === 'GET' && p === '/api/fonts/smoothing') {
     try {
@@ -481,7 +481,7 @@ export const handleFontsApi: ApiHandler = async (url, req) => {
     const faces: { id: string; bold: boolean; italic: boolean }[] = []
     for (const location of locations) {
       faces.push({
-        id: sha256(await faceBytes(location)),
+        id: await faceDigest(location),
         bold: location.bold,
         italic: location.italic,
       })
@@ -489,10 +489,20 @@ export const handleFontsApi: ApiHandler = async (url, req) => {
     return json({ faces })
   }
 
+  const doc = url.searchParams.get('doc')
+  let points: ReadonlySet<number> | null = null
+  if (doc !== null) {
+    let abs: string
+    try {
+      abs = await resolveInWorkspace(d.workspaceRoot, doc, { mustExist: true, literal: true })
+    } catch {
+      return json({ error: 'invalid', message: `${doc} 不在当前项目中` }, 422)
+    }
+    points = await documentCodePoints(abs, url.searchParams.get('v') ?? '')
+  }
   for (const location of locations) {
-    const bytes = await faceBytes(location)
-    if (sha256(bytes) !== id) continue
-    return new Response(bytes, {
+    if ((await faceDigest(location)) !== id) continue
+    return new Response(await faceFile(location, points ? [...points] : null), {
       headers: {
         'content-type': location.contentType,
         'cache-control': 'private, max-age=31536000, immutable',

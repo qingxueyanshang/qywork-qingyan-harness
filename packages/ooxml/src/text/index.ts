@@ -62,6 +62,14 @@ export {
   singleLineHeight,
 } from './line-height.ts'
 export {
+  ALL_STYLES,
+  addStyle,
+  facesForStyles,
+  pickStyle,
+  type StyleMask,
+  styleBit,
+} from './styles.ts'
+export {
   WPS_METRIC_FONTS,
   type WpsMetricFont,
   type WpsMetricHost,

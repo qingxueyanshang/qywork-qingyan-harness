@@ -66,6 +66,8 @@ export function handleHello(
     announceGit(): void
     /** 补发完成后广播当前桌面目标，首次连接与缺口无法补发时也能恢复会话归属。 */
     announceDesktopTarget(): void
+    /** 补发完成后广播内置浏览器的页签清单（`browser.tabs`）：该清单只在变化时广播，新连接的客户端无法据此取得当前值。 */
+    announceBrowserTabs(): void
   },
 ) {
   if (!deps.verify(frame.token)) {
@@ -142,6 +144,7 @@ export function handleHello(
 
   for (const f of backlog) if (!sendOrClose(ws, f)) break
   deps.announceDesktopTarget()
+  deps.announceBrowserTabs()
 }
 
 /**

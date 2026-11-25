@@ -96,6 +96,7 @@ export { HistoryPort, type HistoryStep } from './history/port.ts'
 export {
   downscaleNote,
   type ImageRegion,
+  imageAtWidth,
   shrinkImage,
   shrunkSize,
   ZOOM_MAX,

@@ -24,7 +24,7 @@ import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js'
 import { suspendUntil } from '../../lib/resource.ts'
 import { readView, writeView } from '../preview/view-state.ts'
 import { boundaryText, connectWorker, createDocumentLoader, failureText } from './document.ts'
-import { type HostFace, loadClearType, loadHostFaces } from './fonts.ts'
+import { type FontDocument, type HostFace, loadClearType, loadHostFaces } from './fonts.ts'
 import { createSheetViewport, type SheetViewport } from './sheet-viewport.ts'
 import type { ViewPosition } from './viewport.ts'
 import { officeZoom } from './zoom.tsx'
@@ -93,12 +93,16 @@ function loadedFace(host: HostFace): LoadedFace | null {
 async function loadFontSet(
   names: readonly string[],
   fallbacks: readonly string[],
+  doc: FontDocument,
 ): Promise<FontSet> {
-  const host = await loadHostFaces([...names, ...fallbacks])
+  const host = await loadHostFaces([...names, ...fallbacks], doc)
   const substitutes = [...host]
     .filter(([, list]) => list.length === 0)
     .map(([n]) => substituteFont(n))
-  for (const [name, list] of await loadHostFaces(substitutes.filter((n) => !host.has(n)))) {
+  for (const [name, list] of await loadHostFaces(
+    substitutes.filter((n) => !host.has(n)),
+    doc,
+  )) {
     host.set(name, list)
   }
   const loaded: LoadedFace[] = []
@@ -176,12 +180,12 @@ export default function SheetView(props: { path: string; mtime: number }) {
 
   const error = createDocumentLoader(
     () => props,
-    async (bytes, signal): Promise<Doc | string> => {
+    async (bytes, signal, source): Promise<Doc | string> => {
       const parsed = await parseInWorker(bytes, signal)
       if (!parsed.ok) return failureText(parsed.failure)
       const workbook = parsed.value
       const [fonts, clearType] = await Promise.all([
-        loadFontSet(workbook.fontNames, fallbackFonts(workbook)),
+        loadFontSet(workbook.fontNames, fallbackFonts(workbook), source),
         loadClearType(),
       ])
       return { workbook, fonts, clearType }

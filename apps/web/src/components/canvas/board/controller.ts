@@ -99,6 +99,8 @@ type Drag =
     }
   | { mode: 'box'; sx: number; sy: number; base: ReadonlySet<string> }
   | { mode: 'link'; from: string; sx: number; sy: number; moved: boolean; anchor: HTMLElement }
+  /** 双指缩放：开始时两指的间距、中点（画布区坐标）与视口。 */
+  | { mode: 'pinch'; dist: number; mx: number; my: number; z: number; px: number; py: number }
 
 export function createCanvasController(props: { path: string; active: boolean }) {
   void ensureModelCatalog()
@@ -156,6 +158,8 @@ export function createCanvasController(props: { path: string; active: boolean })
   /** 有视口记录（刷新前的视口）时不执行首次适配。 */
   let fitted = readSession(`${key}.z`) !== undefined
   let drag: Drag | null = null
+  /** 按下中的手指（`pointerId` 到屏幕坐标），双指缩放按它计算。 */
+  const touches = new Map<number, { x: number; y: number }>()
   /** 按住 Space 时左键拖动是平移。 */
   let space = false
   /**
@@ -606,6 +610,9 @@ export function createCanvasController(props: { path: string; active: boolean })
     },
     get drag() {
       return drag
+    },
+    get touches() {
+      return touches
     },
     set drag(v) {
       drag = v

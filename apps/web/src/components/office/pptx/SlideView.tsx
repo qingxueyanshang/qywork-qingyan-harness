@@ -38,7 +38,7 @@ import {
   slideImages,
   type UnsupportedKind,
 } from '@qywork/ooxml/pptx'
-import type { HostFamilies } from '@qywork/ooxml/text'
+import type { HostFamilies, StyleMask } from '@qywork/ooxml/text'
 import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
 import { suspendUntil } from '../../../lib/resource.ts'
 import { readView, writeView } from '../../preview/view-state.ts'
@@ -50,6 +50,7 @@ import {
   type WorkerChannel,
 } from '../document.ts'
 import {
+  type FontDocument,
   type HostFace,
   loadClearType,
   loadHostFaces,
@@ -140,7 +141,11 @@ let embeddedSerial = 0
 const createCanvas: CreateCanvas = (width, height) =>
   new OffscreenCanvas(Math.max(1, width), Math.max(1, height)) as unknown as PaintCanvas
 
-async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | string> {
+async function loadDoc(
+  bytes: ArrayBuffer,
+  signal: AbortSignal,
+  source: FontDocument,
+): Promise<Doc | string> {
   const channel = connectWorker<PptxRequest, PptxReplies>(
     new Worker(new URL('./pptx-worker.ts', import.meta.url), { type: 'module' }),
   )
@@ -160,7 +165,12 @@ async function loadDoc(bytes: ArrayBuffer, signal: AbortSignal): Promise<Doc | s
     }
     const presentation = parsed.value
     const [families, clearType] = await Promise.all([loadHostFamilies(), loadClearType()])
-    const host = await loadHostFaces([...presentationFonts(presentation, families), FALLBACK])
+    const styles = new Map<string, StyleMask>()
+    const host = await loadHostFaces(
+      [...presentationFonts(presentation, families, styles), FALLBACK],
+      source,
+      styles,
+    )
     const loaded = new Map<string, SlideFace[]>()
     for (const [name, list] of host) {
       const faces = list.map(slideFont).filter((f) => f !== null)

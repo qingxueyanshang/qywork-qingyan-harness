@@ -13,6 +13,7 @@
     "./text": "./src/text/index.ts",
     "./pptx": "./src/pptx/index.ts",
     "./docx": "./src/docx/index.ts",
+    "./docx/test-helper": "./src/docx/test-helper.ts",
     "./math": "./src/math/index.ts"
   }
 }

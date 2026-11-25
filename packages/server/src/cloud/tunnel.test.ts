@@ -15,8 +15,10 @@ import {
   type LogRecord,
   setLogSink,
   TUNNEL_CLOSE,
+  TUNNEL_CONNECTION_WINDOW,
   TUNNEL_DATA,
   TUNNEL_PROTOCOL_VERSION,
+  TUNNEL_STREAM_WINDOW,
   TUNNEL_WINDOW,
   type TunnelControl,
 } from '@qywork/core'
@@ -247,7 +249,7 @@ describe('隧道客户端', () => {
     await local.stop(true)
   })
 
-  test('握手携带设备密钥、协议版本与远程访问开关，welcome 后状态为在线', async () => {
+  test('握手携带设备密钥、协议版本、远程访问开关与本端的窗口，welcome 后状态为在线', async () => {
     const c = start()
     await until(() => c.status.state === 'online')
     expect(cloud.hellos.at(-1)).toEqual({
@@ -255,6 +257,8 @@ describe('隧道客户端', () => {
       protocol: TUNNEL_PROTOCOL_VERSION,
       key: 'qyd_key',
       remote: true,
+      window: TUNNEL_STREAM_WINDOW,
+      connectionWindow: TUNNEL_CONNECTION_WINDOW,
     } as never)
     expect(c.status).toEqual({ state: 'online' })
   })

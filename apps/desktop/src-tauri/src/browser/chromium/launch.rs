@@ -1,6 +1,7 @@
 //! 查找本机的 Chromium 系浏览器，以专用 profile 启动它，并读取其调试端点。
 //!
-//! 只认可固定清单中的安装位置，不按 `PATH` 查找：`PATH` 上的同名程序可能是其他包装脚本，
+//! 运行环境安装的专用 Chromium（`installed.json`）优先，以无头方式启动；其次是固定清单中的安装位置，
+//! 在浏览器自身的窗口中显示。不按 `PATH` 查找：`PATH` 上的同名程序可能是其他包装脚本，
 //! 而宿主要按找到的浏览器类型决定 profile 的位置。
 
 use std::io::{BufRead, BufReader, Read};
@@ -19,6 +20,8 @@ pub struct Found {
     pub exe: PathBuf,
     /// snap 包的浏览器：其 `home` 接口不允许访问家目录下的隐藏目录，profile 必须放在其他位置。
     pub snap: bool,
+    /// 运行环境安装的专用 Chromium 的版本：以无头方式启动，页面由客户端以画面显示（显示方式 `view`）。
+    pub dedicated: Option<String>,
 }
 
 /// 按偏好排序的安装位置。Linux 上 snap 版排在最后：其沙箱限制 profile 的位置。
@@ -38,8 +41,11 @@ const CANDIDATES: &[&str] = &[
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
 ];
 
-/// 查找第一个存在的浏览器。非 snap 版一律排在 snap 版之前。
+/// 查找浏览器：专用 Chromium 优先，其次是第一个存在的安装位置。非 snap 版一律排在 snap 版之前。
 pub fn discover() -> Option<Found> {
+    if let Some(found) = dedicated() {
+        return Some(found);
+    }
     let mut snap = None;
     for candidate in CANDIDATES {
         let exe = PathBuf::from(candidate);
@@ -47,12 +53,38 @@ pub fn discover() -> Option<Found> {
             continue;
         }
         if is_snap(&exe) {
-            snap.get_or_insert(Found { exe, snap: true });
+            snap.get_or_insert(Found { exe, snap: true, dedicated: None });
             continue;
         }
-        return Some(Found { exe, snap: false });
+        return Some(Found { exe, snap: false, dedicated: None });
     }
     snap
+}
+
+/// 运行环境安装的专用 Chromium。服务端下载、核对并解压后写入数据目录的 `browser/chromium/installed.json`
+/// （`version` 与可执行文件的绝对路径 `exe`，见服务端 `host-env/chromium.ts`）；文件不存在或可执行文件缺失时为 `None`。
+fn dedicated() -> Option<Found> {
+    let file = crate::logfile::data_dir()?.join("browser").join("chromium").join("installed.json");
+    let installed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+    let exe = PathBuf::from(installed.get("exe")?.as_str()?);
+    let version = installed.get("version")?.as_str()?.to_owned();
+    exe.is_file().then_some(Found { exe, snap: false, dedicated: Some(version) })
+}
+
+/// 专用 Chromium 的 User-Agent：无头方式的缺省值含 `HeadlessChrome`，部分网站据此拒绝访问。
+/// 格式与同版本的 Chrome 相同（版本号只保留主版本）。
+pub fn user_agent(version: &str) -> String {
+    let major = version.split('.').next().unwrap_or("0");
+    let platform = if cfg!(target_os = "macos") {
+        "Macintosh; Intel Mac OS X 10_15_7"
+    } else if cfg!(target_arch = "aarch64") {
+        "X11; Linux aarch64"
+    } else {
+        "X11; Linux x86_64"
+    };
+    format!(
+        "Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
 }
 
 /// 判定该入口是否为 snap 包：其本身或其链接目标位于 `/snap/` 下，或是转而执行 `/snap/` 下
@@ -75,8 +107,12 @@ fn is_snap(exe: &Path) -> bool {
 }
 
 /// profile 目录。规则与 Windows 相同：数据根下的 `browser/profiles/default`；
-/// snap 版的数据根改为 `~/snap/chromium/common/qywork`，该位置是其沙箱中唯一可写的家目录位置。
+/// snap 版的数据根改为 `~/snap/chromium/common/qywork`，该位置是其沙箱中唯一可写的家目录位置；
+/// 专用 Chromium 使用 `browser/profiles/chromium`：与电脑上的 Chrome 版本不同，共用 profile 时较旧的一方无法打开。
 pub fn profile_dir(found: &Found) -> Option<PathBuf> {
+    if found.dedicated.is_some() {
+        return Some(crate::logfile::data_dir()?.join("browser").join("profiles").join("chromium"));
+    }
     if !found.snap {
         return super::super::profile::profile_dir();
     }
@@ -102,6 +138,7 @@ pub struct Launched {
 /// `--no-startup-window`：启动时不打开窗口，宿主新建第一个页面时才出现窗口；用户关闭
 /// 最后一个窗口时进程不退出，之后新建页面时再打开窗口。`--remote-debugging-port=0`：由浏览器
 /// 自行选择端口并写入 profile 目录的 `DevToolsActivePort`。
+/// 专用 Chromium 以无头方式启动：没有窗口，所有页面都产生画面（有窗口时只有当前标签页产生画面）。
 pub fn launch(found: &Found, profile: &Path) -> Result<Launched, String> {
     let port_file = profile.join("DevToolsActivePort");
     // 必须先删除上一个进程留下的端口文件：不删除时，下方读取到的是已停止监听的端口。
@@ -116,7 +153,17 @@ pub fn launch(found: &Found, profile: &Path) -> Result<Launched, String> {
         .arg("--remote-debugging-port=0")
         .arg("--no-first-run")
         .arg("--no-default-browser-check")
-        .arg("--no-startup-window")
+        .arg("--no-startup-window");
+    if let Some(version) = &found.dedicated {
+        command
+            .arg("--headless=new")
+            .arg("--window-size=1280,800")
+            .arg(format!("--user-agent={}", user_agent(version)));
+        if sandbox_unavailable() {
+            command.arg("--no-sandbox");
+        }
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -185,6 +232,29 @@ fn exit_with_parent(command: &mut Command) {
     }
 }
 
+/// 专用 Chromium 在本机能否使用沙箱。Linux 上两种情形不能：以 root 运行（Chromium 拒绝启动），或系统禁止非特权进程
+/// 创建用户命名空间（Ubuntu 23.10 起 AppArmor 的缺省设置；专用 Chromium 不在系统的 AppArmor 配置中，也没有 SUID 的沙箱程序）。
+/// 这两种情形下不加 `--no-sandbox` 时浏览器启动即退出。随系统安装的 Chrome 与 Chromium 带有对应配置，不经过此判定。
+#[cfg(target_os = "linux")]
+fn sandbox_unavailable() -> bool {
+    let root = std::fs::read_to_string("/proc/self/status").is_ok_and(|status| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Uid:"))
+            .and_then(|ids| ids.split_whitespace().nth(1).map(|euid| euid == "0"))
+            .unwrap_or(false)
+    });
+    let restricted =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .is_ok_and(|v| v.trim() == "1");
+    root || restricted
+}
+
+#[cfg(target_os = "macos")]
+fn sandbox_unavailable() -> bool {
+    false
+}
+
 /// macOS 没有父进程退出信号。外壳正常退出时由宿主关闭浏览器；外壳被强制终止时浏览器继续运行，
 /// 下一次以同一 profile 启动的进程会把请求转交给它后退出，宿主按启动失败退避，
 /// 达到上限即停止重启，并报告浏览器控制不可用。
@@ -247,8 +317,15 @@ mod tests {
     }
 
     #[test]
+    fn the_dedicated_user_agent_hides_headless() {
+        let ua = user_agent("158.0.8127.88");
+        assert!(ua.contains("Chrome/158.0.0.0 "), "{ua}");
+        assert!(!ua.contains("Headless"), "{ua}");
+    }
+
+    #[test]
     fn snap_profiles_live_under_the_snap_writable_home() {
-        let found = Found { exe: PathBuf::from("/snap/bin/chromium"), snap: true };
+        let found = Found { exe: PathBuf::from("/snap/bin/chromium"), snap: true, dedicated: None };
         let dir = profile_dir(&found).expect("设置了 HOME 时必有结果");
         assert!(dir.ends_with("snap/chromium/common/qywork/browser/profiles/default"), "{}", dir.display());
     }

@@ -13,6 +13,7 @@
 import type { ConversationId, Step } from '@qywork/core'
 import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import type { ScheduleClaim, Store } from '@qywork/store'
+import type { BrowserPages } from '../browser/remote/pages.ts'
 import type { EventBus } from '../bus.ts'
 import type { CanvasService } from '../canvas/service.ts'
 import type { CloudAccount } from '../cloud/account.ts'
@@ -67,6 +68,10 @@ export interface ApiDeps {
    * 归属在原生宿主上按会话记录（见 `browser/coordinator.ts`）；没有内置浏览器时为空操作。
    */
   closeBrowserPages(conversationId: ConversationId): Promise<void>
+  /** 桌面外壳以外的客户端新建、关闭与导航内置浏览器的页面（`/api/browser/pages`）；没有宿主凭据时为 null。 */
+  browserPages: BrowserPages | null
+  /** 请求浏览器宿主重新查找浏览器并重启（运行环境安装专用 Chromium 之后）；没有宿主凭据时为 null。 */
+  restartBrowser: (() => Promise<void>) | null
   /** Office 执行程序的宿主。「运行环境」中 Python 与文档库两行读取它的探测结果。 */
   office?: OfficeHost
   /** 工作台页面地址中的随机段（`plugin-ui.ts`）。`/api/plugins` 据此生成页面地址。 */

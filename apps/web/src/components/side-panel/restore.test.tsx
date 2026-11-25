@@ -44,6 +44,14 @@ const SAVED = {
 beforeAll(async () => {
   GlobalRegistrator.register({ url: 'http://localhost/' })
   localStorage.setItem('qywork.panel.tabs', JSON.stringify(SAVED))
+  // 应用启动发生在桌面外壳中：浏览器页只在桌面外壳中恢复为未加载的页（`ui.ts` 的 `restoredPanels`）。
+  g.__TAURI_INTERNALS__ = {
+    metadata: { currentWebview: { label: 'main' } },
+    invoke: async () => [],
+    transformCallback: () => 0,
+  }
+  await import('../../lib/store/index.ts')
+  delete g.__TAURI_INTERNALS__
   const { delegateEvents, DelegatedEvents } = await import('solid-js/web')
   delegateEvents([...DelegatedEvents])
 })

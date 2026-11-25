@@ -7,6 +7,7 @@
  */
 
 import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
+import { scaledFileUrl } from '../../lib/client.ts'
 import { IconArt, IconImage, IconVideo } from '../Icons.tsx'
 import { artPoster } from './art.ts'
 import { releaseVideo, seekVideo } from './frame.ts'
@@ -68,14 +69,17 @@ async function shrink(
   return createImageBitmap(source, { resizeWidth: Math.min(width, natural), resizeQuality: 'high' })
 }
 
-/** 获取图片并等比缩小到填满 `box` 所需的宽度。 */
+/**
+ * 获取图片并等比缩小到填满 `box` 所需的宽度。`url` 为工作区文件的直链：按框的长边取服务端缩小的版本（`scaledFileUrl`），
+ * 远程访问时卡片不传输原图；图片与框的宽高比一致时，长边宽度不小于填满框所需的宽度。
+ */
 export function decodeImage(
   url: string,
   box: DecodeBox,
   signal?: AbortSignal,
 ): Promise<ImageBitmap> {
   return limited(async () => {
-    const res = await fetch(url, signal ? { signal } : {})
+    const res = await fetch(scaledFileUrl(url, Math.max(box.w, box.h)), signal ? { signal } : {})
     if (!res.ok) throw new Error(`图片读取失败：${res.status}`)
     const full = await createImageBitmap(await res.blob())
     const width = coverWidth(box, { w: full.width, h: full.height })

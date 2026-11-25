@@ -17,11 +17,13 @@ import { boundsOf, snap } from '../snap.ts'
 import { addClips, clipsInto, gapFor, onTracksAt, timelineUnder } from './clips.ts'
 import { contextOf, openContext } from './context-menu.ts'
 import { extendable } from './create.ts'
+import { touchDown, touchMove, touchUp } from './touch.ts'
 
 /** 拖动节点时的吸附范围（屏幕像素）：按缩放换算为画布单位，缩放后吸附距离不变。 */
 const SNAP = 6
 
 export const onPointerDown = (canvas: CanvasController, e: PointerEvent) => {
+  if (e.pointerType === 'touch' && touchDown(canvas, e)) return
   const target = e.target as HTMLElement
   canvas.pressed = target
   // 平移：中键、右键或按住 Space 时的左键，在画布任意位置均可。
@@ -63,6 +65,10 @@ export const onPointerDown = (canvas: CanvasController, e: PointerEvent) => {
       return n ? [{ id: n.id, ...canvas.pos(n) }] : []
     })
     canvas.drag = { mode: 'move', sx: e.clientX, sy: e.clientY, start, moved: false }
+  } else if (e.pointerType === 'touch') {
+    // 单指拖动空白处为平移：触屏没有中键、右键与 Space。轻点空白处取消选中。
+    canvas.setSelected(new Set<string>())
+    canvas.drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, px: canvas.px(), py: canvas.py() }
   } else {
     // 左键拖动空白处为框选；按住 Shift 时叠加到已有选区。
     const base = e.shiftKey ? canvas.selected() : new Set<string>()
@@ -75,8 +81,9 @@ export const onPointerDown = (canvas: CanvasController, e: PointerEvent) => {
 
 export const onPointerMove = (canvas: CanvasController, e: PointerEvent) => {
   canvas.pointerAt = canvas.toWorld(e.clientX, e.clientY)
+  if (e.pointerType === 'touch' && touchMove(canvas, e)) return
   const d = canvas.drag
-  if (!d) return
+  if (!d || d.mode === 'pinch') return
   if (d.mode === 'link') {
     if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return
     d.moved = true
@@ -153,6 +160,7 @@ export const onPointerMove = (canvas: CanvasController, e: PointerEvent) => {
 }
 
 export const onPointerUp = (canvas: CanvasController, e: PointerEvent) => {
+  if (e.pointerType === 'touch') touchUp(canvas, e)
   const d = canvas.drag
   canvas.drag = null
   canvas.stage.classList.remove('grabbing')

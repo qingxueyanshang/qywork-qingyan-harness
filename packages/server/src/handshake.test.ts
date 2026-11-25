@@ -16,10 +16,11 @@ import { connect, type Socket } from 'node:net'
 import type { AgentEvent, ConversationId, HelloFrame } from '@qywork/core'
 import type { CommandShell } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
-import { probeEnvironment, resolveBashRow, resolveWinget } from './api/host.ts'
+import { probeEnvironment, resolveBashRow } from './api/host.ts'
 import { EventBus } from './bus.ts'
 import type { SocketData } from './deps.ts'
 import { handleHello } from './handshake.ts'
+import { resolveWinget } from './host-env/managers.ts'
 import { RunManager } from './runs.ts'
 import { SubagentRegistry } from './subagents.ts'
 
@@ -75,6 +76,7 @@ function helloDeps(
     }),
     announceGit: () => {},
     announceDesktopTarget: () => {},
+    announceBrowserTabs: () => {},
   }
 }
 
@@ -181,6 +183,7 @@ function wsServer(bus: EventBus) {
         authed: false,
         origin: 'desktop',
         native: null,
+        view: null,
         openedAt: Date.now(),
       }
       return srv.upgrade(req, { data })

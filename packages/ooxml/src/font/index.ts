@@ -8,6 +8,7 @@ export {
   emboldenBitmap,
   readEmbeddedBitmaps,
 } from './bitmap.ts'
+export { readCmap } from './cmap.ts'
 export {
   decodeMicroTypeExpress,
   type EmbeddedOpenType,
@@ -38,4 +39,5 @@ export {
   tableBytes,
   tableRecord,
 } from './sfnt.ts'
+export { subsetFace } from './subset.ts'
 export { readVerticalMetrics, type VerticalMetrics } from './vertical.ts'

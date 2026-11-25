@@ -84,6 +84,7 @@ export type AgentEvent =
   | CanvasExportEvent
   | GitStateEvent
   | BrowserStateEvent
+  | BrowserTabsEvent
   | DesktopStateEvent
   | DesktopTargetEvent
   | PersonalizationChangedEvent
@@ -731,6 +732,27 @@ export interface GitStateEvent {
 export interface BrowserStateEvent {
   type: 'browser.state'
   browser: BrowserCapability
+}
+
+/**
+ * 内置浏览器中列入页签条的页面的完整清单。进程级事件，信封上不带 `conversationId`。
+ *
+ * 供桌面外壳以外的客户端显示页签并远程查看（`/browser/view`）：页面由电脑上的宿主持有，这些客户端无法读取宿主的推送。
+ * 握手后、宿主连接或断开时、页面新建、关闭、导航与标题变化时发送；宿主未连接时为空数组。桌面外壳的界面读取宿主的推送，
+ * 不使用本事件。
+ */
+export interface BrowserTabsEvent {
+  type: 'browser.tabs'
+  tabs: BrowserTabView[]
+}
+
+/** `browser.tabs` 中的一个页面。 */
+export interface BrowserTabView {
+  tabId: string
+  url: string
+  title: string
+  /** 页面所属的工作区，创建时确定。 */
+  workspaceId: string
 }
 
 /**

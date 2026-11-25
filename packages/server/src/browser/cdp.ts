@@ -481,6 +481,21 @@ export class CdpClient {
    * 不按 URL 或标题匹配：两个同 URL 的子视图在目标清单中完全相同。
    */
   async attachByMarker(marker: string): Promise<{ targetId: string; sessionId: string }> {
+    const attached = await this.#attachMarked(marker)
+    this.#pageSessions.add(attached.sessionId)
+    await this.#initPageSession(attached.sessionId)
+    return attached
+  }
+
+  /**
+   * 按标记附加到页面，不初始化受控页会话：不拦截 file 请求、不启用观察所需的域、不注入脚本。
+   * 供远程查看画面与转发用户的输入（`remote/view.ts`），页面仍按用户自己浏览处理。
+   */
+  async attachViewer(marker: string): Promise<string> {
+    return (await this.#attachMarked(marker)).sessionId
+  }
+
+  async #attachMarked(marker: string): Promise<{ targetId: string; sessionId: string }> {
     const { targetInfos } = await this.send<{
       targetInfos: { targetId: string; type: string }[]
     }>('Target.getTargets')
@@ -495,11 +510,7 @@ export class CdpClient {
         { expression: 'window.__qyworkTab', returnByValue: true },
         { sessionId },
       )
-      if (read.result.value === marker) {
-        this.#pageSessions.add(sessionId)
-        await this.#initPageSession(sessionId)
-        return { targetId: page.targetId, sessionId }
-      }
+      if (read.result.value === marker) return { targetId: page.targetId, sessionId }
       await this.send('Target.detachFromTarget', { sessionId }, { teardown: 'detach' })
     }
     throw new CdpError('目标清单中没有带该标记的页面')

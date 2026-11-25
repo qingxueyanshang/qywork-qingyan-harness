@@ -21,6 +21,10 @@ import {
 } from '../lib/store/index.ts'
 import { IconChevron, IconRefresh } from './Icons.tsx'
 import ZoomControl from './preview/ZoomControl.tsx'
+import RemoteView from './remote-browser/RemoteView.tsx'
+
+/** 本机显示无头浏览器的画面时的 JPEG 质量：质量 90 时连续滚动约 48 帧/秒（实测），文字清晰。 */
+const LOCAL_QUALITY = 90
 
 /**
  * 内置浏览器页：工具栏与网页显示区域。
@@ -30,6 +34,8 @@ import ZoomControl from './preview/ZoomControl.tsx'
  * - `embedded`：网页是主窗口下的原生子 WebView，此处只把占位容器的矩形报告给宿主，
  *   由宿主把子视图摆放到该区域（`EmbeddedView`）。
  * - `window`：网页位于浏览器自身的窗口中，此处只提供一个将该窗口置于前台的按钮。
+ * - `view`：浏览器以无头方式运行（macOS 与 Linux 安装了专用 Chromium），此处经远程查看连接显示画面并转发输入
+ *   （`RemoteView`，与手机上的远程浏览器同一个组件）。本机连接不受线路限制，画面取较高的质量。
  *
  * 两种方式的共同约定：**组件卸载不关闭网页**（收起面板、切换页签都会卸载组件），关闭只由页签的 × 触发，
  * 经由 store 登记的收尾流程；**地址与标题均为宿主的投影**，前端不写入，地址栏提交发送的是一条宿主命令，
@@ -175,6 +181,9 @@ export default function BrowserPanel(props: { id: string; visible: boolean }) {
       <Switch>
         <Match when={browserPresentation() === 'embedded'}>
           <EmbeddedView id={props.id} visible={props.visible} />
+        </Match>
+        <Match when={browserPresentation() === 'view'}>
+          <RemoteView tabId={props.id} quality={LOCAL_QUALITY} />
         </Match>
         <Match when={browserPresentation() === 'window'}>
           <div class="web-window">
