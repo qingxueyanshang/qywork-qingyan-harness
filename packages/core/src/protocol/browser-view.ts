@@ -8,7 +8,7 @@
  *   `BROWSER_VIEW_INFLIGHT` 帧，帧率随网络自动降低，画面不在线路上排队。
  * - 坐标以页面视口的 CSS 像素为单位（元数据的 `width` 与 `height`），由客户端按显示尺寸换算。
  * - 查看期间页面视口按客户端的显示区域设定（`size`）：网页按客户端的宽度排版，而不是缩小电脑上的排版。电脑上同时显示该页时，
- *   页面在查看期间按客户端的尺寸显示。
+ *   页面在查看期间按客户端的尺寸显示。缩放比例同样由客户端设定（`size.zoom`），只在查看期间生效。
  * - 不在画面中的界面由客户端代为显示（`BrowserViewPrompt`）：下拉框与日期、时间、颜色输入框的弹出层，网页的对话框，
  *   以及选择上传的文件。客户端的选择经 `answer`、`dialog`、`files` 回传。
  */
@@ -18,6 +18,30 @@ export const BROWSER_VIEW_PATH = '/browser/view'
 
 /** 服务端在途（已发出、客户端尚未回复 `ack`）的画面上限。 */
 export const BROWSER_VIEW_INFLIGHT = 2
+
+/**
+ * 缩放比例的档位，升序。与外壳的页面缩放档位（`webview2.rs` 的 `ZOOM_LEVELS`）相同，两种显示方式按同样的档位缩放。
+ * 服务端把 `size.zoom` 限制在首末两档之间。
+ */
+export const BROWSER_VIEW_ZOOM_LEVELS: readonly number[] = [
+  0.25,
+  1 / 3,
+  0.5,
+  2 / 3,
+  0.75,
+  0.8,
+  0.9,
+  1,
+  1.1,
+  1.25,
+  1.5,
+  1.75,
+  2,
+  2.5,
+  3,
+  4,
+  5,
+]
 
 /** 一帧的元数据。 */
 export interface BrowserViewFrame {
@@ -97,6 +121,11 @@ export type BrowserViewInput =
       scale: number
       /** 画面的 JPEG 质量（1–100），不给出时为服务端的缺省值。本机显示时线路不受限，可取较高的质量。 */
       quality?: number
+      /**
+       * 缩放比例，1 为 100%，不给出时为 1。页面按 `width` 与 `height` 除以该比例的视口排版、像素比乘以该比例，
+       * 与浏览器的页面缩放相同；画面的像素上限不变，帧元数据的尺寸为缩放后的视口。
+       */
+      zoom?: number
     }
   | {
       type: 'mouse'

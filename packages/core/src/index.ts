@@ -412,6 +412,7 @@ export {
 export {
   BROWSER_VIEW_INFLIGHT,
   BROWSER_VIEW_PATH,
+  BROWSER_VIEW_ZOOM_LEVELS,
   type BrowserViewFrame,
   type BrowserViewInput,
   type BrowserViewInputKind,

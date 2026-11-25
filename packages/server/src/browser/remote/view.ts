@@ -6,6 +6,9 @@
  *   画面不在线路上排队。
  * - 页面不可见时（独立窗口中的后台标签页）浏览器不为 screencast 产生画面，改用截图取帧（`#captureLoop`），
  *   可见后恢复 screencast。
+ * - 缩放比例（`size.zoom`）按页面缩放的定义模拟：视口宽高除以比例、像素比乘以比例，网页重新排版，点击坐标仍为视口的
+ *   CSS 像素。不要改为可视视口缩放（`Emulation.setPageScaleFactor`）：输入坐标随之相对于可视视口，模型按元素位置
+ *   （布局视口坐标）的点击在可视视口偏移后落点错位。
  * - 输入按收到的顺序逐条处理（`#queue`）：按下时先查询该位置是否为代选控件（`controls.ts`），查询返回之前，
  *   随后的移动与抬起不得先到达网页。
  * - 不在画面中的界面交给客户端显示：代选控件、网页对话框与文件选择（查看期间拦截），客户端的结果写回页面；
@@ -19,6 +22,7 @@
 import { keyEvent } from '@qywork/agent'
 import {
   BROWSER_VIEW_INFLIGHT,
+  BROWSER_VIEW_ZOOM_LEVELS,
   type BrowserViewFrame,
   type BrowserViewInput,
   type BrowserViewNotice,
@@ -63,6 +67,22 @@ const CAPTURE_MAX_MS = 800
 
 const BUTTON_BITS = { none: 0, left: 1, right: 2, middle: 4 } as const
 
+const MIN_ZOOM = BROWSER_VIEW_ZOOM_LEVELS[0] ?? 1
+const MAX_ZOOM = BROWSER_VIEW_ZOOM_LEVELS[BROWSER_VIEW_ZOOM_LEVELS.length - 1] ?? 1
+
+/** 客户端的显示区域：尺寸为 CSS 像素，`scale` 为画面的像素比，`zoom` 为缩放比例。 */
+interface Viewport {
+  width: number
+  height: number
+  scale: number
+  zoom: number
+}
+
+/** 缩放后的页面视口（CSS 像素）：设定给浏览器的视口，也是帧元数据的尺寸。 */
+function layoutOf(view: Viewport): BrowserViewFrame {
+  return { width: Math.round(view.width / view.zoom), height: Math.round(view.height / view.zoom) }
+}
+
 const DIALOG_KINDS = ['alert', 'confirm', 'prompt', 'beforeunload'] as const
 
 /** 在途的文件选择：回答时交给该元素。 */
@@ -83,7 +103,7 @@ export class BrowserView {
   /** 已收到、尚未确认的浏览器帧：在途达到上限时暂缓确认。 */
   #heldFrame: number | null = null
   /** 客户端的显示区域（`size`），收到之前为 `null`。可能在附加完成之前收到，附加后设定。 */
-  #viewport: { width: number; height: number; scale: number } | null = null
+  #viewport: Viewport | null = null
   #quality = FRAME_QUALITY
   /** 最近发给客户端的选中文字与指针样式：只在变化时发送。 */
   #selection = ''
@@ -177,6 +197,7 @@ export class BrowserView {
               width: Math.round(clamp(msg.width, 64, 4096)),
               height: Math.round(clamp(msg.height, 64, 4096)),
               scale: clamp(msg.scale, 1, MAX_SCALE),
+              zoom: clamp(msg.zoom ?? 1, MIN_ZOOM, MAX_ZOOM),
             }
           : null
       this.#quality = Math.round(clamp(msg.quality ?? FRAME_QUALITY, 30, 95))
@@ -351,12 +372,13 @@ export class BrowserView {
     this.#inflight = 0
     this.#heldFrame = null
     if (!view) return
+    const layout = layoutOf(view)
     await client.send(
       'Emulation.setDeviceMetricsOverride',
       {
-        width: view.width,
-        height: view.height,
-        deviceScaleFactor: view.scale,
+        width: layout.width,
+        height: layout.height,
+        deviceScaleFactor: view.scale * view.zoom,
         // 不按移动端排版：没有 viewport 声明的网页会按 980 像素宽排版再整体缩小，输入坐标的单位随之与画面不同。
         // 按客户端的实际宽度排版时，自适应的网页与在手机浏览器中相同。
         mobile: false,
@@ -457,7 +479,7 @@ export class BrowserView {
         if (shot && shot.data !== last && this.#hidden && !this.#closed) {
           last = shot.data
           this.#captureIdle = CAPTURE_MIN_MS
-          this.#push(shot.data, { width: view.width, height: view.height })
+          this.#push(shot.data, layoutOf(view))
           this.#inflight += 1
         } else {
           this.#captureIdle = Math.min(this.#captureIdle * 2, CAPTURE_MAX_MS)

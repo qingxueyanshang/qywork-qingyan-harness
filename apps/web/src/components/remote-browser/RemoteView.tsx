@@ -6,6 +6,8 @@
  * - 每显示一帧回复一次 `ack`。显示区域的尺寸经 `size` 报告，页面视口按它设定，画面铺满显示区域；尺寸变化时重新报告。
  * - 鼠标的按下、移动、抬起与滚轮原样转发，移动每帧最多一次。触屏：轻点为一次点击，拖动为滚动（转为滚轮），
  *   不转为拖拽：网页按鼠标处理，单指拖动在网页中是选择文字。
+ * - 缩放比例由调用方持有（`zoom`），随 `size` 报告。双指捏合期间画布按两指距离之比预览，松开后以最近的档位调用 `onZoom`，
+ *   预览保持到缩放后的第一帧。不要在捏合期间逐次报告比例：服务端每次设定视口都重新开始推送画面，画面随之停滞。
  * - 键盘经一个透明的输入框（`input`）接收：文字与输入法确认的结果转为 `text`，功能键与快捷键转为 `key`。鼠标点击画面时
  *   聚焦该输入框；触屏客户端由调用方的键盘按钮聚焦（`onInput` 取得该输入框），聚焦时系统键盘弹出。
  *   输入框中保留一个零宽字符：输入框为空时 Android 的系统键盘按退格不产生事件。
@@ -23,9 +25,10 @@ import type {
   BrowserViewPrompt,
   BrowserViewRect,
 } from '@qywork/core'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
 import { client } from '../../lib/store/index.ts'
 import RemotePrompt, { type PromptArea } from './RemotePrompt.tsx'
+import { nearestZoom, ZOOM_MAX, ZOOM_MIN } from './zoom.ts'
 
 /** 触屏拖动超过该距离（CSS 像素）即为滚动，不再计为轻点。 */
 const TAP_SLOP = 8
@@ -105,6 +108,10 @@ export default function RemoteView(props: {
   onInput?: (input: HTMLInputElement) => void
   /** 画面的 JPEG 质量；不给出时为服务端的缺省值。本机显示时线路不受限，取较高的质量。 */
   quality?: number
+  /** 缩放比例，1 为 100%；不给出时为 1。 */
+  zoom?: number
+  /** 双指捏合结束时以最近的档位调用；不给出时不处理捏合。 */
+  onZoom?: (zoom: number) => void
 }) {
   let box!: HTMLDivElement
   let canvas!: HTMLCanvasElement
@@ -175,6 +182,7 @@ export default function RemoteView(props: {
       ctx.drawImage(image, drawn.x * dpr, drawn.y * dpr, w * dpr, h * dpr)
     }
     image.close()
+    if (preview !== null && meta.width !== preview) clearPreview()
   }
 
   /**
@@ -190,13 +198,16 @@ export default function RemoteView(props: {
         height: box.clientHeight,
         scale: window.devicePixelRatio || 1,
         ...(props.quality === undefined ? {} : { quality: props.quality }),
+        ...(props.zoom === undefined ? {} : { zoom: props.zoom }),
       })
     })
   }
+  createEffect(on(() => props.zoom, reportSize, { defer: true }))
 
   const connect = () => {
     setState('connecting')
     setPrompt(null)
+    clearPreview()
     const socket = new WebSocket(client.browserViewUrl(props.tabId))
     socket.binaryType = 'arraybuffer'
     ws = socket
@@ -238,7 +249,7 @@ export default function RemoteView(props: {
     moveQueued = null
   }
 
-  // ── 触屏：轻点与拖动滚动 ──
+  // ── 触屏：轻点与拖动滚动，双指捏合缩放 ──
   let touch: {
     id: number
     x: number
@@ -247,10 +258,60 @@ export default function RemoteView(props: {
     lastY: number
     moved: boolean
   } | null = null
+  /** 按下的手指的位置，按 `pointerId`。 */
+  const fingers = new Map<number, { x: number; y: number }>()
+  /** 进行中的捏合：两指的初始距离与预览的比例。距离变化超过 `TAP_SLOP` 之前不计为捏合。 */
+  let pinch: { start: number; ratio: number; moved: boolean } | null = null
+  /** 捏合预览保持期间为捏合开始时帧元数据的宽度：宽度不同的帧即为缩放后的画面。 */
+  let preview: number | null = null
+
+  function clearPreview() {
+    preview = null
+    canvas.style.transform = ''
+  }
+
+  const spread = () => {
+    const [a, b] = [...fingers.values()]
+    return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0
+  }
+
+  const startPinch = (): boolean => {
+    const start = spread()
+    if (!props.onZoom || !frame || pinch || fingers.size !== 2 || start === 0) return false
+    const [a, b] = [...fingers.values()] as [{ x: number; y: number }, { x: number; y: number }]
+    const rect = canvas.getBoundingClientRect()
+    touch = null
+    pinch = { start, ratio: 1, moved: false }
+    preview = frame.width
+    canvas.style.transformOrigin = `${(a.x + b.x) / 2 - rect.left}px ${(a.y + b.y) / 2 - rect.top}px`
+    return true
+  }
+
+  const movePinch = (p: { start: number; ratio: number; moved: boolean }) => {
+    const d = spread()
+    if (!p.moved && Math.abs(d - p.start) < TAP_SLOP) return
+    p.moved = true
+    const current = props.zoom ?? 1
+    const target = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, (current * d) / p.start))
+    p.ratio = target / current
+    canvas.style.transform = `scale(${p.ratio})`
+  }
+
+  /** 结束捏合：`apply` 为 false（触点被取消）或未达到捏合距离时不改比例。 */
+  const endPinch = (apply: boolean) => {
+    const p = pinch
+    pinch = null
+    if (!p) return
+    const current = props.zoom ?? 1
+    const next = apply && p.moved ? nearestZoom(current * p.ratio) : current
+    if (next === current) clearPreview()
+    else props.onZoom?.(next)
+  }
 
   const onPointerDown = (e: PointerEvent) => {
     if (e.pointerType !== 'mouse') {
-      if (touch) return
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (startPinch() || touch || pinch) return
       touch = {
         id: e.pointerId,
         x: e.clientX,
@@ -277,6 +338,15 @@ export default function RemoteView(props: {
 
   const onPointerMove = (e: PointerEvent) => {
     if (e.pointerType !== 'mouse') {
+      const finger = fingers.get(e.pointerId)
+      if (finger) {
+        finger.x = e.clientX
+        finger.y = e.clientY
+      }
+      if (pinch) {
+        movePinch(pinch)
+        return
+      }
       if (!touch || e.pointerId !== touch.id || !frame) return
       if (!touch.moved && Math.hypot(e.clientX - touch.x, e.clientY - touch.y) < TAP_SLOP) return
       touch.moved = true
@@ -300,6 +370,11 @@ export default function RemoteView(props: {
 
   const onPointerUp = (e: PointerEvent) => {
     if (e.pointerType !== 'mouse') {
+      fingers.delete(e.pointerId)
+      if (pinch) {
+        endPinch(true)
+        return
+      }
       if (!touch || e.pointerId !== touch.id) return
       const tapped = !touch.moved
       touch = null
@@ -407,8 +482,10 @@ export default function RemoteView(props: {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={() => {
+        onPointerCancel={(e) => {
           touch = null
+          fingers.delete(e.pointerId)
+          endPinch(false)
         }}
         onContextMenu={(e) => e.preventDefault()}
       />

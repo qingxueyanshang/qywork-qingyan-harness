@@ -3,6 +3,7 @@
  *
  * 与桌面外壳的 `BrowserPanel` 使用同一套工具栏：后退、前进、刷新与地址栏，地址按宿主的规则解析（网址或本地文件路径）。
  * 地址与标题是服务端清单（`browser.tabs`）的投影，前端不写入。历史状态不在清单中，后退与前进按钮不禁用。
+ * 缩放比例是本客户端的显示参数（`zoom.ts`），工具栏的缩放控件与画面中的双指捏合改同一个值。
  * 触屏客户端另有键盘按钮：系统键盘只在输入框获得焦点时弹出，点击网页中的输入框不会使本页的输入框获得焦点。
  * 组件卸载不关闭页面，关闭只由页签的 × 触发。
  */
@@ -11,7 +12,9 @@ import { createSignal, Show } from 'solid-js'
 import { BLANK_PAGE } from '../../lib/browser.ts'
 import { browserTab, navigateRemotePage } from '../../lib/store/index.ts'
 import { IconChevron, IconKeyboard, IconRefresh } from '../Icons.tsx'
+import ZoomControl from '../preview/ZoomControl.tsx'
 import RemoteView from './RemoteView.tsx'
+import { viewZoom, ZOOM_MAX, ZOOM_MIN, zoomStep } from './zoom.ts'
 
 /** 地址栏显示的地址，规则同 `BrowserPanel` 的 `shown`。 */
 function shown(url: string): string {
@@ -33,6 +36,7 @@ export default function RemoteBrowserPanel(props: { id: string }) {
   const [draft, setDraft] = createSignal<string | null>(null)
   const [error, setError] = createSignal('')
   const address = () => draft() ?? shown(tab()?.url ?? '')
+  const [zoom, setZoom] = viewZoom(props.id)
   let keyboard: HTMLInputElement | null = null
 
   const run = (action: 'back' | 'forward' | 'reload' | 'goto', url?: string) => {
@@ -94,6 +98,12 @@ export default function RemoteBrowserPanel(props: { id: string }) {
           onInput={(e) => setDraft(e.currentTarget.value)}
           onBlur={() => setDraft(null)}
         />
+        <ZoomControl
+          ratio={zoom()}
+          min={ZOOM_MIN}
+          max={ZOOM_MAX}
+          onStep={(direction) => setZoom(zoomStep(zoom(), direction))}
+        />
         <Show when={coarse()}>
           <button
             class="icon-btn"
@@ -107,6 +117,8 @@ export default function RemoteBrowserPanel(props: { id: string }) {
       </form>
       <RemoteView
         tabId={props.id}
+        zoom={zoom()}
+        onZoom={setZoom}
         onInput={(el) => {
           keyboard = el
         }}

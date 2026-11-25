@@ -641,6 +641,43 @@ test('页面不可见时以截图取帧，在途不超过上限，可见后停�
   expect(devtools.sent('Page.captureScreenshot')).toHaveLength(shots)
 })
 
+test('缩放比例：视口宽高除以比例、像素比乘以比例，画面上限不变；超出档位按两端；截图帧的元数据为缩放后的视口', async () => {
+  const { devtools, v } = await attached()
+  const metrics = () => devtools.sent('Emulation.setDeviceMetricsOverride').map((c) => c.params)
+  const caps = () => devtools.sent('Page.startScreencast').map((c) => c.params)
+
+  v.socket.send(JSON.stringify({ type: 'size', width: 390, height: 700, scale: 2, zoom: 2 }))
+  await until(() => caps().length === 2, '按缩放比例重新推送画面')
+  expect(metrics()[1]).toEqual({ width: 195, height: 350, deviceScaleFactor: 4, mobile: false })
+  expect(caps()[1]).toMatchObject({ maxWidth: 780, maxHeight: 1400 })
+
+  v.socket.send(JSON.stringify({ type: 'size', width: 390, height: 700, scale: 2, zoom: 9 }))
+  await until(() => caps().length === 3, '超出上限时按最高一档')
+  expect(metrics()[2]).toEqual({ width: 78, height: 140, deviceScaleFactor: 10, mobile: false })
+
+  v.socket.send(JSON.stringify({ type: 'size', width: 390, height: 700, scale: 1, zoom: 0.1 }))
+  await until(() => caps().length === 4, '低于下限时按最低一档')
+  expect(metrics()[3]).toEqual({
+    width: 1560,
+    height: 2800,
+    deviceScaleFactor: 0.25,
+    mobile: false,
+  })
+  expect(caps()[3]).toMatchObject({ maxWidth: 390, maxHeight: 700 })
+
+  devtools.replies.set('Page.captureScreenshot', () => ({
+    data: Buffer.from([0xff, 0xd8, 9]).toString('base64'),
+  }))
+  devtools.event('Page.screencastVisibilityChanged', { visible: false })
+  await until(() => v.messages.some((m) => typeof m !== 'string'), '截图得到一帧')
+  const shot = new Uint8Array(v.messages.find((m) => typeof m !== 'string') as ArrayBuffer)
+  const head = new DataView(shot.buffer).getUint32(0)
+  expect(JSON.parse(new TextDecoder().decode(shot.subarray(4, 4 + head)))).toEqual({
+    width: 1560,
+    height: 2800,
+  })
+})
+
 test('附加失败时客户端只收到 error，原因不出现在通知中', async () => {
   const { handle, workspaceId } = fresh()
   const devtools = new FakeDevtools()

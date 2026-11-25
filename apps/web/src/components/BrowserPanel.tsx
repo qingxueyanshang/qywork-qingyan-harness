@@ -22,6 +22,7 @@ import {
 import { IconChevron, IconRefresh } from './Icons.tsx'
 import ZoomControl from './preview/ZoomControl.tsx'
 import RemoteView from './remote-browser/RemoteView.tsx'
+import { viewZoom, ZOOM_MAX, ZOOM_MIN, zoomStep } from './remote-browser/zoom.ts'
 
 /** 本机显示无头浏览器的画面时的 JPEG 质量：质量 90 时连续滚动约 48 帧/秒（实测），文字清晰。 */
 const LOCAL_QUALITY = 90
@@ -68,6 +69,7 @@ export default function BrowserPanel(props: { id: string; visible: boolean }) {
   const [draft, setDraft] = createSignal<string | null>(null)
   const [error, setError] = createSignal('')
   const [manualRefresh, setManualRefresh] = createSignal(0)
+  const [viewZoomRatio, setViewZoom] = viewZoom(props.id)
   /** 地址栏处于编辑状态时显示草稿，否则显示宿主报告的真实地址。 */
   const address = () => draft() ?? shown(tab()?.url ?? '')
   /** 页面位于独立窗口中的宿主不上报历史，此时后退与前进按钮不禁用。 */
@@ -165,16 +167,26 @@ export default function BrowserPanel(props: { id: string; visible: boolean }) {
           }}
           onBlur={() => setDraft(null)}
         />
-        {/* 页面位于独立窗口中时由该窗口自身缩放。比例由宿主上报，页面中按 Ctrl+滚轮缩放时同样更新。
-            上下限是外壳缩放档位（`webview2.rs` 的 `ZOOM_LEVELS`）的两端。 */}
-        <Show when={browserPresentation() === 'embedded'}>
-          <ZoomControl
-            ratio={tab()?.zoom ?? 0}
-            min={0.25}
-            max={5}
-            onStep={(direction) => run(zoomBrowserPage(props.id, direction > 0 ? 'in' : 'out'))}
-          />
-        </Show>
+        {/* 页面位于独立窗口中时由该窗口自身缩放。嵌在面板中时比例由宿主上报，页面中按 Ctrl+滚轮缩放时同样更新；
+            远程画面的比例是本机的显示参数（`zoom.ts`）。两者的档位相同。 */}
+        <Switch>
+          <Match when={browserPresentation() === 'embedded'}>
+            <ZoomControl
+              ratio={tab()?.zoom ?? 0}
+              min={ZOOM_MIN}
+              max={ZOOM_MAX}
+              onStep={(direction) => run(zoomBrowserPage(props.id, direction > 0 ? 'in' : 'out'))}
+            />
+          </Match>
+          <Match when={browserPresentation() === 'view'}>
+            <ZoomControl
+              ratio={viewZoomRatio()}
+              min={ZOOM_MIN}
+              max={ZOOM_MAX}
+              onStep={(direction) => setViewZoom(zoomStep(viewZoomRatio(), direction))}
+            />
+          </Match>
+        </Switch>
       </form>
 
       {/* 宿主连接之前显示位置未知，该区域保持空白。 */}
@@ -183,7 +195,12 @@ export default function BrowserPanel(props: { id: string; visible: boolean }) {
           <EmbeddedView id={props.id} visible={props.visible} />
         </Match>
         <Match when={browserPresentation() === 'view'}>
-          <RemoteView tabId={props.id} quality={LOCAL_QUALITY} />
+          <RemoteView
+            tabId={props.id}
+            quality={LOCAL_QUALITY}
+            zoom={viewZoomRatio()}
+            onZoom={setViewZoom}
+          />
         </Match>
         <Match when={browserPresentation() === 'window'}>
           <div class="web-window">
