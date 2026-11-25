@@ -81,7 +81,10 @@ export type Menu = {
 }
 
 type Drag =
-  /** `context`：按下右键开始的平移；松开时未拖动则弹出右键菜单。 */
+  /**
+   * `context`：按下右键开始的平移；松开时未拖动则弹出右键菜单。
+   * `tap`：触屏按下未选中的节点开始的平移；松开时未拖动则选中该节点。
+   */
   | {
       mode: 'pan'
       sx: number
@@ -89,6 +92,7 @@ type Drag =
       px: number
       py: number
       context?: ContextTarget
+      tap?: string
     }
   | {
       mode: 'move'
@@ -181,15 +185,24 @@ export function createCanvasController(props: { path: string; active: boolean })
 
   // ── 读取与写入 ──
 
-  /** 只采纳最后一次：连续重新读取时先发出的请求可能后返回；读写共用一个序号，按发出顺序计算（见 `write`）。 */
+  /**
+   * 读写共用一个序号，按发出顺序计算（见 `write`）；`shown` 是当前显示的响应的序号。
+   * 响应的序号大于 `shown` 时采纳，小于时不采纳：连续重新读取时先发出的请求可能后返回。
+   * 不要改为只采纳最后发出的请求：运行状态的事件先于运行的响应体到达并发起重新读取，已到达的运行状态被丢弃，
+   * 卡片在重新读取返回之前不更新，远程访问时多等待一次往返。
+   */
   let seq = 0
+  let shown = 0
+  const show = (mine: number, next: CanvasView): boolean => {
+    if (mine < shown) return false
+    shown = mine
+    setView((prev) => shareUnchanged(prev, next))
+    return true
+  }
   const load = async () => {
     const mine = ++seq
     try {
-      const next = await readCanvas(props.path)
-      if (mine !== seq) return
-      setView((prev) => shareUnchanged(prev, next))
-      setBroken(null)
+      if (show(mine, await readCanvas(props.path))) setBroken(null)
     } catch (e) {
       if (mine === seq) setBroken(explainApiError(e, '无法打开画布'))
     }
@@ -272,14 +285,14 @@ export function createCanvasController(props: { path: string; active: boolean })
   )
 
   /**
-   * 写操作的响应体：发出时占用序号，返回时只有在此后未发出新的读取时才采纳。
+   * 写操作的响应体：发出时占用序号，返回时按 `show` 的规则采纳。
    * 不要改为返回时才占用序号：那样会作废在写操作之后发起、内容更新的读取（例如生成中平台报告状态引起的
    * 重新读取），画布停留在旧状态，直到下一次变化。
    */
   const write = async <T extends CanvasView>(request: Promise<T>): Promise<T> => {
     const mine = ++seq
     const next = await request
-    if (mine === seq) setView((prev) => shareUnchanged(prev, next))
+    show(mine, next)
     setFault(null)
     return next
   }

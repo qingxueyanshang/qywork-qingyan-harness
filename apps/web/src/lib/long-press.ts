@@ -3,15 +3,15 @@
  *
  * - 触屏没有右键。iOS Safari 长按不派发 `contextmenu`；Android 长按可拖动的元素时开始拖放，同样不派发。
  *   因此触屏的右键菜单只经本模块打开，不依赖浏览器的 `contextmenu`。
- * - 移动超过 `SLOP`、松开、第二根手指按下或触点被取消时不触发。
+ * - 移动超过 `TOUCH_SLOP`、松开、第二根手指按下或触点被取消时不触发。
  * - 触屏按压期间与触发之后，元素不接收本次按压的 `contextmenu` 与松开后的 `click`：菜单不打开两次，
  *   松开手指不再执行轻点的操作。鼠标与触控笔不经本模块。
  */
 
 /** 长按的时长（毫秒）。 */
 const LONG_PRESS_MS = 500
-/** 长按期间允许的移动距离（CSS 像素）：手指按住时会轻微移动，超过该距离视为拖动或滚动。 */
-const SLOP = 8
+/** 长按与轻点期间允许的移动距离（CSS 像素）：手指按住时会轻微移动，超过该距离视为拖动或滚动。 */
+export const TOUCH_SLOP = 8
 
 /** 主要指针为触屏（手机、平板）。 */
 export function touchPrimary(): boolean {
@@ -48,7 +48,10 @@ export function attachLongPress(
     }, LONG_PRESS_MS)
   })
   el.addEventListener('pointermove', (e) => {
-    if (press?.id === e.pointerId && Math.hypot(e.clientX - press.x, e.clientY - press.y) >= SLOP) {
+    if (
+      press?.id === e.pointerId &&
+      Math.hypot(e.clientX - press.x, e.clientY - press.y) >= TOUCH_SLOP
+    ) {
       cancel()
     }
   })

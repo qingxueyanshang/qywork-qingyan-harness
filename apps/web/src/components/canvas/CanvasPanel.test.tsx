@@ -170,6 +170,9 @@ interface Server {
   cancelError: Error | null
   /** 设置时，编辑的响应体先按收到请求时的画布计算，等该 Promise 兑现后才返回：模拟响应晚于其后的重新读取到达。 */
   hold: Promise<void> | null
+  /** 同 `hold`，作用于运行与读取画布的响应体。 */
+  runHold: Promise<void> | null
+  readHold: Promise<void> | null
 }
 
 async function mount(
@@ -212,6 +215,8 @@ async function mount(
     })
   const server: Server = {
     hold: null,
+    runHold: null,
+    readHold: null,
     cancels: [],
     retrievals: [],
     cancelOutcome: 'stopped',
@@ -256,7 +261,9 @@ async function mount(
           '{"error":"invalid","message":"画布文件格式错误：不是合法的 JSON"}',
         )
       }
-      return view()
+      const reply = view()
+      if (server.readHold) await server.readHold
+      return reply
     }
     if (path.startsWith('/api/canvas/ops')) {
       server.ops.push(body.ops)
@@ -306,7 +313,9 @@ async function mount(
         const r = core.applyCanvasOps(doc, body.ops, ids)
         if (r.ok) doc = r.doc
       }
-      return view()
+      const reply = view()
+      if (server.runHold) await server.runHold
+      return reply
     }
     if (path.startsWith('/api/canvas/quote')) return { quote: server.quote }
     // 文本卡的节点预览；内容不参与断言。
@@ -808,12 +817,53 @@ describe('画布：节点操作', () => {
     expect(server.ops).toHaveLength(0)
   })
 
+  /** 原始失败形状：卡片铺满视野时，单指滑动画布多从卡片上开始，按下即拖动卡片。 */
+  test('触屏：从未选中的节点开始滑动为平移，节点不移动；轻点选中后才可拖动', async () => {
+    const { host, server, refs } = await mount(FILES)
+    const stage = host.querySelector('.canvas-stage')!
+    const touch = { pointerType: 'touch' }
+    const before = offset(host)
+    pointer(node(host, refs.$a!), 'pointerdown', 100, 100, touch)
+    pointer(stage, 'pointermove', 160, 140, touch)
+    pointer(stage, 'pointerup', 160, 140, touch)
+    expect(offset(host)).toEqual({ x: before.x + 60, y: before.y + 40 })
+    expect(host.querySelector('[data-node].selected')).toBeNull()
+    await nextTurn()
+    expect(server.ops).toHaveLength(0)
+    // 手指抖动不超过允许的移动距离时为轻点，选中该节点。
+    const panned = offset(host)
+    pointer(node(host, refs.$a!), 'pointerdown', 100, 100, touch)
+    pointer(stage, 'pointermove', 104, 103, touch)
+    pointer(stage, 'pointerup', 104, 103, touch)
+    expect(host.querySelector(`[data-node="${refs.$a!}"].selected`)).not.toBeNull()
+    const tapped = offset(host)
+    expect(tapped).toEqual({ x: panned.x + 4, y: panned.y + 3 })
+    pointer(node(host, refs.$a!), 'pointerdown', 100, 100, touch)
+    pointer(stage, 'pointermove', 200, 150, touch)
+    pointer(stage, 'pointerup', 200, 150, touch)
+    expect(offset(host)).toEqual(tapped)
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([
+      {
+        op: 'update',
+        id: refs.$a!,
+        x: Math.round(100 / zoom(host)),
+        y: Math.round(50 / zoom(host)),
+      },
+    ])
+  })
+
   test('触屏：双指按间距缩放，两指中点下的画布位置不变；第二根手指按下时取消正在拖动的节点', async () => {
     const { host, server, refs } = await mount(FILES)
     const stage = host.querySelector('.canvas-stage')!
     const z = zoom(host)
     const before = offset(host)
-    // 第一根手指拖动节点，第二根手指按下后节点回到原位，松开后不提交位置。
+    // 轻点选中节点后第一根手指拖动它，第二根手指按下后节点回到原位，松开后不提交位置。
+    pointer(node(host, refs.$a!), 'pointerdown', 100, 100, { pointerType: 'touch', pointerId: 1 })
+    pointer(stage, 'pointerup', 100, 100, { pointerType: 'touch', pointerId: 1 })
     pointer(node(host, refs.$a!), 'pointerdown', 100, 100, { pointerType: 'touch', pointerId: 1 })
     pointer(stage, 'pointermove', 120, 110, { pointerType: 'touch', pointerId: 1 })
     pointer(stage, 'pointerdown', 200, 100, { pointerType: 'touch', pointerId: 2 })
@@ -1624,6 +1674,105 @@ describe('画布：生成卡与生成面板', () => {
     expect(node(host, id).querySelector('.canvas-live')).toBeNull()
     expect(node(host, id).querySelector('[role="alert"]')?.textContent).toContain('生成请求被拒绝')
     expect(server.runs).toHaveLength(1)
+  })
+
+  /**
+   * 原始失败形状：远程访问时运行状态的事件先于运行的响应体到达并发起重新读取，响应体到达后因不是最后发出的请求而被丢弃，
+   * 卡片在重新读取返回之前一直不显示运行状态。
+   */
+  test('运行的响应体在其后发起的重新读取返回之前到达时，立即显示运行状态', async () => {
+    const { host, server, refs } = await mount(CARD)
+    const store = await import('../../lib/store/index.ts')
+    const id = refs.$v!
+    await select(host, id)
+    const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
+    editor.textContent = '生成视频'
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    const send = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
+    await waitFor(
+      () => !send.disabled,
+      () => send.outerHTML,
+    )
+    let releaseRun!: () => void
+    let releaseRead!: () => void
+    server.runHold = new Promise((r) => {
+      releaseRun = r
+    })
+    server.readHold = new Promise((r) => {
+      releaseRead = r
+    })
+    try {
+      server.setView({
+        states: {
+          [id]: { state: 'running', action: 'run', startedAt: Date.now(), stage: 'preparing' },
+        },
+      })
+      send.click()
+      await waitFor(
+        () => server.runs.length === 1,
+        () => JSON.stringify(server.runs),
+      )
+      const reads = server.reads
+      store.setState('canvasVersion', (v) => v + 1)
+      await waitFor(
+        () => server.reads === reads + 1,
+        () => String(server.reads),
+      )
+      const phase = () => node(host, id).querySelector('.canvas-live .phase')?.textContent
+      expect(phase()).toBeUndefined()
+      releaseRun()
+      await waitFor(
+        () => phase() === '准备中',
+        () => node(host, id).textContent ?? '',
+      )
+    } finally {
+      releaseRun()
+      releaseRead()
+    }
+  })
+
+  test('先发出的读取晚于其后发出的运行返回时不采纳，卡片不回到运行之前的状态', async () => {
+    const { host, server, refs } = await mount(CARD)
+    const store = await import('../../lib/store/index.ts')
+    const id = refs.$v!
+    await select(host, id)
+    const editor = host.querySelector<HTMLElement>('.canvas-prompt')!
+    editor.textContent = '生成视频'
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+    const send = host.querySelector<HTMLButtonElement>('.canvas-panel .send-btn')!
+    await waitFor(
+      () => !send.disabled,
+      () => send.outerHTML,
+    )
+    let releaseRead!: () => void
+    server.readHold = new Promise((r) => {
+      releaseRead = r
+    })
+    try {
+      // 读取在运行之前发出，内容是运行之前的画布。
+      const reads = server.reads
+      store.setState('canvasVersion', (v) => v + 1)
+      await waitFor(
+        () => server.reads === reads + 1,
+        () => String(server.reads),
+      )
+      server.setView({
+        states: {
+          [id]: { state: 'running', action: 'run', startedAt: Date.now(), stage: 'preparing' },
+        },
+      })
+      send.click()
+      const phase = () => node(host, id).querySelector('.canvas-live .phase')?.textContent
+      await waitFor(
+        () => phase() === '准备中',
+        () => node(host, id).textContent ?? '',
+      )
+      releaseRead()
+      await nextTurn()
+      expect(phase()).toBe('准备中')
+    } finally {
+      releaseRead()
+    }
   })
 
   test('开始运行时立即刷新计时，连续的状态刷新不推迟下一次计时', async () => {

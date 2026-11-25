@@ -10,6 +10,7 @@ import {
   type MediaInputRole,
   modeOf,
 } from '@qywork/core'
+import { TOUCH_SLOP } from '../../../lib/long-press.ts'
 import { openFileInPanel, setFileSelectRequest } from '../../../lib/store/index.ts'
 import type { CanvasController } from '../board/controller.ts'
 import { mediaOf } from '../GeneratePanel.tsx'
@@ -51,7 +52,20 @@ export const onPointerDown = (canvas: CanvasController, e: PointerEvent) => {
   }
   canvas.setEdgeSelected(null)
   const nodeEl = target.closest<HTMLElement>('[data-node]')
-  if (nodeEl) {
+  const pressedId = nodeEl?.dataset.node
+  if (e.pointerType === 'touch' && !(pressedId && canvas.selected().has(pressedId))) {
+    // 单指拖动空白处或未选中的节点为平移：触屏没有中键、右键与 Space，卡片铺满视野时滑动多从卡片上开始。
+    // 只有已选中的节点可以拖动；轻点节点选中它，轻点空白处取消选中。
+    canvas.setSelected(new Set<string>())
+    canvas.drag = {
+      mode: 'pan',
+      sx: e.clientX,
+      sy: e.clientY,
+      px: canvas.px(),
+      py: canvas.py(),
+      ...(pressedId ? { tap: pressedId } : {}),
+    }
+  } else if (nodeEl) {
     const id = nodeEl.dataset.node!
     let next = canvas.selected()
     if (e.shiftKey) {
@@ -65,10 +79,6 @@ export const onPointerDown = (canvas: CanvasController, e: PointerEvent) => {
       return n ? [{ id: n.id, ...canvas.pos(n) }] : []
     })
     canvas.drag = { mode: 'move', sx: e.clientX, sy: e.clientY, start, moved: false }
-  } else if (e.pointerType === 'touch') {
-    // 单指拖动空白处为平移：触屏没有中键、右键与 Space。轻点空白处取消选中。
-    canvas.setSelected(new Set<string>())
-    canvas.drag = { mode: 'pan', sx: e.clientX, sy: e.clientY, px: canvas.px(), py: canvas.py() }
   } else {
     // 左键拖动空白处为框选；按住 Shift 时叠加到已有选区。
     const base = e.shiftKey ? canvas.selected() : new Set<string>()
@@ -193,6 +203,10 @@ export const onPointerUp = (canvas: CanvasController, e: PointerEvent) => {
   canvas.setGuides([])
   if (d?.mode === 'pan' && d.context && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) {
     openContext(canvas, d.context, e.clientX, e.clientY)
+    return
+  }
+  if (d?.mode === 'pan' && d.tap && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < TOUCH_SLOP) {
+    canvas.setSelected(new Set([d.tap]))
     return
   }
   if (d?.mode === 'link') {
