@@ -56,19 +56,24 @@
     border-left: none;
   }
 
-  /* 抽屉浮在会话区之上，属于浮层，底色不透明：骨架的半透明底色会透出下方的会话正文。 */
+  /* 抽屉浮在会话区之上，属于浮层，底色不透明：骨架的半透明底色会透出下方的会话正文。
+     以 `left` 移入移出，不要改为 `transform` 或 `translate`：带变换的元素是其中 fixed 后代的定位基准，
+     侧栏中打开的弹窗（新建 work、删除确认、账号）会被限制在抽屉的宽度内。
+     投影只在打开时绘制：收起时抽屉紧贴窗口左边沿之外，投影的模糊半径会落在窗口内，显示为左边沿的一条灰影。 */
   .sidebar-slot {
+    --drawer-w: min(84vw, 300px);
     position: fixed;
-    inset: 0 auto 0 0;
+    inset: 0 auto 0 calc(-1 * var(--drawer-w));
     z-index: 50;
-    width: min(84vw, 300px);
+    width: var(--drawer-w);
     background: var(--bg-sunken);
-    transform: translateX(-100%);
-    transition: transform var(--t-base) var(--ease);
-    box-shadow: var(--shadow-lg);
+    transition:
+      left var(--t-base) var(--ease),
+      box-shadow var(--t-base) var(--ease);
   }
   .drawer-open .sidebar-slot {
-    transform: translateX(0);
+    left: 0;
+    box-shadow: var(--shadow-lg);
   }
 
   .drawer-scrim {
@@ -106,10 +111,12 @@
   .app.with-panel {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* 底部同样避让：画布的工具条、运行页的账本入口与终端底栏都贴在面板底边，位于手势条上会与返回手势冲突。 */
   .side-panel {
     position: fixed;
     inset: 0;
     z-index: 45;
+    padding-bottom: var(--safe-bottom);
     border: none;
     background: var(--bg-sunken);
   }
@@ -150,6 +157,13 @@
     width: 100%;
     border-radius: var(--r-lg) var(--r-lg) 0 0;
     padding-bottom: var(--safe-bottom);
+  }
+  /* 确认框与新建 work 同样贴底显示，按钮行避让手势条。 */
+  .confirm-dialog {
+    padding-bottom: calc(var(--s-4) + var(--safe-bottom));
+  }
+  .new-project {
+    padding-bottom: calc(var(--s-4) + var(--safe-bottom));
   }
   .sheet-actions {
     flex-wrap: wrap;

@@ -81,7 +81,7 @@ export default function HtmlPreview(props: { path: string; mtime: number }) {
         zoomBy: (factor) => zoom(factor > 1 ? 'in' : 'out'),
         reset: () => zoom('reset'),
       },
-      { wheel: false },
+      { gestures: false },
     )
     const ro = new ResizeObserver(layout)
     ro.observe(slot)

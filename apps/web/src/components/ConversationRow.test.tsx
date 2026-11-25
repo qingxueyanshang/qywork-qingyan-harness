@@ -1,6 +1,8 @@
 /**
  * 覆盖 `ConversationRow.tsx` 的删除路径，以及 `Sidebar.tsx` 中承接它的提示区域
  * （`.side-error`）。两种失败语义必须显示在同一处，因此连同侧栏一起挂载测试。
+ * 另覆盖重命名输入框的失焦：失焦即提交，Esc 不提交。原始失败形状：手机键盘的「完成」只使输入框失焦，
+ * 失焦即取消时输入的名称被丢弃。
  *
  * 原始失败形状：会话已删除、空间未回收，而界面上没有任何提示。服务端分别返回这两件事
  * （`{ ok: true, reclaimError }`），前端也必须分别处理：会话行照常消失，该提示显示在既有的提示区域中，
@@ -74,8 +76,8 @@ async function waitFor(done: () => boolean, detail: () => string) {
   throw new Error(`界面未在时限内更新：${detail()}`)
 }
 
-/** 挂载侧栏需要一份项目清单；删除请求按调用方提供的应答返回。 */
-async function mountSidebar(onDelete: () => unknown) {
+/** 挂载侧栏需要一份项目清单；删除请求按调用方提供的应答返回，重命名请求的标题记入 `renamed`。 */
+async function mountSidebar(onDelete: () => unknown, renamed: string[] = []) {
   const store = await import('../lib/store/index.ts')
   const original = store.client.api
   ;(
@@ -95,6 +97,11 @@ async function mountSidebar(onDelete: () => unknown) {
       }
     }
     if (path.startsWith('/api/conversations/cv_1') && init?.method === 'DELETE') return onDelete()
+    if (path.startsWith('/api/conversations/cv_1') && init?.method === 'PATCH') {
+      const { title } = JSON.parse(String(init.body)) as { title: string }
+      renamed.push(title)
+      return { conversation: { ...CONVERSATION, title } }
+    }
     throw new Error(`未预期请求：${path}`)
   }
   restoreApi = () => {
@@ -180,5 +187,48 @@ describe('删除会话的两种失败语义', () => {
       () => host.textContent ?? '',
     )
     expect(host.querySelector('.side-error')).toBeNull()
+  })
+})
+
+describe('重命名输入框的失焦', () => {
+  async function startRename(renamed: string[]) {
+    const host = await mountSidebar(() => ({ ok: true }), renamed)
+    host.querySelector<HTMLButtonElement>('.conv-more')?.click()
+    await waitFor(
+      () => host.querySelector('[role="menuitem"]') !== null,
+      () => '菜单未展开',
+    )
+    ;[...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((item) => item.textContent?.trim() === '重命名')
+      ?.click()
+    await waitFor(
+      () => host.querySelector('.conv-rename') !== null,
+      () => '输入框未显示',
+    )
+    const input = host.querySelector<HTMLInputElement>('.conv-rename')!
+    input.value = '新的标题'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    return { host, input }
+  }
+
+  test('失焦即提交输入的标题', async () => {
+    const renamed: string[] = []
+    const { input } = await startRename(renamed)
+    input.dispatchEvent(new FocusEvent('blur'))
+    await waitFor(
+      () => renamed.length === 1,
+      () => JSON.stringify(renamed),
+    )
+    expect(renamed).toEqual(['新的标题'])
+  })
+
+  test('按 Esc 取消后，输入框移除时的失焦不提交', async () => {
+    const renamed: string[] = []
+    const { host, input } = await startRename(renamed)
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    input.dispatchEvent(new FocusEvent('blur'))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(renamed).toEqual([])
+    expect(host.querySelector('.conv-rename')).toBeNull()
   })
 })

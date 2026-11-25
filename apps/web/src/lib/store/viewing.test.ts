@@ -1,5 +1,5 @@
 /**
- * 覆盖范围（B6）：`store/ui.ts` 的 `viewingFile`，即随消息发送的「界面右侧面板当前打开的文件」。
+ * 覆盖范围（B6）：`store/ui.ts` 的 `viewingFile`，即本端面板当前显示、上报给电脑的「界面右侧面板当前打开的文件」。
  *
  * 原始失败形状：用户说「批量生成这个画布」并附上标题被截断的页签截图，上下文中没有当前打开的文件，
  * 模型只能用电脑控制读取 qywork 窗口来确认是哪一张画布。
@@ -19,15 +19,8 @@ g.sessionStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () =>
 g.matchMedia ??= () => ({ matches: false })
 g.localStorage ??= { getItem: () => null, setItem: () => {}, removeItem: () => {} }
 
-const {
-  openCanvasTab,
-  openFileTab,
-  openPanel,
-  setOpenFile,
-  setSidePanel,
-  setWorkspace,
-  viewingFile,
-} = await import('./ui.ts')
+const { openPanel, setOpenFile, setSidePanel, setWorkspace, showSharedTab, viewingFile } =
+  await import('./ui.ts')
 
 const WS = { id: 'ws_viewing', root: 'C:/w', name: 'W' }
 
@@ -41,10 +34,10 @@ test('画布页或文件预览页在显示时为其路径；面板收起或显�
   setWorkspace(WS)
   expect(viewingFile()).toBeUndefined()
 
-  openCanvasTab('作品/甲/甲_第五版.canvas.json', '甲_第五版')
+  showSharedTab({ kind: 'canvas', path: '作品/甲/甲_第五版.canvas.json', title: '甲_第五版' })
   expect(viewingFile()).toBe('作品/甲/甲_第五版.canvas.json')
 
-  openFileTab('generated/a.png')
+  showSharedTab({ kind: 'file', path: 'generated/a.png', title: 'a.png' })
   expect(viewingFile()).toBe('generated/a.png')
 
   openPanel('todos')

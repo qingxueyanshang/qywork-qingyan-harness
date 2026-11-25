@@ -85,6 +85,7 @@ export type AgentEvent =
   | GitStateEvent
   | BrowserStateEvent
   | BrowserTabsEvent
+  | PanelTabsEvent
   | DesktopStateEvent
   | DesktopTargetEvent
   | PersonalizationChangedEvent
@@ -744,6 +745,36 @@ export interface BrowserStateEvent {
 export interface BrowserTabsEvent {
   type: 'browser.tabs'
   tabs: BrowserTabView[]
+}
+
+/**
+ * 右侧面板中各客户端共享的页签（画布、文件预览、插件工作台）的完整清单。进程级事件，信封上不带 `conversationId`。
+ *
+ * 清单按工作区记录在电脑上（服务端），全部客户端显示同一份：任一客户端打开或关闭，其余客户端随之变化；
+ * 客户端离线期间的变化在重新连接后的握手中取得。握手后与清单变化时发送全部工作区的清单。
+ * 各客户端当前显示哪一页、面板是否展开不在清单中，由各客户端自己记录。
+ */
+export interface PanelTabsEvent {
+  type: 'panel.tabs'
+  tabs: SharedPanelTab[]
+}
+
+/** 共享页签。按工作区内的打开顺序排列；`id` 由类型与对象确定（`sharedPanelTabId`），同一对象只有一页。 */
+export type SharedPanelTab = {
+  id: string
+  workspaceId: string
+  /** 页签标题，打开时确定，此后不变。 */
+  title: string
+} & ({ kind: 'canvas' | 'file'; path: string } | { kind: 'plugin'; workbench: string })
+
+/**
+ * 共享页签的 id：画布与文件预览为 `<类型>-<工作区相对路径>`，工作台为 `plugin-<插件 id>/<工作台 id>`。
+ * 客户端与服务端使用同一规则：打开同一对象得到同一 id，客户端先显示的页与服务端随后推送的页是同一页。
+ */
+export function sharedPanelTabId(
+  tab: { kind: 'canvas' | 'file'; path: string } | { kind: 'plugin'; workbench: string },
+): string {
+  return tab.kind === 'plugin' ? `plugin-${tab.workbench}` : `${tab.kind}-${tab.path}`
 }
 
 /** `browser.tabs` 中的一个页面。 */

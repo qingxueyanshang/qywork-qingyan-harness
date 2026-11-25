@@ -816,6 +816,17 @@
 .attach-x:hover {
   color: var(--danger);
 }
+/* 触屏上点击区域向四周扩展到约 27px，外观不变：按钮只有图标大小，放大外观会增加附件条的高度。 */
+@media (pointer: coarse) {
+  .attach-x {
+    position: relative;
+  }
+  .attach-x::after {
+    content: "";
+    position: absolute;
+    inset: -8px;
+  }
+}
 
 /* ── 空会话时的「运行于」──
    三个 chip 各回答一个实际问题：修改哪个工作区、是否逐条审批、位于哪个分支。
@@ -887,6 +898,20 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* 菜单以输入框为定位基准、右边沿对齐：以选择器为基准时菜单从选择器左边沿向右展开，
+     选择器位于输入框右半部时菜单超出窗口右边沿。 */
+  .model-picker {
+    position: static;
+  }
+  .model-menu {
+    left: auto;
+    right: 0;
+  }
+  /* 上下文占用弹层同理，以输入框为基准、左边沿对齐。 */
+  .ctx-wrap {
+    position: static;
+  }
+
   /* 两栏并排在该宽度下会超出窗口。改为叠放在一级面板正上方，左边沿对齐。 */
   .model-sub {
     left: 0;
@@ -903,6 +928,16 @@
  * 另一个的定位、边框、底色与投影，菜单退化为无样式文本，且 CSS 不会报错。 */
 .branch-picker {
   position: relative;
+}
+/* 窄屏的分支菜单以「运行于」一行为基准、左边沿对齐：以分支选择器为基准时，工作区名称较长使选择器右移，
+   菜单超出窗口右边沿。位于 `.branch-picker` 的基准规则之后，同等优先级时后出现的规则生效。 */
+@media (max-width: 820px) {
+  .run-context {
+    position: relative;
+  }
+  .branch-picker {
+    position: static;
+  }
 }
 /*
  * 向下弹出，不向上弹出。

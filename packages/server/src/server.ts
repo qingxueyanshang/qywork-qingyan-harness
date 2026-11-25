@@ -59,6 +59,7 @@ import type { ServerWebSocket } from 'bun'
 import { uiMediaPort } from './api/canvas.ts'
 import { watchConfig } from './api/config.ts'
 import { handleApi, json } from './api/index.ts'
+import { publishPanelTabs } from './api/panel.ts'
 import { serveArt } from './art.ts'
 import { BrowserBridge } from './browser/bridge.ts'
 import { browserCapability } from './browser/capability.ts'
@@ -784,6 +785,7 @@ export function serve(opts: ServeOptions) {
             announceBrowserTabs: () => {
               bus.publish({ type: 'browser.tabs', tabs: browserTabsOf(browserBridge) })
             },
+            announcePanelTabs: () => publishPanelTabs(opts.store, bus),
           })
           return
         }

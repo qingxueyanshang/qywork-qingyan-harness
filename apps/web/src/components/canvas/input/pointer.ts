@@ -159,6 +159,31 @@ export const onPointerMove = (canvas: CanvasController, e: PointerEvent) => {
   )
 }
 
+/**
+ * 触屏长按（`lib/long-press.ts`）：按下节点或空白处后按住不动时，在按下处弹出右键菜单。结束进行中的拖动或平移并撤销其预览，
+ * 松开时 `onPointerUp` 不再提交移动。按下处不是节点或空白（工具条、面板中的控件）时不处理。
+ */
+export const pressContext = (
+  canvas: CanvasController,
+  x: number,
+  y: number,
+  target: HTMLElement,
+) => {
+  const d = canvas.drag
+  if (d?.mode !== 'move' && d?.mode !== 'pan') return
+  canvas.drag = null
+  if (d.mode === 'move') {
+    canvas.setMoving({})
+    canvas.setGuides([])
+    canvas.setClipTarget(null)
+  } else {
+    canvas.setPx(d.px)
+    canvas.setPy(d.py)
+  }
+  canvas.stage.classList.remove('grabbing')
+  openContext(canvas, contextOf(target), x, y)
+}
+
 export const onPointerUp = (canvas: CanvasController, e: PointerEvent) => {
   if (e.pointerType === 'touch') touchUp(canvas, e)
   const d = canvas.drag

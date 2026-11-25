@@ -3,6 +3,7 @@ import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from 's
 import { buildCommands, type Command, matchSlash } from '../lib/commands.ts'
 import { matchesMention, mentionQuery, replaceMention } from '../lib/composer-suggestions.ts'
 import { composing } from '../lib/input/composing.ts'
+import { touchPrimary } from '../lib/long-press.ts'
 import { sessionSignal } from '../lib/session.ts'
 import { slashDispatch } from '../lib/slash.ts'
 import {
@@ -487,7 +488,8 @@ export function Composer(props: { empty: boolean }) {
     setPending([])
     queueMicrotask(() => {
       ta.style.height = 'auto'
-      ta.focus()
+      // 触屏上发送后不再聚焦：聚焦使键盘保持弹出，遮挡正在生成的回复。
+      if (!touchPrimary()) ta.focus()
     })
   }
 
@@ -696,7 +698,8 @@ export function Composer(props: { empty: boolean }) {
               }
               // 输入法组合期间的回车用于选词，不能作为发送（`composing`）。
               // Ctrl/Cmd+Enter 使用与默认档位相反的档位；会话空闲时两者等价。
-              if (e.key === 'Enter' && !e.shiftKey && !composing(e)) {
+              // 触屏上回车换行，经发送按钮发送：手机键盘没有 Shift，回车发送时无法输入换行。
+              if (e.key === 'Enter' && !e.shiftKey && !composing(e) && !touchPrimary()) {
                 e.preventDefault()
                 submit(e.ctrlKey || e.metaKey)
               }

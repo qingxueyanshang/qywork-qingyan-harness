@@ -3,6 +3,7 @@ import {
   createMemo,
   createSignal,
   lazy,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -14,6 +15,7 @@ import { Composer } from './components/Composer.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Tooltip } from './components/Tooltip.tsx'
 import { Transcript } from './components/Transcript.tsx'
+import { closeOnBack } from './lib/back-stack.ts'
 import { ApiError } from './lib/client.ts'
 import { localHtmlUrl, workspaceFile } from './lib/links.ts'
 import { appUpdate, observeAppUpdate } from './lib/store/app-update.ts'
@@ -40,10 +42,14 @@ import { cloudState, refreshCloudState } from './lib/store/cloud.ts'
 import {
   accountOpen,
   client,
+  closePanel,
+  closeSettings,
+  composerSeed,
   exportActiveConversation,
   isDesktopShell,
   loadConversations,
   loadWorkspace,
+  narrowScreen,
   observeModelCatalog,
   observePersonalization,
   observePet,
@@ -53,6 +59,7 @@ import {
   PANEL_MIN,
   panelMaximized,
   panelWidth,
+  setAccountOpen,
   setOpenFile,
   setState,
   settingsPage,
@@ -63,6 +70,7 @@ import {
   togglePanel,
   toggleSidebar,
   view,
+  watchViewing,
   workspace,
 } from './lib/store/index.ts'
 import { releaseNotesShown, showReleaseNotesOnce } from './lib/store/release-notes.ts'
@@ -148,6 +156,22 @@ export function App() {
   }, true)
   // 抽屉只在窄屏出现；宽屏下侧栏常驻，该状态不参与布局。
   const [drawer, setDrawer] = createSignal(false)
+  // 窄屏上返回手势依次关闭设置、账号、全屏面板与抽屉（`back-stack.ts`），按打开顺序后开先关。
+  closeOnBack(drawer, () => setDrawer(false))
+  closeOnBack(() => sidePanel() !== null, closePanel)
+  closeOnBack(() => settingsPage() !== null, closeSettings)
+  closeOnBack(accountOpen, () => setAccountOpen(false))
+  // 面板显示画布或文件时上报给电脑，发送消息时由服务端附上（手机发出的消息同样带上电脑上打开的画布）。
+  watchViewing()
+  // 设置页或插件工作台把指令送入输入框时（`askInChat`），窄屏上收起遮挡输入框的抽屉与覆盖全屏的面板，
+  // 否则文字写入被遮挡的输入框，获得焦点后弹出的键盘也覆盖在面板上。
+  createEffect(
+    on(composerSeed, (seed) => {
+      if (seed === null || !narrowScreen()) return
+      setDrawer(false)
+      closePanel()
+    }),
+  )
   const [exportState, setExportState] = createSignal<'idle' | 'working' | 'done'>('idle')
   let exportReceipt: ReturnType<typeof setTimeout> | undefined
 

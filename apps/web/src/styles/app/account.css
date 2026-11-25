@@ -222,7 +222,8 @@
 .recharge-dialog {
   position: relative;
   width: min(380px, calc(100vw - 32px));
-  height: min(396px, calc(100vh - 48px));
+  /* 高度用 svh 不用 vh：iOS Safari 的 100vh 含工具栏遮住的部分，弹窗下沿（输入框、按钮）被遮挡；svh 为工具栏显示时的可见高度，打开期间不变。 */
+  height: min(396px, calc(100svh - 48px));
   box-sizing: border-box;
   padding: var(--s-4) var(--s-5) var(--s-5);
   border: 1px solid var(--border-default);
@@ -442,7 +443,7 @@
 .support-dialog {
   position: relative;
   width: min(560px, calc(100vw - 32px));
-  height: min(640px, calc(100vh - 48px));
+  height: min(640px, calc(100svh - 48px));
   box-sizing: border-box;
   padding: 0;
   border: 1px solid var(--border-default);
@@ -811,6 +812,10 @@
     border-radius: var(--r-lg) var(--r-lg) 0 0;
     padding-top: var(--safe-top);
     padding-bottom: var(--safe-bottom);
+  }
+  /* 关闭按钮绝对定位，不随弹窗的上内距下移：加上状态栏的高度，不与状态栏重叠。 */
+  .account-close {
+    top: calc(var(--dialog-close-inset) + var(--safe-top));
   }
   .account-head {
     padding-left: var(--s-4);

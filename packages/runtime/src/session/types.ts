@@ -75,7 +75,7 @@ export interface AskOptions {
    * 写入 `messages.origin`，界面据此区分回执行与用户气泡。
    */
   origin?: 'subagent' | 'workflow' | 'command'
-  /** 发送时界面右侧面板显示的工作区文件（`SendMessageCommand.viewing`），写入本轮的上下文快照。 */
+  /** 发送时该工作区在面板中打开的文件（服务端按工作区记录，见 `viewingLine`），写入本轮的上下文快照。 */
   viewing?: string
   /**
    * 本轮由哪次任务派发产生：父会话中派发卡的 step 与卡上对应的节点。

@@ -470,6 +470,12 @@
   font-family: var(--font-ui);
   line-height: 18px;
 }
+/* 窄屏的首行代码通常延伸到右边沿，工具排覆盖其末尾：上内距加上工具排的高度，工具排位于首行之上。 */
+@media (max-width: 820px) {
+  .code-body {
+    padding-top: calc(5px + 18px + var(--s-2));
+  }
+}
 /* 按钮与角标同高：按钮高于角标时会覆盖代码，与角标不再处于同一行。 */
 .code-copy {
   pointer-events: auto;
@@ -491,6 +497,17 @@
 .code-copy:hover {
   background: var(--bg-hover);
   color: var(--text-secondary);
+}
+/* 触屏上点击区域向四周扩展到 30px，外观不变：按钮与角标同高，放大外观会覆盖代码。 */
+@media (pointer: coarse) {
+  .code-copy {
+    position: relative;
+  }
+  .code-copy::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
 }
 /* 复制成功后显示 1.2 秒的确认状态，由 App.tsx 的根事件委托添加该类。 */
 .code-copy.done {
@@ -854,6 +871,20 @@
 .notice-card span {
   flex: 1;
 }
+/* 面板中的回执：面板覆盖会话流时显示（窄屏全屏、面板放大），此时会话流末尾的同一回执被面板遮住。 */
+.panel-notice {
+  display: none;
+  flex: none;
+  margin: var(--s-2) var(--s-2) 0;
+}
+.app.panel-max .panel-notice {
+  display: flex;
+}
+@media (max-width: 820px) {
+  .panel-notice {
+    display: flex;
+  }
+}
 
 /* 压缩事件：与折叠行同列、同字号，仅失败时以红色突出。
  *
@@ -1203,6 +1234,14 @@
   align-items: center;
   column-gap: 40px;
 }
+/* 窄屏的会话流约 300px，定宽的中间列与两个间距已占满，两侧端点被压缩到无法辨认：三列按比例分配，间距收窄。
+   两侧仍对称，中间列仍位于中线；连线按节点的实际位置绘制，不受列宽影响。 */
+@media (max-width: 820px) {
+  .wf-graph.across {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr);
+    column-gap: 12px;
+  }
+}
 /* 连线。`overflow: visible` 不可省略：折线的横段可能位于元素边界上。 */
 .wf-edges {
   position: absolute;
@@ -1382,4 +1421,15 @@
   margin-top: var(--s-3);
   color: var(--danger);
   font-size: var(--fs-sm);
+}
+
+/* `open_in_panel` 的卡片：折叠条目占满余下宽度，「打开」按钮位于行尾，展开后仍对齐首行。 */
+.open-in-panel {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+}
+.open-in-panel > :first-child {
+  flex: 1;
+  min-width: 0;
 }

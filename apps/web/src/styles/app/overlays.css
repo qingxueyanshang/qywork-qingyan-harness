@@ -175,9 +175,10 @@
    关闭按钮位置不变。 */
 .release-notes-dialog {
   width: min(560px, calc(100vw - 32px));
-  height: min(520px, calc(100vh - 48px));
-  min-height: min(520px, calc(100vh - 48px));
-  max-height: min(520px, calc(100vh - 48px));
+  /* 高度用 svh 不用 vh：iOS Safari 的 100vh 含工具栏遮住的部分，弹窗下沿（输入框、按钮）被遮挡；svh 为工具栏显示时的可见高度，打开期间不变。 */
+  height: min(520px, calc(100svh - 48px));
+  min-height: min(520px, calc(100svh - 48px));
+  max-height: min(520px, calc(100svh - 48px));
   box-sizing: border-box;
   padding: 16px;
   border: 1px solid var(--border-default);
@@ -226,9 +227,9 @@
 /* 公告窗口：尺寸固定，列表在框内滚动。 */
 .announcements-dialog {
   width: min(560px, calc(100vw - 32px));
-  height: min(600px, calc(100vh - 48px));
-  min-height: min(600px, calc(100vh - 48px));
-  max-height: min(600px, calc(100vh - 48px));
+  height: min(600px, calc(100svh - 48px));
+  min-height: min(600px, calc(100svh - 48px));
+  max-height: min(600px, calc(100svh - 48px));
   box-sizing: border-box;
   padding: 16px;
   border: 1px solid var(--border-default);

@@ -4,6 +4,8 @@
  *
  * 另覆盖提示的上下位置。原始失败形状：内置浏览器地址栏按钮的提示显示在下方，被地址栏下方的原生子视图遮挡，
  * 始终不可见。
+ *
+ * 另覆盖触屏轻点。原始失败形状：手机上运行停止原因的详情（请求编号、对端原文）只在提示中，触屏不显示提示，无法读取。
  */
 import { afterAll, beforeAll, describe, expect, jest, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -84,5 +86,39 @@ describe('提示的位置', () => {
   test('默认显示在下方；带 data-tip-place="above" 时显示在上方', async () => {
     expect(await tipTop(undefined)).toBe(126)
     expect(await tipTop('above')).toBe(70)
+  })
+
+  /** 触屏轻点一个元素，返回提示是否显示。 */
+  async function tapShows(tag: string, text: string, tip: string): Promise<boolean> {
+    const { render } = await import('solid-js/web')
+    const { Tooltip } = await import('./Tooltip.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    const dispose = render(Tooltip, host as unknown as HTMLElement)
+    const target = document.createElement(tag)
+    target.textContent = text
+    target.dataset.tip = tip
+    document.body.append(target)
+    try {
+      target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' }))
+      target.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      return host.querySelector('.tooltip')!.classList.contains('show')
+    } finally {
+      dispose()
+      host.remove()
+      target.remove()
+    }
+  }
+
+  test('触屏轻点：详情只在提示中时显示；提示与正文相同、或元素可交互时不显示', async () => {
+    expect(
+      await tapShows(
+        'span',
+        '模型服务出错',
+        'provider_unavailable：模型服务返回 502，请求编号 r_1',
+      ),
+    ).toBe(true)
+    expect(await tapShows('span', '已完成', '已完成')).toBe(false)
+    expect(await tapShows('button', '后退', '后退一页')).toBe(false)
   })
 })

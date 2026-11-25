@@ -19,6 +19,7 @@ import {
   onMount,
   Show,
 } from 'solid-js'
+import { attachLongPress } from '../../lib/long-press.ts'
 import { sessionSignal } from '../../lib/session.ts'
 import {
   IconDownload,
@@ -187,14 +188,33 @@ export function Timeline(props: TimelineProps) {
     gesture = g
     ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   }
+  /**
+   * 全屏时触屏在轨道与片段上的拖动交给浏览器横向滚动，定位只经刻度尺：在轨道上开始定位或移动片段时，
+   * 浏览器接管滚动后取消该指针，取消即松开（`onUp`），已开始的移动会被提交。
+   * 不交给画布：全屏时间线经 Portal 挂载，委托的事件仍沿组件树传到画布区，画布随之开始平移。
+   */
+  const touchScrolls = (e: PointerEvent) => {
+    if (e.pointerType !== 'touch' || props.mode !== 'full') return false
+    e.stopPropagation()
+    return true
+  }
   const onScrubDown = (e: PointerEvent) => {
     if (e.button !== 0) return
     begin(e, { kind: 'scrub' })
     session.select(null)
     session.seek(timeAt(e.clientX))
   }
+  const onLaneDown = (e: PointerEvent) => {
+    if (!touchScrolls(e)) onScrubDown(e)
+  }
+  /** 触屏全屏时只选中片段；菜单（分割、副本、删除）经长按打开。 */
   const onClipDown = (e: PointerEvent, index: number) => {
     if (e.button !== 0) return
+    if (touchScrolls(e)) {
+      props.onFocus()
+      session.select(index)
+      return
+    }
     begin(e, { kind: 'move', index, sx: e.clientX, moved: false, t: timeAt(e.clientX) })
     session.select(index)
   }
@@ -424,7 +444,7 @@ export function Timeline(props: TimelineProps) {
                 )}
               </For>
             </div>
-            <div class="canvas-tl-lane" onPointerDown={onScrubDown}>
+            <div class="canvas-tl-lane" onPointerDown={onLaneDown}>
               <Show
                 when={clips().length}
                 fallback={
@@ -451,10 +471,10 @@ export function Timeline(props: TimelineProps) {
                       lifted={moving()?.index === i}
                       onDown={(e) => onClipDown(e, i)}
                       onTrim={(e, edge) => onTrimDown(e, i, edge)}
-                      onMenu={(e) => {
+                      onMenu={(x, y) => {
                         props.onFocus()
                         session.select(i)
-                        props.onClipMenu(i, timeAt(e.clientX), e.clientX, e.clientY)
+                        props.onClipMenu(i, timeAt(x), x, y)
                       }}
                       onSelect={() => {
                         props.onFocus()
@@ -508,7 +528,8 @@ function ClipBlock(props: {
   lifted: boolean
   onDown: (e: PointerEvent) => void
   onTrim: (e: PointerEvent, edge: 'in' | 'out') => void
-  onMenu: (e: MouseEvent) => void
+  /** 右键或触屏长按（`lib/long-press.ts`）打开片段菜单，坐标为窗口坐标。 */
+  onMenu: (clientX: number, clientY: number) => void
   /** 键盘选中（Enter / Space）。指针按下时已在 `onDown` 中选中。 */
   onSelect: () => void
 }) {
@@ -563,10 +584,11 @@ function ClipBlock(props: {
         if (e.button === 2) e.stopPropagation()
         else props.onDown(e)
       }}
+      ref={(el) => attachLongPress(el, (x, y) => props.onMenu(x, y))}
       onContextMenu={(e) => {
         e.preventDefault()
         e.stopPropagation()
-        props.onMenu(e)
+        props.onMenu(e.clientX, e.clientY)
       }}
       onClick={(e) => {
         // 只处理键盘触发的点击：指针的按下与拖动由 `onDown` 处理，换位后再处理点击会选中原位置上的另一段。

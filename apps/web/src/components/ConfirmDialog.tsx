@@ -1,4 +1,5 @@
 import { createEffect, onCleanup, Show } from 'solid-js'
+import { closeOnBack } from '../lib/back-stack.ts'
 import { holdOverlay } from '../lib/store/index.ts'
 
 /**
@@ -25,6 +26,10 @@ export function ConfirmDialog(props: {
 }) {
   // 内置浏览器页是原生子视图，渲染在所有 DOM 之上；浮层打开时需先将其移出可视区。
   holdOverlay(() => props.open)
+  closeOnBack(
+    () => props.open,
+    () => props.onCancel(),
+  )
 
   createEffect(() => {
     if (!props.open) return

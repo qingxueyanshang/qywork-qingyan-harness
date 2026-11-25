@@ -569,6 +569,16 @@
   width: 22px;
   height: 22px;
 }
+/* 触屏上行尾按钮放大到 28px：22px 的按钮相邻排列，手指点击时容易落到相邻的按钮或标题上。
+   位于三个按钮的基准规则之后，同等优先级时后出现的规则生效。 */
+@media (pointer: coarse) {
+  .conv-more,
+  .project-new,
+  .project-more {
+    width: 28px;
+    height: 28px;
+  }
+}
 
 /* 切换工作区失败必须可见，不能静默丢弃。
    间距设在上方而不是下方：它与上方按钮成组，下方间距由

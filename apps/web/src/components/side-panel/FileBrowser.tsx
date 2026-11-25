@@ -14,6 +14,7 @@ import {
   client,
   explainApiError,
   fileRevealRequest,
+  forgetViewing,
   openFile,
   openFileInPanel,
   setFileRevealRequest,
@@ -435,7 +436,10 @@ export function FileBrowser() {
               <FileView
                 path={p()}
                 refresh={manualRefresh() + refreshKey().revision}
-                onClose={() => setOpenFile(null)}
+                onClose={() => {
+                  setOpenFile(null)
+                  forgetViewing(p())
+                }}
               />
             )}
           </Show>

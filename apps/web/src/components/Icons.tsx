@@ -279,6 +279,22 @@ export const IconFolderPlus = (p: IconProps) => (
   </Svg>
 )
 
+/** 撤销：向左回转的箭头。 */
+export const IconUndo = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </Svg>
+)
+
+/** 重做：`IconUndo` 的镜像。 */
+export const IconRedo = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m15 14 5-5-5-5" />
+    <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+  </Svg>
+)
+
 export const IconRefresh = (p: IconProps) => (
   <Svg {...p}>
     <path d="M19.6 11.2a7.6 7.6 0 1 0-2.3 5.6" />

@@ -141,6 +141,41 @@ test('切换会话与项目时草稿各自保留，发送只清空当前会话',
   }
 })
 
+test('触屏上回车不发送：手机键盘没有 Shift，回车用于换行，经发送按钮发送', async () => {
+  const store = await import('../lib/store/index.ts')
+  const conversationsBefore = [...store.state.conversations]
+  store.setState({
+    activeConversation: 'cv_touch',
+    busyConversations: [],
+    followUps: [],
+    conversations: [{ id: 'cv_touch', provider: 'test', model: 'test-model' }] as never,
+  })
+  const originalMatch = globalThis.matchMedia
+  globalThis.matchMedia = ((query: string) =>
+    ({ matches: query === '(pointer: coarse)', media: query }) as MediaQueryList) as never
+  const { dispose, textarea } = await mountComposer(false)
+  const beforeSend = store.client.send
+  const commands: unknown[] = []
+  store.client.send = (command) => commands.push(command)
+  try {
+    input(textarea, '第一行')
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    textarea.dispatchEvent(event)
+    expect(commands).toEqual([])
+    expect(event.defaultPrevented).toBe(false)
+  } finally {
+    globalThis.matchMedia = originalMatch
+    store.client.send = beforeSend
+    dispose()
+    store.setState({
+      activeConversation: null,
+      busyConversations: [],
+      followUps: [],
+      conversations: conversationsBefore,
+    })
+  }
+})
+
 test('输入法组合期间与确认选词的回车不发送，组合结束后的回车发送', async () => {
   const store = await import('../lib/store/index.ts')
   const conversationsBefore = [...store.state.conversations]

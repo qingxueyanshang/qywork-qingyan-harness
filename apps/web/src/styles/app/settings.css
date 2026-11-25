@@ -447,8 +447,9 @@
   .settings-pane {
     --settings-inset: var(--s-3);
   }
+  /* 右内距与左内距相同：关闭按钮位于页头，不与内容同行，宽屏为它预留的右内距在窄屏只留下右侧空白。 */
   .settings-inner {
-    padding: var(--s-3) var(--s-8) var(--s-6) var(--settings-inset);
+    padding: var(--s-3) var(--settings-inset) var(--s-6);
   }
 }
 
@@ -1361,9 +1362,10 @@ textarea.code-area::placeholder {
  */
 .personal-dialog {
   width: min(560px, calc(100vw - 32px));
-  height: min(560px, calc(100vh - 48px));
-  min-height: min(560px, calc(100vh - 48px));
-  max-height: min(560px, calc(100vh - 48px));
+  /* 高度用 svh 不用 vh：iOS Safari 的 100vh 含工具栏遮住的部分，弹窗下沿（输入框、按钮）被遮挡；svh 为工具栏显示时的可见高度，打开期间不变。 */
+  height: min(560px, calc(100svh - 48px));
+  min-height: min(560px, calc(100svh - 48px));
+  max-height: min(560px, calc(100svh - 48px));
   box-sizing: border-box;
   padding: 16px;
   border: 1px solid var(--border-default);
@@ -1443,6 +1445,12 @@ textarea.code-area::placeholder {
   padding: 0;
   border: none;
   background: none;
+}
+/* 窄屏收窄滑块：160px 的滑块与数值占去一行的大半，「界面不透明度」在 44px 的行内折成两行。 */
+@media (max-width: 820px) {
+  .setting-row .personal-slider input[type="range"] {
+    width: 100px;
+  }
 }
 .personal-slider-value {
   width: 44px;
@@ -1736,7 +1744,7 @@ textarea.code-area::placeholder {
 }
 .skill-import-dialog {
   width: min(620px, calc(100vw - 32px));
-  max-height: calc(100vh - 48px);
+  max-height: calc(100svh - 48px);
   box-sizing: border-box;
   padding: 24px;
   border: 1px solid var(--border-default);
@@ -1840,9 +1848,9 @@ textarea.code-area::placeholder {
    列表在框内滚动，底部按钮位置不变。 */
 .pull-dialog {
   width: min(760px, calc(100vw - 32px));
-  height: min(560px, calc(100vh - 48px));
-  min-height: min(560px, calc(100vh - 48px));
-  max-height: min(560px, calc(100vh - 48px));
+  height: min(560px, calc(100svh - 48px));
+  min-height: min(560px, calc(100svh - 48px));
+  max-height: min(560px, calc(100svh - 48px));
   box-sizing: border-box;
   padding: 16px;
   border: 1px solid var(--border-default);

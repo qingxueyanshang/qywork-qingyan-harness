@@ -14,7 +14,7 @@ import { openFileInPanel } from '../files.ts'
 import { setConfigChange } from '../settings.ts'
 import { setState, settleBusy } from '../state.ts'
 import { supportChanged } from '../support.ts'
-import { workspace } from '../ui.ts'
+import { syncSharedTabs, workspace } from '../ui.ts'
 import { handlers } from './handler.ts'
 import { flushText } from './pace.ts'
 
@@ -81,6 +81,13 @@ export const globalEvents = handlers({
   'browser.tabs': {
     process(ev) {
       projectRemoteTabs(ev.tabs)
+    },
+  },
+
+  /* 共享页签（画布、文件预览、插件工作台）的完整清单：权威在电脑上，全部客户端照此显示。 */
+  'panel.tabs': {
+    process(ev) {
+      syncSharedTabs(ev.tabs)
     },
   },
 

@@ -123,7 +123,7 @@ export default function FileImageView(props: {
           at ? zoomTo(scale() * factor, at.clientX, at.clientY) : zoom(factor),
         reset: () => selectMode('fit'),
       },
-      { wheel: true },
+      { gestures: true },
     )
     onCleanup(() => {
       observer.disconnect()

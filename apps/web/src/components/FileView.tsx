@@ -136,7 +136,7 @@ export default function FileView(props: { path: string; refresh?: number; onClos
         zoomBy: (factor) => zoomText(textZoom() * factor),
         reset: () => zoomText(1),
       },
-      { wheel: true },
+      { gestures: true },
     )
     onCleanup(unbind)
   })

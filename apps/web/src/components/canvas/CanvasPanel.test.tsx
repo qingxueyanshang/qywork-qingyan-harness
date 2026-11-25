@@ -4649,6 +4649,24 @@ describe('画布：撤销与重做', () => {
     expect(server.restores[1]).toEqual({ from: 'd0', to: 'd1' })
   })
 
+  test('工具条的撤销与重做：没有可撤销的步骤时禁用，移动后可撤销，撤销后可重做', async () => {
+    const { host, server, refs } = await mount(FILES)
+    const undo = () => host.querySelector<HTMLButtonElement>('.canvas-dock [aria-label="撤销"]')!
+    const redo = () => host.querySelector<HTMLButtonElement>('.canvas-dock [aria-label="重做"]')!
+    expect([undo().disabled, redo().disabled]).toEqual([true, true])
+    dragA(host, refs.$a!)
+    await waitFor(
+      () => !undo().disabled,
+      () => '',
+    )
+    undo().click()
+    await waitFor(
+      () => server.restores.length === 1 && !redo().disabled,
+      () => JSON.stringify(server.restores),
+    )
+    expect([undo().disabled, redo().disabled]).toEqual([true, false])
+  })
+
   test('文件在期间被其他位置修改：撤销被拒绝并显示原因，撤销栈清空', async () => {
     const { host, server, refs } = await mount(FILES)
     dragA(host, refs.$a!)
@@ -5941,5 +5959,19 @@ describe('画布：Art', () => {
     } finally {
       back()
     }
+  })
+})
+
+describe('画布：触屏长按', () => {
+  test('长按节点弹出右键菜单，节点不移动；松开后不再提交移动', async () => {
+    const { host, server, refs } = await mount(FILES)
+    const stage = host.querySelector('.canvas-stage')!
+    const touch = { pointerType: 'touch' }
+    pointer(node(host, refs.$a!), 'pointerdown', 10, 10, touch)
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    expect(document.querySelector('.canvas-menu, [role="menu"]')).not.toBeNull()
+    pointer(stage, 'pointerup', 10, 10, touch)
+    await nextTurn()
+    expect(server.ops).toEqual([])
   })
 })

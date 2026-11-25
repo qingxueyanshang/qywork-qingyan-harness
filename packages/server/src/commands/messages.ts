@@ -1,11 +1,9 @@
 /** 发送消息与跟进队列：发起轮次、修改排队消息的去向、删除排队消息。 */
 
+import { viewingOf, workspaceOf } from '@qywork/store'
 import { submitMessage } from '../run-control.ts'
 import { handlers } from './handler.ts'
 import { reject, rejectChildConversation } from './reject.ts'
-
-/** `message.send` 中 `viewing` 的长度上限：一条工作区相对路径。 */
-const VIEWING_MAX = 500
 
 export const messageCommands = handlers({
   'message.send': {
@@ -18,6 +16,10 @@ export const messageCommands = handlers({
        * 该段必须是同一个同步块（理由见该函数的注释与 `runs.ts` 的 `reserve`）。
        */
       if (rejectChildConversation(deps, cmd.type, cmd.conversationId, cmd.clientRequestId)) return
+      // 最近查看的文件由服务端按工作区记录（任一客户端的面板显示画布或文件时更新），不由发送端附带：
+      // 手机上的面板覆盖全屏，打字时已收起，发送端附带时手机发出的消息不带电脑上打开的画布。
+      const ws = workspaceOf(deps.store, cmd.conversationId)
+      const viewing = ws ? viewingOf(deps.store, ws.id) : null
       // 附件随消息一同转发。协议、存储与模型侧均已支持，遗漏 `cmd.attachments`
       // 会使整条链路只有类型而没有数据。
       await submitMessage(
@@ -27,10 +29,7 @@ export const messageCommands = handlers({
           content: cmd.content,
           ...(cmd.attachments?.length ? { attachments: cmd.attachments } : {}),
           steer: cmd.steer === true,
-          // 写入提示词，只接受较短的文本；其他值视为未提供。
-          ...(typeof cmd.viewing === 'string' && cmd.viewing && cmd.viewing.length <= VIEWING_MAX
-            ? { viewing: cmd.viewing }
-            : {}),
+          ...(viewing ? { viewing } : {}),
         },
         deps,
         cmd.model,

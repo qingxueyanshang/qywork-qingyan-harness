@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from 'solid-js'
 import { composing } from '../../lib/input/composing.ts'
+import { attachLongPress, touchPrimary } from '../../lib/long-press.ts'
 import { loaded } from '../../lib/resource.ts'
 import { client, WORKSPACE_PATH_TYPE } from '../../lib/store/index.ts'
 import FileTypeIcon from '../FileTypeIcon.tsx'
@@ -81,6 +82,7 @@ export function SearchHits(props: { ctx: TreeCtx; query: string }) {
             type="button"
             data-tip={hit.path}
             disabled={hit.kind === 'dir'}
+            ref={(el) => attachLongPress(el, (x, y) => props.ctx.menu(hit, x, y))}
             onClick={() => props.ctx.pick(hit)}
             onContextMenu={(e) => {
               e.preventDefault()
@@ -156,6 +158,8 @@ function NameRow(props: {
   chevronDir?: 'right' | 'down' | undefined
 }) {
   const [name, setName] = createSignal(props.value)
+  /** 回车或 Esc 已处理本次输入；再次输入时清除。 */
+  let settled = false
 
   /*
    * **主动获取焦点，不依赖 `autofocus`。**
@@ -194,14 +198,26 @@ function NameRow(props: {
         ref={input}
         placeholder={props.placeholder}
         value={name()}
-        onInput={(e) => setName(e.currentTarget.value)}
+        onInput={(e) => {
+          settled = false
+          setName(e.currentTarget.value)
+        }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !composing(e)) props.ctx.submitName(name())
-          if (e.key === 'Escape') props.ctx.cancelName()
+          if (e.key === 'Enter' && !composing(e)) {
+            settled = true
+            props.ctx.submitName(name())
+          }
+          if (e.key === 'Escape') {
+            settled = true
+            props.ctx.cancelName()
+          }
         }}
         onBlur={() => {
-          // 失焦即取消，但**存在错误时不取消**：错误信息必须保留在界面上供用户阅读。
-          if (!props.ctx.nameError()) props.ctx.cancelName()
+          // 失焦即提交，名称为空时取消：手机键盘的「完成」只使输入框失焦，失焦即取消时输入的名称被丢弃。
+          // 回车或 Esc 已处理时不再处理：输入框随之移除时同样会失焦。存在错误时不处理，错误信息保留在界面上供用户阅读。
+          if (settled || props.ctx.nameError()) return
+          if (name().trim()) props.ctx.submitName(name())
+          else props.ctx.cancelName()
         }}
       />
       <Show when={props.ctx.nameError()}>
@@ -232,14 +248,18 @@ function TreeNode(props: { ctx: TreeCtx; node: FileNode; depth: number }) {
   const row = (onClick: () => void) => (
     <button
       class="tree-item"
-      ref={button}
+      ref={(el) => {
+        button = el
+        attachLongPress(el, (x, y) => props.ctx.menu(props.node, x, y))
+      }}
       data-path={props.node.path}
       aria-current={props.ctx.selected() === props.node.path ? 'true' : undefined}
       classList={{ selected: props.ctx.selected() === props.node.path }}
       type="button"
       style={{ 'padding-left': `${treeIndent(props.depth)}px` }}
       aria-expanded={props.node.kind === 'dir' ? open() : undefined}
-      draggable={props.node.kind === 'file'}
+      // 触屏不可拖动：长按可拖动的元素时浏览器开始拖放，长按菜单不会出现；触屏上也没有可放入的位置。
+      draggable={props.node.kind === 'file' && !touchPrimary()}
       onDragStart={(e) => e.dataTransfer?.setData(WORKSPACE_PATH_TYPE, props.node.path)}
       onClick={onClick}
       onContextMenu={(e) => {

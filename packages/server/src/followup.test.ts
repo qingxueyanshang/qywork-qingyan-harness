@@ -26,6 +26,7 @@ import {
   appendMessage,
   appendStep,
   ContentStore,
+  clearViewing,
   contentPathFor,
   createConversation,
   createGoal,
@@ -36,6 +37,7 @@ import {
   listSteps,
   Store,
   setStepNodeState,
+  setViewing,
   upsertWorkspace,
 } from '@qywork/store'
 import { EventBus } from './bus.ts'
@@ -686,15 +688,18 @@ describe('注入时告知已变化的上下文', () => {
     }
   }, 30_000)
 
-  test('消息带有界面打开的文件：写入本轮快照；轮次中切换到另一个文件后发送的消息附上新文件', async () => {
+  test('工作区在面板中打开的文件（客户端面板上报，服务端记录）：写入本轮快照；轮次中改看另一个文件后发送的消息附上新文件', async () => {
     const cv = conversation()
     const held = gate(toolTurn('call_v1'))
     script = [held.turn, ok(textTurn('好。'))]
     const sock = socket()
 
-    await send(cv, 'req-v0', '批量生成这个画布', { viewing: '作品/甲/甲_第五版.canvas.json' }, sock)
+    // 消息本身不带文件：手机发出的消息同样附上电脑上打开的画布。
+    setViewing(store, workspaceId, '作品/甲/甲_第五版.canvas.json')
+    await send(cv, 'req-v0', '批量生成这个画布', {}, sock)
     await waitFor((e) => e.type === 'run.started')
-    await send(cv, 'req-v1', '这个也一样', { steer: true, viewing: '作品/乙/乙.canvas.json' }, sock)
+    setViewing(store, workspaceId, '作品/乙/乙.canvas.json')
+    await send(cv, 'req-v1', '这个也一样', { steer: true }, sock)
     held.release()
     await idle(cv)
 
@@ -703,6 +708,8 @@ describe('注入时告知已变化的上下文', () => {
     const after = sentMessages(bodies[1] ?? '')
     const at = after.findIndex((m) => text(m).includes('这个也一样'))
     expect(text(after[at + 1])).toContain('界面右侧面板当前打开：`作品/乙/乙.canvas.json`')
+    // 记录按工作区保存，本文件的用例共用一个工作区。
+    clearViewing(store, workspaceId, '作品/乙/乙.canvas.json')
   }, 30_000)
 })
 

@@ -10,7 +10,7 @@
  *   工具组之前与之后的思考单独成条。末尾的思考尤其不得并入工具折叠：它是回答正文之前的思考，
  *   折叠后用户无法找到。
  * - 少于 2 个工具时不生成工具组卡片：为单个工具添加折叠只会多一次点击。
- * - 派发任务的两个工具不进入工具组（见 `STANDALONE`）。
+ * - 派发任务的两个工具与 `open_in_panel` 不进入工具组（见 `STANDALONE`）。
  */
 
 import { type ActionKind, foldWorkflow, type NodeState, workflowGroupId } from '@qywork/core'
@@ -27,17 +27,17 @@ export type RenderItem =
   | { kind: 'group'; id: string; members: TranscriptItem[] }
 
 /**
- * 不参与分组的工具：每个都是一整条子会话的入口，不是一次普通调用。
+ * 不参与分组的工具：卡片上有需要直接看到或点击的内容，并入工具组的折叠后不可见。
  *
- * `workflow` 的图与 `subagent` 的产出是本轮中最需要首先看到的内容，
- * 并入工具组的折叠后无法直接看到。实测实例：一张四节点的图被并入
- * 「修改 2 个待办，运行 1 个编排，查询 1 个文件」所在的工具组，图的节点全部不可见。
+ * - `workflow` 的图与 `subagent` 的产出：每个都是一整条子会话的入口，是本轮中最需要首先看到的内容。
+ *   实测实例：一张四节点的图被并入「修改 2 个待办，运行 1 个编排，查询 1 个文件」所在的工具组，图的节点全部不可见。
+ * - `open_in_panel` 的「打开」按钮：窄屏上工具成功后不自动打开面板，该按钮是打开的入口。
  *
  * 本表只决定是否并入工具组，用哪种卡片渲染由 `ToolCard.tsx` 的 `TOOL_CARDS` 决定，两者互不推导：
  * 工具组的成员同样经 `ToolCard` 渲染，有专用卡片的工具可以位于工具组中。两表现有内容相同，是因为
- * 派发任务的两个工具同时需要独立成行与专用卡片。
+ * 这三个工具同时需要独立成行与专用卡片。
  */
-const STANDALONE = new Set(['subagent', 'workflow'])
+const STANDALONE = new Set(['subagent', 'workflow', 'open_in_panel'])
 
 /** 只有生产者明确要求内联展示、且结果中确有合法图片时，图片工具才独立成条。 */
 function carriesPresentedImages(item: TranscriptItem): boolean {

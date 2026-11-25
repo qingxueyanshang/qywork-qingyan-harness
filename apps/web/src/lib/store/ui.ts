@@ -6,6 +6,7 @@
  * 记录在 localStorage 中，应用重启后同样恢复（`panels`）。浮层计数等一次操作过程中的状态不记录。
  */
 
+import { type SharedPanelTab, sharedPanelTabId } from '@qywork/core'
 import { createEffect, createSignal, onCleanup } from 'solid-js'
 import { createStore, unwrap } from 'solid-js/store'
 import { readSession, sessionSignal, writeSession } from '../session.ts'
@@ -43,6 +44,9 @@ export type PanelView = 'todos' | 'files' | 'changes' | 'runs'
  * `file` 是文件预览页，每页对应一个工作区文件（`path`），从看板的 Office 行选择文件后打开。
  *
  * `plugin` 是插件提供的工作台，每页对应一个工作台（`workbench`），从看板或 `open_in_panel` 打开。
+ *
+ * 后三种是各客户端共享的页签（`SHARED_KINDS`）：清单的权威在电脑上（服务端，`panel.tabs` 推送），本层的记录是其投影
+ * （`syncSharedTabs`），打开与关闭经 `panel-share.ts` 通知服务端。
  */
 export type PanelTabKind =
   | 'terminal'
@@ -594,50 +598,63 @@ export function openConversationTab(conversationId: string, title: string): void
   }))
 }
 
+/** 各客户端共享的页签类型，见 `PanelTabKind`。 */
+export const SHARED_KINDS: ReadonlySet<PanelTabKind> = new Set(['canvas', 'file', 'plugin'])
+
+/** 共享页签的对象：画布与文件为工作区相对路径，工作台为其标识。 */
+export type SharedTabTarget =
+  | { kind: 'canvas' | 'file'; path: string; title: string }
+  | { kind: 'plugin'; workbench: string; title: string }
+
 /**
- * 打开画布。同一文件已打开时切换到该页，不并排新建第二页（同 `openConversationTab`）。
- * 页签标题是去掉 `.canvas.json` 的文件名，创建后不再修改。
+ * 在本端显示一个共享页签并切换到该页；同一对象已打开时只切换，不并排新建第二页（同 `openConversationTab`）。
+ * id 由类型与对象确定（`sharedPanelTabId`），与服务端随后推送的是同一页。返回该页的 id；没有活动工作区时为 `null`。
+ * 只由 `panel-share.ts` 调用：打开须同时通知服务端，只在本端显示的页会在下一次推送时被移除。
  */
-export function openCanvasTab(path: string, title: string): void {
+export function showSharedTab(target: SharedTabTarget): string | null {
   const wsId = workspace()?.id
-  if (!wsId) return
-  const id = `canvas-${path}`
+  if (!wsId) return null
+  const id = sharedPanelTabId(target)
   updatePanel(wsId, (cur) => ({
     tabs: cur.tabs.some((t) => t.id === id)
       ? cur.tabs
-      : [...cur.tabs, { id, kind: 'canvas', title, path, createdSeq: nextLocalSeq() }],
+      : [...cur.tabs, { ...target, id, createdSeq: nextLocalSeq() }],
     page: { tab: id },
   }))
+  return id
 }
 
 /**
- * 打开文件预览页。同一文件已打开时切换到该页，不并排新建第二页（同 `openCanvasTab`）。
- * 页签标题是文件名，创建后不再修改。
+ * 按电脑上的清单（`panel.tabs`）同步全部工作区的共享页签。本函数只做投影，不通知服务端。
+ *
+ * 同步范围是「已有条目中含共享页签的工作区」与「本次清单中的工作区」的并集，理由同 `syncBrowserTabs`：
+ * 某工作区的最后一页在其他客户端关闭后，该工作区不在清单中，本端的页签仍须移除。
+ * 本端没有的页追加到末尾，清单中已没有的页移除，当前页被移除时按 `pageWithout` 改为相邻页；未变化的页保留原对象。
  */
-export function openFileTab(path: string): void {
-  const wsId = workspace()?.id
-  if (!wsId) return
-  const id = `file-${path}`
-  const title = path.split('/').pop() ?? path
-  updatePanel(wsId, (cur) => ({
-    tabs: cur.tabs.some((t) => t.id === id)
-      ? cur.tabs
-      : [...cur.tabs, { id, kind: 'file', title, path, createdSeq: nextLocalSeq() }],
-    page: { tab: id },
-  }))
-}
-
-/** 打开工作台页。已打开时切换到该页，不并排新建第二页。 */
-export function openWorkbenchTab(key: string, title: string): void {
-  const wsId = workspace()?.id
-  if (!wsId) return
-  const id = `plugin-${key}`
-  updatePanel(wsId, (cur) => ({
-    tabs: cur.tabs.some((t) => t.id === id)
-      ? cur.tabs
-      : [...cur.tabs, { id, kind: 'plugin', title, workbench: key, createdSeq: nextLocalSeq() }],
-    page: { tab: id },
-  }))
+export function syncSharedTabs(tabs: readonly SharedPanelTab[]): void {
+  const groups = new Map<string, SharedPanelTab[]>()
+  for (const [wsId, panel] of Object.entries(panels())) {
+    if (panel.tabs.some((t) => SHARED_KINDS.has(t.kind))) groups.set(wsId, [])
+  }
+  for (const t of tabs) groups.set(t.workspaceId, [...(groups.get(t.workspaceId) ?? []), t])
+  for (const [wsId, list] of groups) {
+    const cur = panelOf(wsId)
+    const listed = new Set(list.map((t) => t.id))
+    const known = new Set(cur.tabs.map((t) => t.id))
+    const gone = cur.tabs.filter((t) => SHARED_KINDS.has(t.kind) && !listed.has(t.id))
+    const added = list
+      .filter((t) => !known.has(t.id))
+      .map((t): PanelTab => {
+        const { workspaceId: _, ...tab } = t
+        return { ...tab, createdSeq: nextLocalSeq() }
+      })
+    if (!gone.length && !added.length) continue
+    for (const t of gone) tabDisposers.delete(t.id)
+    updatePanel(wsId, () => ({
+      tabs: [...cur.tabs.filter((t) => !gone.includes(t)), ...added],
+      page: pageWithout(cur, gone),
+    }))
+  }
 }
 
 /** 从页 id 解析会话 id。`openConversationTab` 是唯一的生产者。 */
@@ -678,7 +695,7 @@ export function tabCliNode(tabId: string): { stepId: string; nodeId: string } {
  *
  * `panelTabs` 是 Rust 会话表的镜像，必须在镜像建立时与权威核对一次：刷新后恢复的记录中，
  * 终端可能已在刷新期间结束；记录无法读取时页签为空，而 shell 仍在运行，此时缺少的页签
- * 不是经 `closePanelTab` 移除的，`tabDisposers` 未被调用，该会话只能在应用退出时回收。
+ * 不是经 `removePanelTab` 移除的，`tabDisposers` 未被调用，该会话只能在应用退出时回收。
  *
  * 只处理终端页签：浏览器页在终端清单中没有对应项。移除的页不调用 `tabDisposers`，
  * 理由同 `syncBrowserTabs`：该会话已经结束。
@@ -726,12 +743,13 @@ export function restoreTerminalTabs(sessions: readonly TerminalSession[]): void 
 }
 
 /**
- * 关闭一页。这是释放资源的唯一入口（见 `tabDisposers`）。
+ * 在本端关闭一页。这是释放资源的唯一入口（见 `tabDisposers`）。界面经 `panel-share.ts` 的 `closePanelTab` 调用：
+ * 共享页签须同时通知服务端，只在本端移除的页会在下一次推送时恢复。
  *
  * 关闭的是当前页时切换到右侧相邻页，没有则切换到左侧相邻页，没有任何页时回到文件视图。
  * 不连带收起面板：用户点击的是该页的 ×，不是面板的 ×。
  */
-export function closePanelTab(id: string): void {
+export function removePanelTab(id: string): void {
   const wsId = workspace()?.id
   if (!wsId) return
   const cur = panelOf(wsId)
@@ -960,8 +978,8 @@ export const [accountOpen, setAccountOpen] = sessionSignal<boolean>('qywork.acco
 export const [openFile, setOpenFile] = sessionSignal<string | null>('qywork.file.open', null)
 
 /**
- * 右侧面板当前显示的工作区文件：画布页、文件预览页，或文件页中打开的文件。面板收起或显示其他页时为 undefined。
- * 随消息发送（`SendMessageCommand.viewing`），模型据此理解「这个画布」「这个文件」。
+ * 本端右侧面板当前显示的工作区文件：画布页、文件预览页，或文件页中打开的文件。面板收起或显示其他页时为 undefined。
+ * 显示时上报给电脑（`panel-share.ts` 的 `watchViewing`），发送消息时由服务端附上，模型据此理解「这个画布」「这个文件」。
  */
 export function viewingFile(): string | undefined {
   const page = sidePanel()
@@ -1014,6 +1032,11 @@ export const [workspace, setWorkspace] = sessionSignal<WorkspaceInfo | null>(
  * 无法填写完整（技能需要正文与触发条件，插件需要代码），因此将初始指令交给模型处理。
  */
 export const [composerSeed, setComposerSeed] = createSignal<string | null>(null)
+
+/** 窄屏：右侧面板覆盖全屏、侧栏改为抽屉。断点与样式表的 `max-width: 820px` 相同。 */
+export function narrowScreen(): boolean {
+  return globalThis.matchMedia?.('(max-width: 820px)').matches === true
+}
 
 /** 关闭设置，将一条初始指令送入输入框。设置弹窗遮挡输入框，不关闭则无法看到。 */
 export function askInChat(prompt: string): void {

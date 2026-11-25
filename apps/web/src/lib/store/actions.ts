@@ -24,7 +24,7 @@ import {
 } from './settings.ts'
 import { isDesktopShell, tauriInvoke } from './shell.ts'
 import { beginRoundDraft, hasRun, isRunning, prepayBusy, setState, state } from './state.ts'
-import { setOpenFile, setWorkspace, viewingFile, type WorkspaceInfo, workspace } from './ui.ts'
+import { setOpenFile, setWorkspace, type WorkspaceInfo, workspace } from './ui.ts'
 import { reloadActiveConversation } from './views/history.ts'
 import { syncViews } from './views/subscription.ts'
 
@@ -537,7 +537,6 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
    * 撤销此次预置（`applyRejected`）：被拒的指令服务端从未置忙，不会有忙闲事件到达。
    */
   prepayBusy(id, requestId)
-  const viewing = viewingFile()
   client.send({
     type: 'message.send',
     clientRequestId: requestId,
@@ -545,7 +544,6 @@ export function sendMessage(content: string, attachments?: Attachment[], steer =
     content,
     ...(attachments?.length ? { attachments } : {}),
     ...(steer ? { steer: true } : {}),
-    ...(viewing ? { viewing } : {}),
   })
 }
 

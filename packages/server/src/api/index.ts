@@ -25,6 +25,7 @@ import { handleHostApi } from './host.ts'
 import { handleMcpApi } from './mcp.ts'
 import { handleMemoryApi } from './memory.ts'
 import { handlePairingApi } from './pairing.ts'
+import { handlePanelApi } from './panel.ts'
 import { handlePluginsApi } from './plugins.ts'
 import { handleProbeApi } from './probe.ts'
 import { handlePullApi } from './pull.ts'
@@ -80,6 +81,7 @@ const HANDLERS: ApiHandler[] = [
   handleFontsApi,
   handleCanvasApi,
   handleBrowserApi,
+  handlePanelApi,
   handleGitApi,
   handleClientLogApi,
 ]

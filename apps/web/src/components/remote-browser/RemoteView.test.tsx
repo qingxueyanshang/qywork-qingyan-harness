@@ -162,3 +162,43 @@ test('档位换算：按档位步进、端点不变；捏合的比例取比值�
   expect(nearestZoom(9)).toBe(5)
   expect(nearestZoom(0.1)).toBe(0.25)
 })
+
+test('长按后拖动按住左键：按下、移动、抬起依次转发，不转为滚动；未长按的拖动仍为滚动', async () => {
+  const { socket, canvas } = await mount()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const box = canvas.getBoundingClientRect
+  // 画面铺满 390×700 的显示区域：页面坐标与窗口坐标相同。
+  canvas.getBoundingClientRect = () =>
+    ({ left: 0, top: 0, right: 390, bottom: 700, width: 390, height: 700 }) as DOMRect
+  const inside = canvas.parentElement as HTMLElement
+  Object.defineProperty(inside, 'clientWidth', { value: 390, configurable: true })
+  Object.defineProperty(inside, 'clientHeight', { value: 700, configurable: true })
+  socket.frame(390, 700)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const mouse = () => socket.sent.filter((m) => m.type === 'mouse' || m.type === 'wheel')
+  try {
+    touch(canvas, 'pointerdown', 1, 100, 100)
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    touch(canvas, 'pointermove', 1, 160, 100)
+    touch(canvas, 'pointerup', 1, 160, 100)
+    expect(mouse().map((m) => `${m.type}:${m.action ?? ''}:${m.button ?? ''}`)).toEqual([
+      'mouse:move:none',
+      'mouse:down:left',
+      'mouse:move:none',
+      'mouse:up:left',
+    ])
+    expect(mouse().at(-1)).toMatchObject({ x: 160, y: 100 })
+
+    const before = mouse().length
+    touch(canvas, 'pointerdown', 2, 100, 300)
+    touch(canvas, 'pointermove', 2, 100, 200)
+    touch(canvas, 'pointerup', 2, 100, 200)
+    expect(
+      mouse()
+        .slice(before)
+        .map((m) => m.type),
+    ).toEqual(['wheel'])
+  } finally {
+    canvas.getBoundingClientRect = box
+  }
+})

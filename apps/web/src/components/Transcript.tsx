@@ -5,13 +5,13 @@ import { createHeld } from '../lib/resource.ts'
 import {
   conversationRunClosed,
   isConversationRunning,
-  setState,
   state,
   type TranscriptItem,
   transcript,
   viewOf,
 } from '../lib/store/index.ts'
 import { ConversationIndex } from './ConversationIndex.tsx'
+import { NoticeCard } from './NoticeCard.tsx'
 import { ConversationHistoryBoundary } from './transcript/ConversationHistoryBoundary.tsx'
 import { createConversationScroll } from './transcript/conversation-scroll.ts'
 import { LiveRunBar } from './transcript/status/LiveRunBar.tsx'
@@ -173,18 +173,7 @@ export function Transcript() {
             )}
           </Show>
 
-          {/* 指令被拒绝的回执。按 fail-closed 原则，拒绝必须在界面上显示。
-            使用 <output> 而不是 div + role="status"：两者隐含语义相同，前者少一个属性。 */}
-          <Show when={state.notice}>
-            {(n) => (
-              <output class="notice-card">
-                <span>{n().message}</span>
-                <button class="btn-ghost sm" type="button" onClick={() => setState('notice', null)}>
-                  关闭
-                </button>
-              </output>
-            )}
-          </Show>
+          <NoticeCard />
         </>
       }
     />

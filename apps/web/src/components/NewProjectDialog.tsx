@@ -1,4 +1,5 @@
 import { createEffect, createSignal, onCleanup, Show } from 'solid-js'
+import { closeOnBack } from '../lib/back-stack.ts'
 import { holdOverlay, pickWorkspace, type WorkspaceInput } from '../lib/store/index.ts'
 import { IconFolder, IconPlus } from './Icons.tsx'
 
@@ -29,6 +30,10 @@ export function NewProjectDialog(props: {
 
   // 内置浏览器页是原生子视图，渲染在所有 DOM 之上；浮层打开时需先将其移出可视区。
   holdOverlay(() => props.open)
+  closeOnBack(
+    () => props.open,
+    () => props.onClose(),
+  )
 
   // 每次打开都使用空白表单：保留上一次的输入会被误认为弹窗记住了某些设置。
   createEffect(() => {

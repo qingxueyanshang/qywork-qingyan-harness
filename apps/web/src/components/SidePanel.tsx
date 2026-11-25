@@ -42,6 +42,7 @@ import {
   IconTerminal,
   IconX,
 } from './Icons.tsx'
+import { NoticeCard } from './NoticeCard.tsx'
 import { OfficePicker } from './office/OfficePicker.tsx'
 import { ChangeRecord } from './side-panel/ChangeRecord.tsx'
 import { FileBrowser, FileTab } from './side-panel/FileBrowser.tsx'
@@ -464,6 +465,8 @@ export default function SidePanel() {
             </button>
           </div>
         </header>
+
+        <NoticeCard class="panel-notice" />
 
         <div class="side-body">
           {/*

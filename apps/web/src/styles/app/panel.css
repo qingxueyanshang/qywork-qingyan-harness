@@ -188,6 +188,17 @@
   height: 16px;
   color: var(--text-tertiary);
 }
+/* 触屏上点击区域向四周扩展到 28px，外观不变：按钮嵌在页签中，放大外观会增加页签的宽度。 */
+@media (pointer: coarse) {
+  .tab-close {
+    position: relative;
+  }
+  .tab-close::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
+}
 
 /* 右侧按钮：新开预览 / 放大（窄屏时另有关闭）。
    它们垂直居中，不随页签占满横带高度：占满时会被误认为第六、第七个页签。 */
@@ -758,6 +769,16 @@
 .tree-item svg {
   flex: none;
 }
+/* 触屏上行高放大到约 30px：20px 的行相邻排列，手指点击时容易落到上下相邻的文件。
+   长按打开右键菜单（`lib/long-press.ts`），不显示系统的长按菜单与文字选择。 */
+@media (pointer: coarse) {
+  .tree-item {
+    padding-top: 6px;
+    padding-bottom: 6px;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+}
 /*
  * 目录用箭头，文件用类型图标，两者共用一个 15px 主图标位。常规目录不再叠加
  * 文件夹图标，否则同一行会多出一列，层级起点与名称列都会失去连续关系。
@@ -1011,6 +1032,13 @@
   width: 20px;
   height: 20px;
 }
+/* 窄屏打开文件时文件树隐藏，标题栏的 × 是返回文件树的唯一入口，按常规按钮尺寸显示。 */
+@media (max-width: 820px) {
+  .preview-head .icon-btn {
+    width: 28px;
+    height: 28px;
+  }
+}
 /*
  * 预览控件：标题行中路径右侧的一组按钮，各类型的模式切换、适应方式与缩放都在这里，不另占一行。
  * 预览区变窄时依次隐藏 `.preview-tools-extra`、`.preview-tools-fit` 与缩放控件，路径与按钮不换行。
@@ -1081,11 +1109,13 @@
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+/* 单指滚动交给浏览器，双指捏合由 `bindZoomInputs` 缩放文字：放行 `pinch-zoom` 时浏览器缩放整个页面。 */
 .preview-body {
   flex: 1;
   overflow: auto;
   min-height: 0;
   background: var(--bg-app);
+  touch-action: pan-x pan-y;
 }
 .preview-foot {
   flex: none;
@@ -1137,11 +1167,13 @@
   min-width: 0;
   overflow: hidden;
 }
+/* 单指滚动交给浏览器，双指捏合由 `bindZoomInputs` 缩放图片：放行 `pinch-zoom` 时浏览器缩放整个页面。 */
 .image-preview-viewport {
   flex: 1;
   min-height: 0;
   padding: var(--s-4);
   overflow: auto;
+  touch-action: pan-x pan-y;
 }
 .image-preview-viewport[data-mode="fit"] {
   overflow: hidden;
@@ -1354,6 +1386,12 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/* 窄屏面板覆盖全屏时铺满宽度：多出的宽度不足以造成横向扫视，固定宽度只在右侧留出空白。 */
+@media (max-width: 820px) {
+  .run-col {
+    width: 100%;
+  }
 }
 .run-load {
   padding: var(--s-3);

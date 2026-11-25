@@ -44,6 +44,10 @@ export interface WorkspaceRow {
   created_at: number
   removed_at: number | null
   pinned_at: number | null
+  /** 右侧面板的共享页签，JSON 数组；读写见 `repos/workspace-panel.ts`。 */
+  panel_tabs: string
+  /** 最近在面板中查看的文件（工作区相对路径）；没有时为 `null`。 */
+  viewing: string | null
 }
 
 export interface ConversationRow {
@@ -247,6 +251,8 @@ export const ROW_COLUMNS: Record<string, readonly string[]> = {
     'created_at',
     'removed_at',
     'pinned_at',
+    'panel_tabs',
+    'viewing',
   ],
   conversations: [
     'id',

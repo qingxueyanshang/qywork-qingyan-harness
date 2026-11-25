@@ -1169,7 +1169,7 @@ export interface FollowUp {
    */
   origin?: 'subagent' | 'workflow' | 'command'
   /**
-   * 发送时界面右侧面板显示的工作区文件，同 `SendMessageCommand.viewing`。开始新一轮时写入上下文快照；
+   * 发送时该工作区最近在面板中查看的文件（服务端按工作区记录，任一客户端的面板显示画布或文件时更新）。开始新一轮时写入上下文快照；
    * 注入当前轮次时与本轮已知的值不同才告知模型。
    */
   viewing?: string

@@ -1,5 +1,6 @@
 import type { SupportAttachment, SupportMessage } from '@qywork/core'
 import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from 'solid-js'
+import { touchPrimary } from '../../lib/long-press.ts'
 import { explainApiError } from '../../lib/store/index.ts'
 import {
   closeSupport,
@@ -315,8 +316,9 @@ export default function SupportDialog(props: { self: SupportSelf }) {
                 add(dropped)
               }
             }}
+            // 触屏上回车换行，经发送按钮发送：手机键盘没有 Shift，回车发送时无法输入换行。与会话输入框相同。
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touchPrimary()) {
                 e.preventDefault()
                 void submit()
               }

@@ -99,7 +99,7 @@ const {
   openLinkInPanel,
   projectRemoteTabs,
 } = await import('./browser.ts')
-const { closePanelTab, panelTabs, setSidePanel, setWorkspace, sidePanel, syncBrowserTabs } =
+const { removePanelTab, panelTabs, setSidePanel, setWorkspace, sidePanel, syncBrowserTabs } =
   await import('./ui.ts')
 delete g.__TAURI_INTERNALS__
 const { setState, state } = await import('./state.ts')
@@ -597,7 +597,7 @@ describe('恢复的浏览器页', () => {
     const opened = hostTab('bt_1', wsId)
     restore = asShell(invokes, (cmd) => {
       if (cmd === 'browser_open') {
-        closePanelTab(first.id)
+        removePanelTab(first.id)
         return Promise.resolve(opened)
       }
       return undefined
@@ -722,7 +722,7 @@ describe('桌面外壳以外的客户端', () => {
     setWorkspace(WS_A)
     projectRemoteTabs([view('bt_r1', WS_A.id), view('bt_r2', WS_B.id)])
     expect(panelTabs().map((t) => t.id)).toEqual(['bt_r1'])
-    closePanelTab('bt_r1')
+    removePanelTab('bt_r1')
     await flush()
     expect(calls).toContainEqual({
       path: '/api/browser/pages?tabId=bt_r1',

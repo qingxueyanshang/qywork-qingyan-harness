@@ -4,8 +4,9 @@
  *
  * - 画面按比例缩放到显示区域内、居中显示；输入坐标按显示的位置换算为页面视口的 CSS 像素。
  * - 每显示一帧回复一次 `ack`。显示区域的尺寸经 `size` 报告，页面视口按它设定，画面铺满显示区域；尺寸变化时重新报告。
- * - 鼠标的按下、移动、抬起与滚轮原样转发，移动每帧最多一次。触屏：轻点为一次点击，拖动为滚动（转为滚轮），
- *   不转为拖拽：网页按鼠标处理，单指拖动在网页中是选择文字。
+ * - 鼠标的按下、移动、抬起与滚轮原样转发，移动每帧最多一次。触屏：轻点为一次点击，拖动为滚动（转为滚轮）；
+ *   长按（`lib/long-press.ts`）后拖动为按住左键拖动（选择文字、拖动滑块），开始时设备振动一次（支持时）。
+ *   不把单指拖动直接转为按住拖动：网页按鼠标处理，单指拖动在网页中是选择文字，页面无法滚动。
  * - 缩放比例由调用方持有（`zoom`），随 `size` 报告。双指捏合期间画布按两指距离之比预览，松开后以最近的档位调用 `onZoom`，
  *   预览保持到缩放后的第一帧。不要在捏合期间逐次报告比例：服务端每次设定视口都重新开始推送画面，画面随之停滞。
  * - 键盘经一个透明的输入框（`input`）接收：文字与输入法确认的结果转为 `text`，功能键与快捷键转为 `key`。鼠标点击画面时
@@ -26,6 +27,7 @@ import type {
   BrowserViewRect,
 } from '@qywork/core'
 import { createEffect, createSignal, on, onCleanup, onMount, Show } from 'solid-js'
+import { attachLongPress } from '../../lib/long-press.ts'
 import { client } from '../../lib/store/index.ts'
 import RemotePrompt, { type PromptArea } from './RemotePrompt.tsx'
 import { nearestZoom, ZOOM_MAX, ZOOM_MIN } from './zoom.ts'
@@ -250,6 +252,7 @@ export default function RemoteView(props: {
   }
 
   // ── 触屏：轻点与拖动滚动，双指捏合缩放 ──
+  /** `held`：长按后进入按住左键拖动，此后的移动与抬起按鼠标转发。 */
   let touch: {
     id: number
     x: number
@@ -257,6 +260,7 @@ export default function RemoteView(props: {
     lastX: number
     lastY: number
     moved: boolean
+    held: boolean
   } | null = null
   /** 按下的手指的位置，按 `pointerId`。 */
   const fingers = new Map<number, { x: number; y: number }>()
@@ -275,8 +279,27 @@ export default function RemoteView(props: {
     return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0
   }
 
+  /** 长按：手指仍按住且未开始滚动时，在按下处按下左键，此后的移动按拖动转发。 */
+  const hold = (x: number, y: number) => {
+    const t = touch
+    if (!t || t.moved || pinch) return
+    const p = pagePoint(x, y)
+    if (!p) return
+    t.held = true
+    navigator.vibrate?.(10)
+    send({ type: 'mouse', action: 'move', ...p, button: 'none' })
+    send({ type: 'mouse', action: 'down', ...p, button: 'left', clickCount: 1 })
+  }
+  /** 结束按住拖动：在最后的位置抬起左键。 */
+  const release = (clientX: number, clientY: number) => {
+    flushMove()
+    const p = pagePoint(clientX, clientY)
+    if (p) send({ type: 'mouse', action: 'up', ...p, button: 'left', clickCount: 1 })
+  }
+
   const startPinch = (): boolean => {
     const start = spread()
+    if (touch?.held) return false
     if (!props.onZoom || !frame || pinch || fingers.size !== 2 || start === 0) return false
     const [a, b] = [...fingers.values()] as [{ x: number; y: number }, { x: number; y: number }]
     const rect = canvas.getBoundingClientRect()
@@ -319,6 +342,7 @@ export default function RemoteView(props: {
         lastX: e.clientX,
         lastY: e.clientY,
         moved: false,
+        held: false,
       }
       return
     }
@@ -348,6 +372,15 @@ export default function RemoteView(props: {
         return
       }
       if (!touch || e.pointerId !== touch.id || !frame) return
+      if (touch.held) {
+        touch.lastX = e.clientX
+        touch.lastY = e.clientY
+        const p = pagePoint(e.clientX, e.clientY)
+        if (!p) return
+        moveQueued = p
+        if (!moveFrame) moveFrame = requestAnimationFrame(flushMove)
+        return
+      }
       if (!touch.moved && Math.hypot(e.clientX - touch.x, e.clientY - touch.y) < TAP_SLOP) return
       touch.moved = true
       const p = pagePoint(e.clientX, e.clientY) ?? { x: frame.width / 2, y: frame.height / 2 }
@@ -376,6 +409,11 @@ export default function RemoteView(props: {
         return
       }
       if (!touch || e.pointerId !== touch.id) return
+      if (touch.held) {
+        touch = null
+        release(e.clientX, e.clientY)
+        return
+      }
       const tapped = !touch.moved
       touch = null
       const p = tapped ? pagePoint(e.clientX, e.clientY) : null
@@ -460,6 +498,7 @@ export default function RemoteView(props: {
   onMount(() => {
     resetInput()
     props.onInput?.(input)
+    attachLongPress(canvas, hold)
     connect()
     const ro = new ResizeObserver(() => reportSize())
     ro.observe(box)
@@ -483,6 +522,7 @@ export default function RemoteView(props: {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={(e) => {
+          if (touch?.held && touch.id === e.pointerId) release(touch.lastX, touch.lastY)
           touch = null
           fingers.delete(e.pointerId)
           endPinch(false)

@@ -3988,6 +3988,16 @@ describe('工具卡按 stepId 认领实时输出', () => {
     open('cv_other', 'st_o', 'success', '作品/别处.png')
     open('cv_now', 'st_f', 'failure', '作品/失败.png')
     expect(openFile()).toBe(null)
+    // 窄屏上面板覆盖全屏，不自动打开，由工具卡的「打开」按钮打开。
+    const originalMatch = globalThis.matchMedia
+    globalThis.matchMedia = ((query: string) =>
+      ({ matches: query === '(max-width: 820px)', media: query }) as MediaQueryList) as never
+    try {
+      open('cv_now', 'st_n', 'success', '作品/窄屏.png')
+    } finally {
+      globalThis.matchMedia = originalMatch
+    }
+    expect(openFile()).toBe(null)
     open('cv_now', 'st_s', 'success', '作品/签收/封面.png')
     expect(openFile()).toBe('作品/签收/封面.png')
     expect(sidePanel()).toBe('files')

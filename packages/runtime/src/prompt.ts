@@ -477,7 +477,8 @@ export function mediaParameterTable(models: MediaModelEntry[], output: MediaOutp
 }
 
 /**
- * 界面右侧面板当前打开的文件。轮次开始时写入快照；轮次进行中用户切换到另一个文件后发送消息时，随该消息附上。
+ * 界面右侧面板当前打开的文件：服务端按工作区记录，任一客户端（电脑或手机）的面板显示画布或文件时更新，关闭该页时清空。
+ * 轮次开始时写入快照；轮次进行中该文件变化后发送消息时，随该消息附上。
  */
 export function viewingLine(path: string): string {
   return `界面右侧面板当前打开：\`${path}\`。用户说「这个画布」「这个文件」等而未写路径时，指这一项。`
@@ -530,7 +531,7 @@ export function buildTailNotes(input: {
    * （`mediaParameterTable`），取自生成目录，与发送前的校验使用同一份数据。
    */
   mediaModels?: MediaModelEntry[]
-  /** 发送消息时界面右侧面板显示的工作区文件（`SendMessageCommand.viewing`）。 */
+  /** 发送消息时该工作区在面板中打开的文件（服务端按工作区记录，见 `viewingLine`）。 */
   viewing?: string
   /**
    * 当前项目的角色与本机识别到的外部 CLI。`undefined` = 本会话没有任务派发能力。

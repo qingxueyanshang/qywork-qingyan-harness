@@ -77,6 +77,7 @@ function helloDeps(
     announceGit: () => {},
     announceDesktopTarget: () => {},
     announceBrowserTabs: () => {},
+    announcePanelTabs: () => {},
   }
 }
 

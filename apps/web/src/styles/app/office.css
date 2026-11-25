@@ -198,7 +198,8 @@
   display: flex;
   flex-direction: column;
   width: min(420px, calc(100vw - 2 * var(--s-4)));
-  height: min(420px, calc(100vh - 2 * var(--s-4)));
+  /* 高度用 svh 不用 vh：iOS Safari 的 100vh 含工具栏遮住的部分，弹窗下沿（输入框、按钮）被遮挡；svh 为工具栏显示时的可见高度，打开期间不变。 */
+  height: min(420px, calc(100svh - 2 * var(--s-4)));
   overflow: hidden;
   background: var(--bg-raised);
   border: 1px solid var(--border-default);

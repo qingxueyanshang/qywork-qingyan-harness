@@ -1011,6 +1011,8 @@ test('充值窗口：生成付款码后读取状态，读取失败时显示原�
     'data:image/svg+xml;utf8,',
   )
   expect(view.text()).toContain('微信扫码支付 · 到账 50 积分 · ')
+  // 桌面上直接扫描屏幕上的二维码，不显示保存按钮。
+  expect(view.button('保存二维码')).toBeUndefined()
   await until(() => view.text().includes('无法连接账号服务'))
   await until(() => view.text().includes('已到账 50 积分'))
   expect(view.host.querySelector('.recharge-qr img')).toBeNull()
@@ -1026,6 +1028,44 @@ test('充值窗口：生成付款码后读取状态，读取失败时显示原�
   view.button('完成')?.click()
   expect(closed()).toBe(0)
   view.close()
+})
+
+test('充值窗口：触屏上可保存付款码，保存为按付款码绘制的 PNG', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  rechargeReplies = ['pending']
+  const originalMatch = globalThis.matchMedia
+  const originalContext = HTMLCanvasElement.prototype.getContext
+  const originalUrl = HTMLCanvasElement.prototype.toDataURL
+  const originalClick = HTMLAnchorElement.prototype.click
+  const cells: number[] = []
+  const saved: { href: string; download: string }[] = []
+  globalThis.matchMedia = ((query: string) =>
+    ({ matches: query === '(pointer: coarse)', media: query }) as MediaQueryList) as never
+  HTMLCanvasElement.prototype.getContext = (() => ({
+    fillStyle: '',
+    fillRect: (_x: number, _y: number, w: number) => cells.push(w),
+  })) as never
+  HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,AAAA'
+  HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+    saved.push({ href: this.href, download: this.download })
+  }
+  try {
+    const { view, submit } = await recharge()
+    submit()
+    await until(() => view.button('保存二维码') !== undefined)
+    view.button('保存二维码')?.click()
+    expect(saved).toEqual([{ href: 'data:image/png;base64,AAAA', download: 'qywork-付款码.png' }])
+    // 先铺满白底，其余为 8px 的模块。
+    expect(cells.length).toBeGreaterThan(1)
+    expect(cells.slice(1).every((w) => w === 8)).toBe(true)
+    view.close()
+  } finally {
+    globalThis.matchMedia = originalMatch
+    HTMLCanvasElement.prototype.getContext = originalContext
+    HTMLCanvasElement.prototype.toDataURL = originalUrl
+    HTMLAnchorElement.prototype.click = originalClick
+  }
 })
 
 test('充值窗口：付款码过期后停止读取，可按原金额重新生成或更换金额；关闭按钮与 Escape 交给调用方关闭', async () => {

@@ -109,6 +109,16 @@ export {
   settleToolStep,
   stepInExecution,
 } from './repos/steps.ts'
+// 右侧面板的共享页签与最近查看的文件：server 的 `/api/panel` 与发送消息时读取
+export {
+  clearViewing,
+  closePanelTab,
+  listPanelTabs,
+  openPanelTab,
+  type StoredPanelTab,
+  setViewing,
+  viewingOf,
+} from './repos/workspace-panel.ts'
 // 读写：工作区
 export {
   getWorkspace,

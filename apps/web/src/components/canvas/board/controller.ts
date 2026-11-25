@@ -290,6 +290,9 @@ export function createCanvasController(props: { path: string; active: boolean })
    */
   const undoStack: CanvasEdit['step'][] = []
   const redoStack: CanvasEdit['step'][] = []
+  /** 两个栈的深度：栈本身不是响应式的，工具条的撤销、重做按钮按它禁用。每次修改栈之后调用 `syncDepth`。 */
+  const [depth, setDepth] = createSignal({ undo: 0, redo: 0 })
+  const syncDepth = () => setDepth({ undo: undoStack.length, redo: redoStack.length })
   /** 本页最近一次编辑：撤销与重做先等待其返回，否则松开指针后立即撤销时该步尚未进入撤销栈，撤销无效。 */
   let editing: Promise<unknown> = Promise.resolve()
 
@@ -302,6 +305,7 @@ export function createCanvasController(props: { path: string; active: boolean })
           undoStack.push(next.step)
           if (undoStack.length > 100) undoStack.shift()
           redoStack.length = 0
+          syncDepth()
         }
         return next
       } catch (e) {
@@ -329,6 +333,8 @@ export function createCanvasController(props: { path: string; active: boolean })
       undoStack.length = 0
       redoStack.length = 0
       setFault(explainApiError(e, back ? '撤销失败' : '重做失败'))
+    } finally {
+      syncDepth()
     }
   }
 
@@ -662,6 +668,7 @@ export function createCanvasController(props: { path: string; active: boolean })
     load,
     apply,
     travel,
+    depth,
     run,
     retrieve,
     nodes,

@@ -1,6 +1,7 @@
 /** 文件打开入口与文件树定位。定位请求只传递一次操作，选中状态仍由文件树持有。 */
 import { createSignal } from 'solid-js'
-import { openCanvasTab, openPanel, setOpenFile, workspace } from './ui.ts'
+import { openCanvasTab, openWorkbenchTab } from './panel-share.ts'
+import { openPanel, setOpenFile, workspace } from './ui.ts'
 
 /** 画布文件的后缀。文件树据此用画布页签打开文件。 */
 export const CANVAS_SUFFIX = '.canvas.json'
@@ -30,6 +31,23 @@ export const [fileSelectRequest, setFileSelectRequest] = createSignal<{
   from: number
   to: number
 } | null>(null)
+
+/**
+ * `open_in_panel` 成功结果中的打开目标：插件工作台（`workbench`，可带 `title`）或工作区文件（`path`）；
+ * 都没有时为 `null`。工具成功后的自动打开与工具卡的「打开」按钮共用。
+ */
+export function panelTargetOf(data: Record<string, unknown> | undefined): (() => void) | null {
+  if (typeof data?.workbench === 'string') {
+    const key = data.workbench
+    const title = typeof data.title === 'string' ? data.title : key
+    return () => openWorkbenchTab(key, title)
+  }
+  if (typeof data?.path === 'string') {
+    const path = data.path
+    return () => openFileInPanel(path)
+  }
+  return null
+}
 
 /**
  * 聊天链接、文件树与画布附件共用的入口。HTML 与 Markdown 相同，在文件页中打开，由文件页提供预览与源码。

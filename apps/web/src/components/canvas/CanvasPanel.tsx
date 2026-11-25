@@ -14,15 +14,23 @@
 import { GENERATE_OUTPUTS } from '@qywork/core'
 import { For, onCleanup, onMount, Show } from 'solid-js'
 import { Portal } from 'solid-js/web'
+import { attachLongPress } from '../../lib/long-press.ts'
 import { isDesktopShell, registerDropSink } from '../../lib/store/index.ts'
-import { IconCanvas, IconScissors } from '../Icons.tsx'
+import { IconCanvas, IconRedo, IconScissors, IconUndo } from '../Icons.tsx'
 import { CanvasContext } from './board/context.ts'
 import { createCanvasController } from './board/controller.ts'
 import { FlowLayer } from './Flow.tsx'
 import { exportOnRequest } from './input/clips.ts'
 import { addGenerate, addTimeline } from './input/create.ts'
 import { cutLink, onKeyDown, onKeyUp, onPaste, releaseSpace } from './input/keyboard.ts'
-import { onDblClick, onPointerDown, onPointerMove, onPointerUp, onWheel } from './input/pointer.ts'
+import {
+  onDblClick,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onWheel,
+  pressContext,
+} from './input/pointer.ts'
 import { dropSink, onDragOver, onDrop, pickFile, uploadFiles } from './input/upload.ts'
 import { CanvasMenus } from './layers/CanvasMenus.tsx'
 import { EdgeLayer } from './layers/EdgeLayer.tsx'
@@ -69,7 +77,10 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
     <CanvasContext.Provider value={canvas}>
       <div
         class="canvas-stage"
-        ref={canvas.stage}
+        ref={(el) => {
+          canvas.stage = el
+          attachLongPress(el, (x, y, target) => pressContext(canvas, x, y, target))
+        }}
         role="application"
         aria-label="画布"
         style={{ '--z': String(canvas.z()) }}
@@ -204,9 +215,28 @@ export default function CanvasPanel(props: { path: string; active: boolean }) {
           }}
         />
 
+        {/* 撤销与重做：键盘之外的入口，触屏上只能经此操作。 */}
         <div class="canvas-dock">
           <button class="zoom" type="button" onClick={() => canvas.fit(true)}>
             {Math.round(canvas.z() * 100)}%
+          </button>
+          <button
+            type="button"
+            aria-label="撤销"
+            data-tip="撤销"
+            disabled={canvas.depth().undo === 0}
+            onClick={() => void canvas.travel(true)}
+          >
+            <IconUndo size={14} />
+          </button>
+          <button
+            type="button"
+            aria-label="重做"
+            data-tip="重做"
+            disabled={canvas.depth().redo === 0}
+            onClick={() => void canvas.travel(false)}
+          >
+            <IconRedo size={14} />
           </button>
         </div>
 

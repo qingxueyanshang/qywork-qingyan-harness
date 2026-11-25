@@ -1100,11 +1100,14 @@
   width: 48px;
   padding-top: 22px;
 }
+/* 触屏横向拖动轨道即滚动（`Timeline.tsx` 的 `touchScrolls`）；刻度尺上的拖动用于定位，不交给浏览器。 */
 .canvas-tl.full .canvas-tl-scroll {
   overflow-x: auto;
+  touch-action: pan-x;
 }
 .canvas-tl.full .canvas-tl-ruler {
   height: 22px;
+  touch-action: none;
 }
 .canvas-tl.full .canvas-tl-lane {
   height: 88px;
@@ -1287,9 +1290,13 @@
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
-.canvas-dock > button:hover {
+.canvas-dock > button:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+.canvas-dock > button:disabled {
+  opacity: var(--disabled-opacity);
+  cursor: default;
 }
 .canvas-dock .zoom {
   min-width: 44px;
@@ -1372,7 +1379,8 @@
   z-index: 9;
   display: flex;
   flex-direction: column;
-  width: 320px;
+  /* 窄屏的画布区宽度小于左偏移加 320px，固定宽度时右侧被画布区裁去；右侧保留 12px。 */
+  width: min(320px, calc(100% - 168px - 12px));
   height: 360px;
   overflow: hidden;
   transform: translateY(-50%);
@@ -1514,6 +1522,12 @@
 }
 .canvas-input:hover .canvas-input-remove {
   opacity: 1;
+}
+/* 不支持悬停的设备（手机）上始终显示：只在悬停时显示时触屏无法看到这个入口。 */
+@media (hover: none) {
+  .canvas-input-remove {
+    opacity: 1;
+  }
 }
 button.canvas-input:hover {
   color: var(--text-primary);

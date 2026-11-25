@@ -68,6 +68,8 @@ export function handleHello(
     announceDesktopTarget(): void
     /** 补发完成后广播内置浏览器的页签清单（`browser.tabs`）：该清单只在变化时广播，新连接的客户端无法据此取得当前值。 */
     announceBrowserTabs(): void
+    /** 补发完成后广播右侧面板的共享页签（`panel.tabs`），理由同 `announceBrowserTabs`：离线期间的变化由此取得。 */
+    announcePanelTabs(): void
   },
 ) {
   if (!deps.verify(frame.token)) {
@@ -145,6 +147,7 @@ export function handleHello(
   for (const f of backlog) if (!sendOrClose(ws, f)) break
   deps.announceDesktopTarget()
   deps.announceBrowserTabs()
+  deps.announcePanelTabs()
 }
 
 /**

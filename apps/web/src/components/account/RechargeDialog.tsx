@@ -1,6 +1,7 @@
 import type { CloudRechargeOrder, CloudRechargeStatus } from '@qywork/core'
 import { createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
-import { renderSVG } from 'uqr'
+import { encode, renderSVG } from 'uqr'
+import { touchPrimary } from '../../lib/long-press.ts'
 import {
   cloudState,
   createRecharge,
@@ -19,6 +20,32 @@ const PRESETS = [10, 30, 50, 100, 200, 500] as const
 /** 付款码的 data URL：二维码周围留 2 格空白，扫码时更容易识别。 */
 function qrImage(codeUrl: string): string {
   return `data:image/svg+xml;utf8,${encodeURIComponent(renderSVG(codeUrl, { border: 2 }))}`
+}
+
+/**
+ * 保存付款码：按与显示相同的模块（含 2 格空白）绘制 PNG 并下载。手机上无法扫描本机屏幕上的二维码，
+ * 保存到相册后在微信中识别；显示用的 SVG 不能保存到相册。
+ */
+function saveQr(codeUrl: string): void {
+  const { data } = encode(codeUrl, { border: 2 })
+  const cell = 8
+  const canvas = document.createElement('canvas')
+  canvas.width = data.length * cell
+  canvas.height = data.length * cell
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.fillStyle = '#000'
+  data.forEach((row, y) => {
+    row.forEach((on, x) => {
+      if (on) ctx.fillRect(x * cell, y * cell, cell, cell)
+    })
+  })
+  const link = document.createElement('a')
+  link.href = canvas.toDataURL('image/png')
+  link.download = 'qywork-付款码.png'
+  link.click()
 }
 
 /** 剩余有效期，`分:秒`。 */
@@ -265,6 +292,11 @@ export default function RechargeDialog(props: { onClose: () => void; pollMs?: nu
                   <button type="button" class="btn-ghost" onClick={back}>
                     更换金额
                   </button>
+                  <Show when={touchPrimary()}>
+                    <button type="button" class="btn-primary" onClick={() => saveQr(o().codeUrl)}>
+                      保存二维码
+                    </button>
+                  </Show>
                 </Match>
               </Switch>
             </div>

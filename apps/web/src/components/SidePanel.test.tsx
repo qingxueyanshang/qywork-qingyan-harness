@@ -270,6 +270,29 @@ describe('文件树取消选中', () => {
     expect(created).toEqual([clear ? '新目录' : '素材/新目录'])
   })
 
+  test('名称输入框按 Esc 取消后的失焦不提交；失焦即提交', async () => {
+    const { host, created } = await mount()
+    click(host.querySelector<HTMLElement>('[aria-label="新建文件夹"]')!)
+    let input = host.querySelector<HTMLInputElement>('.tree-edit-input')!
+    input.value = '取消的目录'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    input.dispatchEvent(new FocusEvent('blur'))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(created).toEqual([])
+
+    click(host.querySelector<HTMLElement>('[aria-label="新建文件夹"]')!)
+    input = host.querySelector<HTMLInputElement>('.tree-edit-input')!
+    input.value = '失焦目录'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new FocusEvent('blur'))
+    await waitFor(
+      () => created.length === 1,
+      () => JSON.stringify(created),
+    )
+    expect(created).toEqual(['失焦目录'])
+  })
+
   test('点击右键菜单与重命名输入框保留选中，点击其他区域仍能清除', async () => {
     const { host } = await mount()
     const row = host.querySelector<HTMLElement>('[data-path="素材"]')!
@@ -2093,5 +2116,32 @@ describe('文件预览的 Markdown 与归档', () => {
       'docs/',
       'docs/说明.md',
     ])
+  })
+})
+
+describe('面板中的回执', () => {
+  /** 原始失败形状：手机上面板覆盖全屏，面板中的操作失败时回执显示在被遮住的会话流末尾，轻点看起来没有反应。 */
+  test('回执显示在页签栏下方，关闭后移除', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setWorkspace({ id: 'ws_panel_notice', root: 'C:work', name: 'work' })
+    store.setSidePanel('todos')
+    const { render } = await import('solid-js/web')
+    const { default: SidePanel } = await import('./SidePanel.tsx')
+    const host = document.createElement('div')
+    document.body.append(host)
+    dispose = render(() => <SidePanel />, host as unknown as HTMLElement)
+    try {
+      store.setState('notice', {
+        reason: 'browser_open_failed',
+        message: '无法打开浏览器页面：请求失败',
+      })
+      const notice = host.querySelector<HTMLElement>('.panel-notice')
+      expect(notice?.textContent).toContain('无法打开浏览器页面')
+      expect(notice?.previousElementSibling?.classList.contains('side-head')).toBe(true)
+      notice?.querySelector<HTMLButtonElement>('button')?.click()
+      expect(host.querySelector('.panel-notice')).toBeNull()
+    } finally {
+      store.setState('notice', null)
+    }
   })
 })

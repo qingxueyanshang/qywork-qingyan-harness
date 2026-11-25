@@ -80,9 +80,12 @@ export function ProjectRow(props: {
   /*
    * 卡片使用 fixed 定位，坐标只在展开时计算一次：列表滚动或窗口尺寸改变后它会停留在
    * 原位置，与对应行错位，因此收起菜单，由用户重新打开。确认弹窗显示时不收起：此时菜单在
-   * 弹窗后方。scroll 不冒泡，容器内的滚动只能在捕获阶段接收。
+   * 弹窗后方。scroll 不冒泡，容器内的滚动只能在捕获阶段接收。只处理包含本行的容器的滚动：会话流在回复生成期间
+   * 持续滚动到底部，按任意滚动收起时菜单在回复生成期间打开即被收起。
    */
-  const onReflow = () => {
+  const onReflow = (e: Event) => {
+    const t = e.target
+    if (t instanceof Element && !t.contains(moreEl)) return
     if (armed() === null) setMenuOpen(false)
   }
   document.addEventListener('mousedown', onDocDown, true)

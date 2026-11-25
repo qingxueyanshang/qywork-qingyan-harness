@@ -31,7 +31,7 @@ export function officeZoom(
         zoomBy: (factor) => target()?.zoomBy(factor),
         reset: () => target()?.reset(),
       },
-      { wheel: false },
+      { gestures: false },
     )
     onCleanup(unbind)
   })

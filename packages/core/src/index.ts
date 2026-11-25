@@ -433,9 +433,12 @@ export type {
   ErrorCode,
   EventEnvelope,
   GitStateEvent,
+  PanelTabsEvent,
+  SharedPanelTab,
 } from './protocol/events.ts'
 // 单次派发任务卡上子节点的 id：服务端发送事件、前端绘制节点，两侧必须使用同一个值
-export { SUBAGENT_NODE_ID } from './protocol/events.ts'
+// 共享页签的 id：客户端先显示的页与服务端随后推送的页按它对应
+export { SUBAGENT_NODE_ID, sharedPanelTabId } from './protocol/events.ts'
 export type {
   Announcement,
   ClientLogEntry,

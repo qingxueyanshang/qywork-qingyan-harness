@@ -95,6 +95,7 @@ import { migration076 } from './076-provider-request-cache-write-1h-tokens.ts'
 import { migration077 } from './077-request-envelopes.ts'
 import { migration078 } from './078-compaction-summary-blocks.ts'
 import { migration079 } from './079-run-provider.ts'
+import { migration080 } from './080-workspace-panel.ts'
 import type { Migration } from './shared.ts'
 
 export const MIGRATIONS: Migration[] = [
@@ -177,6 +178,7 @@ export const MIGRATIONS: Migration[] = [
   migration077,
   migration078,
   migration079,
+  migration080,
 ]
 
 /**

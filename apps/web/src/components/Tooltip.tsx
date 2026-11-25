@@ -7,6 +7,9 @@ const GAP = 6
  * 短于 200ms 时，鼠标划过工具栏会使提示连续闪烁。
  */
 const DELAY = 350
+/** 交互元素：触屏轻点它们执行其操作，不显示提示。 */
+const INTERACTIVE =
+  'button, a, input, select, textarea, label, [role="button"], [role="tab"], [role="menuitem"]'
 
 /**
  * 悬停提示。整个应用只有一个实例，读取触发元素上的 `data-tip`。
@@ -25,12 +28,16 @@ const DELAY = 350
  *   上方容纳不下时才显示在下方：触发元素下方是原生子视图（内置浏览器的地址栏）时，下方的提示被它遮挡。
  * - 禁用的表单控件不派发指针事件，设在其上的 `data-tip` 不会显示。
  *   需要在禁用状态说明原因时，把提示设在外层容器上。
- * - 触摸设备不显示提示：触摸设备没有悬停状态，显示的提示会遮挡手指下方的内容。
+ * - 触摸设备没有悬停，按下时不显示提示：显示的提示会遮挡手指下方的内容。轻点非交互元素时，提示补充了可见文字之外的
+ *   内容（正文被截断，或详情只在提示中）才显示，下一次按下时收起：截断的报错与详情在触屏上没有别的读取途径。
+ *   交互元素上的提示不显示，轻点执行其操作。
  */
 export function Tooltip() {
   let el!: HTMLDivElement
   let timer: ReturnType<typeof setTimeout> | undefined
   let target: HTMLElement | null = null
+  /** 最近一次按下的指针类型：`click` 不一定带有指针类型，按它判断轻点是否来自触屏。 */
+  let lastPointer = ''
 
   const hide = () => {
     clearTimeout(timer)
@@ -77,9 +84,25 @@ export function Tooltip() {
     show(t)
   }
 
+  const onDown = (e: PointerEvent) => {
+    lastPointer = e.pointerType
+    hide()
+  }
+
+  const onTap = (e: MouseEvent) => {
+    if (lastPointer !== 'touch') return
+    const t = pick(e)
+    const text = t?.dataset.tip
+    if (!t || !text || t.closest(INTERACTIVE)) return
+    if (text === t.textContent?.trim() && t.scrollWidth <= t.clientWidth) return
+    target = t
+    show(t)
+  }
+
   onMount(() => {
     document.addEventListener('pointerover', onOver)
-    document.addEventListener('pointerdown', hide)
+    document.addEventListener('pointerdown', onDown)
+    document.addEventListener('click', onTap)
     document.addEventListener('focusin', onFocus)
     document.addEventListener('focusout', hide)
     // 在捕获阶段监听：scroll 不冒泡，容器内的滚动只能在捕获阶段接收。
@@ -90,7 +113,8 @@ export function Tooltip() {
   onCleanup(() => {
     clearTimeout(timer)
     document.removeEventListener('pointerover', onOver)
-    document.removeEventListener('pointerdown', hide)
+    document.removeEventListener('pointerdown', onDown)
+    document.removeEventListener('click', onTap)
     document.removeEventListener('focusin', onFocus)
     document.removeEventListener('focusout', hide)
     document.removeEventListener('scroll', hide, true)

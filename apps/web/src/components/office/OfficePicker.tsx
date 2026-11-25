@@ -6,7 +6,9 @@
  */
 
 import { For, onCleanup, onMount, Show } from 'solid-js'
+import { closeOnBack } from '../../lib/back-stack.ts'
 import { createFileSearch, type OfficeFormat } from '../../lib/file-search.ts'
+import { touchPrimary } from '../../lib/long-press.ts'
 import { holdOverlay } from '../../lib/store/index.ts'
 import FileTypeIcon from '../FileTypeIcon.tsx'
 
@@ -17,6 +19,10 @@ export function OfficePicker(props: {
 }) {
   // 内置浏览器页是原生子视图，渲染在所有 DOM 之上；浮层打开时需先将其移出可视区。
   holdOverlay(() => true)
+  closeOnBack(
+    () => true,
+    () => props.onClose(),
+  )
   const { hits, error, search } = createFileSearch(() => ({ office: props.format }))
   search('')
 
@@ -39,7 +45,8 @@ export function OfficePicker(props: {
             type="search"
             placeholder="搜索文件"
             spellcheck={false}
-            ref={(el) => queueMicrotask(() => el.focus())}
+            // 触屏上不自动聚焦：键盘弹出后覆盖贴底显示的文件列表。
+            ref={(el) => queueMicrotask(() => touchPrimary() || el.focus())}
             onInput={(e) => search(e.currentTarget.value)}
           />
           <div class="office-picker-list">
