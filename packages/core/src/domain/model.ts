@@ -1006,6 +1006,18 @@ export interface NodeState {
    * 是其子会话中的 step，变更投影按 `subagentId` 从子会话读取。
    */
   fileChanges?: FileChange[]
+  /** 本次派发的用量，随回执告知父会话。外部 CLI 使用自身的账号，没有该字段。 */
+  usage?: DispatchUsage
+}
+
+/**
+ * 子 agent 一次派发的用量，单位 token。`promptTokens` 含缓存命中与缓存写入，是各次请求输入的合计。
+ * 父会话据此判断委派与 revise 的花费：未告知时模型无法得知并行派发与 revise 后继续执行的实际消耗。
+ */
+export interface DispatchUsage {
+  promptTokens: number
+  cachedTokens: number
+  outputTokens: number
 }
 
 /**

@@ -245,6 +245,7 @@ export {
   CURRENCIES,
   type Currency,
   conversationSummary,
+  type DispatchUsage,
   deriveConversationTitle,
   EFFORT_ORDER,
   type EffortLevel,

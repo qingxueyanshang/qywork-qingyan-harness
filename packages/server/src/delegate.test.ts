@@ -821,7 +821,7 @@ describe('角色清单中的模型', () => {
 })
 
 describe('回执是一条消息', () => {
-  test('成功：种类、名称、id、产出摘录与续派方式各占一行', async () => {
+  test('成功：种类、名称、id 与用量占第一行，产出摘录占第二行', async () => {
     const cid = conversation()
     script = [say('查完了，结论是这样')]
     const res = await delegate(cid).dispatch({
@@ -835,7 +835,11 @@ describe('回执是一条消息', () => {
     expect(receipt.origin).toBe('subagent')
     expect(receipt.steer).toBe(true)
     const lines = receipt.content.split('\n')
-    expect(lines[0]).toBe(`[子 agent 回执] 临时 查资料（subagentId ${res.subagentId}）已返回`)
+    // 用量取自子会话各轮 `run.finished` 的合计，父会话据此判断委派与 revise 后继续执行的花费。
+    expect(lines[0]).toBe(
+      `[子 agent 回执] 临时 查资料（subagentId ${res.subagentId}）已返回。` +
+        '用量：输入不足 1 万 token（其中缓存命中不足 1 万），输出不足 1 万 token',
+    )
     expect(receipt.content).toContain('查完了，结论是这样')
     // 只包含事实：续派方式已写在工具描述中，回执中重复只会增加冗余内容。
     expect(receipt.content).not.toContain('接着派它')
@@ -1469,7 +1473,7 @@ describe('图按事件推进', () => {
     const receipt = receipts[0]!
     expect(receipt.origin).toBe('workflow')
     expect(receipt.content).toContain('[workflow 回执] 检查点 主会话审查 的上游已经全部返回')
-    expect(receipt.content).toContain('### a（a）已返回')
+    expect(receipt.content).toContain('### a（a）已返回\n用量：输入不足 1 万 token')
     expect(receipt.content).toContain('A 的产出')
     expect(receipt.content).toContain(`workflowId=${step.id}，checkpointId=cp`)
     // 续派方式已写在工具描述中，回执中不再重复。

@@ -1,4 +1,5 @@
 import {
+  type DispatchUsage,
   EFFORT_ORDER,
   type EffortLevel,
   isEffortLevel,
@@ -59,6 +60,8 @@ export interface WorkflowReceipt {
   durationMs: number
   /** 派发时模型应知道的事实（续接失败、角色已不存在等），随回执返回。 */
   note?: string
+  /** 该节点本次派发的用量。外部 CLI 节点没有该字段。 */
+  usage?: DispatchUsage
 }
 
 export interface WorkflowRevision {
@@ -520,6 +523,7 @@ export function nodeReceipt(
     ...(error ? { error } : {}),
     durationMs: state.durationMs ?? 0,
     ...(state.note ? { note: state.note } : {}),
+    ...(state.usage ? { usage: state.usage } : {}),
   }
 }
 

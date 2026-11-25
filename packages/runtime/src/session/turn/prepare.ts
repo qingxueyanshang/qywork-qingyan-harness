@@ -30,6 +30,7 @@ import {
   compactPercentFor,
   type ModelRef,
   modelLabel,
+  modelSpecOf,
   NO_MODEL_MESSAGE,
   profileOf,
   resolveModel,
@@ -202,12 +203,16 @@ export async function prepareTurn(
           models: Object.entries(config.providers).flatMap(([provider, stored]) =>
             Object.entries(stored.models)
               .filter(([, declared]) => !declared.delisted)
-              .map(([model]) => ({
-                provider,
-                model,
-                label: modelLabel(config, { provider, model }),
-                current: resolvedTarget?.provider === provider && resolvedTarget.model === model,
-              })),
+              .map(([model]) => {
+                const window = modelSpecOf(config, { provider, model })?.contextWindow
+                return {
+                  provider,
+                  model,
+                  label: modelLabel(config, { provider, model }),
+                  current: resolvedTarget?.provider === provider && resolvedTarget.model === model,
+                  ...(window ? { contextWindow: window } : {}),
+                }
+              }),
           ),
         }
       : {}),

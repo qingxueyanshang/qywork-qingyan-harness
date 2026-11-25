@@ -15,7 +15,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateSync } from 'node:zlib'
-import { DelegatePort, Ports, provide, type ToolContext } from '@qywork/agent'
+import { DelegatePort, deliveredTokens, Ports, provide, type ToolContext } from '@qywork/agent'
 import {
   buildAdapter,
   DEFAULT_DENSITY,
@@ -528,6 +528,43 @@ describe('附件请求形状', () => {
   })
 
   /**
+   * 原始失败形状（2026-11-25 真实模型对照）：三份各约 34 万 token 的附件只写名称与路径，模型第一步同时读取三份，
+   * 两份整份进入上下文后才得知大小，委派已无意义。1 万 token 以上的文本附件在读取之前写明估算；
+   * 小文件与二进制文件不写，各轮生成的行与文件内容无关之外保持不变。
+   */
+  test('1 万 token 以上的文本附件写明估算的 token 数，小文件与二进制文件不写', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-attachment-'))
+    const body = '高阳在临江城设局打压囤粮的粮商，又提出以工代赈。\n'.repeat(8_000)
+    await writeFile(join(root, 'book.txt'), body)
+    await writeFile(join(root, 'notes.txt'), 'x')
+    await writeFile(
+      join(root, 'data.bin'),
+      // 与 ZIP、PDF 等二进制格式相同，开头即含 NUL。
+      Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]), Buffer.alloc(200_000, 1)]),
+    )
+    const text = (await withAttachments(root, '看看', [
+      attachment('book.txt', 'file'),
+      attachment('notes.txt', 'file'),
+      attachment('data.bin', 'file'),
+    ])) as string
+    // 与 read_file 读取整个文件时的投递估算比较：附件说明按同一格式（行号、JSON 转义）估算。
+    const expected = deliveredTokens(
+      JSON.stringify(
+        body
+          .split('\n')
+          .map((l, i) => `${i + 1}\t${l}`)
+          .join('\n'),
+      ),
+      DEFAULT_DENSITY,
+    )
+    const m = text.match(/（附件 book\.txt：.+，约 ([\d.]+) 万 token）/)
+    expect(m).not.toBeNull()
+    expect(Math.abs(Number(m?.[1]) * 10_000 - expected) / expected).toBeLessThan(0.05)
+    expect(text).toContain(`（附件 notes.txt：${join(root, 'notes.txt').replaceAll('\\', '/')}）`)
+    expect(text).toContain(`（附件 data.bin：${join(root, 'data.bin').replaceAll('\\', '/')}）`)
+  })
+
+  /**
    * 缩小发送的截图在附件说明中写明原图与发送尺寸，并指出 region。
    *
    * 实测缩小到长边 1568 后，模型把胶囊白字外的浅色描边 6 次都判为「干净」：模型不知道取得的是缩小图。
@@ -674,8 +711,9 @@ describe('顶层会话的可分配模型快照', () => {
       .join('\n')
     // 本轮使用的模型标为（当前会话）。
     expect(snapshot).toContain('；provider 参数 `智谱接口`；model 参数 `glm-5.3-flash`（当前会话）')
+    // 每一行写出该模型的上下文上限：委派时按子 agent 的上限决定每个子 agent 分到的材料量。
     expect(snapshot).toContain(
-      '名称「qwen/model-3.8」；provider 参数 `千问接口`；model 参数 `qwen/model-3.8`\n',
+      '名称「qwen/model-3.8」；provider 参数 `千问接口`；model 参数 `qwen/model-3.8`；上下文上限 50 万 token\n',
     )
     // 角色、外部 CLI、本会话已有的子 agent 在同一份快照中给出，模型按名称写出；模型库未收录且没有显示名称时名称即型号 id。
     expect(snapshot).toContain('角色 id `reviewer`：审查员，看代码；模型「m」')
@@ -749,7 +787,7 @@ describe('顶层会话的可分配模型快照', () => {
       `名称「Claude Opus 5.5」；provider 参数 \`qywork\`；model 参数 \`${opus}\`（当前会话）`,
     )
     expect(snapshot).toContain(
-      `名称「Claude Sonnet 5.5」；provider 参数 \`qywork\`；model 参数 \`${sonnet}\`\n`,
+      `名称「Claude Sonnet 5.5」；provider 参数 \`qywork\`；model 参数 \`${sonnet}\`；上下文上限 50 万 token\n`,
     )
     // 已下架的同名型号不列出：列出时清单中有两行「Claude Opus 5.5」，模型无法按名称确定填写哪一行。
     expect(snapshot).not.toContain(retired)

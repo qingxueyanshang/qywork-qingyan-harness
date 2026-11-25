@@ -16,6 +16,7 @@ import {
   batchCapped,
   batchRemaining,
   decideCommand,
+  deliveredTokens,
   firstPageCap,
   openBatchBudget,
   Ports,
@@ -938,6 +939,43 @@ describe('文件工具', () => {
     expect(more.message).toContain('超出上下文剩余空间')
     expect(tail.endLine - tail.startLine + 1).toBeGreaterThan(4 * head.endLine)
     expect(batchCapped(next.state)).toBe(true)
+  })
+
+  /**
+   * 没有整份返回的结果写明全文的估算 token 数，与整份读取时的投递估算相差不超过 15%；
+   * 整份返回的结果不写。模型据此与上下文剩余空间比较，决定分段读取、检索或委派。
+   */
+  test('没有整份返回时写明全文的估算 token 数，整份返回时不写', async () => {
+    const root = await workspace()
+    const lines = Array.from(
+      { length: 20_000 },
+      (_, i) => `第 ${i} 段正文 ${'x'.repeat(40 + (i % 30))}`,
+    )
+    await writeFile(join(root, 'novel.txt'), lines.join('\n'))
+    await writeFile(join(root, 'short.txt'), 'a\nb\nc')
+    const c = () => ({ ...ctx(root), state: openBatchBudget(new Map(), 100_000, 20_000) })
+    const r = registry()
+    const first = c()
+    const actual = deliveredTokens(
+      JSON.stringify(lines.map((l, i) => `${i + 1}\t${l}`).join('\n')),
+      first.density,
+    )
+    const estimateOf = (message: string) => {
+      const m = message.match(/全文约 ([\d.]+) 万 token/)
+      expect(m).not.toBeNull()
+      return Number(m?.[1]) * 10_000
+    }
+
+    const opening = await r.execute('read_file', { path: 'novel.txt' }, first)
+    expect(Math.abs(estimateOf(opening.message) - actual) / actual).toBeLessThan(0.15)
+    const capped = await r.execute('read_file', { path: 'novel.txt', offset: 5_000 }, c())
+    expect(Math.abs(estimateOf(capped.message) - actual) / actual).toBeLessThan(0.15)
+    const limited = await r.execute('read_file', { path: 'novel.txt', limit: 50 }, c())
+    expect(limited.message).toContain('已截断；共 20000 行，全文约')
+    expect(Math.abs(estimateOf(limited.message) - actual) / actual).toBeLessThan(0.15)
+
+    const whole = await r.execute('read_file', { path: 'short.txt' }, c())
+    expect(whole.message).not.toContain('全文')
   })
 
   test('未读先写：拒绝覆盖已存在文件', async () => {

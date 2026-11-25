@@ -1,12 +1,15 @@
-/** 用户附件转换为 provider 可接受的内容：图片缩放编码为图像块，视频为路径块，正文保留每个附件的名称与路径。 */
+/**
+ * 用户附件转换为 provider 可接受的内容：图片缩放编码为图像块，视频为路径块，正文保留每个附件的名称与路径，
+ * 1 万 token 以上的文本附件另写估算的 token 数。
+ */
 
-import { readFile, stat } from 'node:fs/promises'
+import { open, readFile, stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { videoMetaOf } from '@qywork/agent'
-import type { ContentBlock } from '@qywork/ai'
+import { type ContentBlock, DEFAULT_DENSITY } from '@qywork/ai'
 import type { Attachment } from '@qywork/core'
 import { imageSizeOf, isInlineImage, isInlineVideo, mimeOf, toPosixPath } from '@qywork/core'
-import { downscaleNote, shrinkImage } from '@qywork/tools'
+import { downscaleNote, readTokens, shrinkImage } from '@qywork/tools'
 
 const NEWLINE = String.fromCharCode(10)
 
@@ -42,6 +45,46 @@ async function encodedAttachment(
   }
   attachmentCache.set(key, out)
   return out
+}
+
+/** 估算文本附件大小时读取的开头字节数。 */
+const SIZE_SAMPLE_BYTES = 64 * 1024
+const sizeCache = new Map<string, number | null>()
+
+/**
+ * 用 `read_file` 读取整个文本附件的估算 token 数（`readTokens`）：样本取开头一段的完整行，总行数按样本的行密度换算。
+ * 二进制文件（开头含 NUL）返回 null。
+ *
+ * 模型在读取之前据此判断附件能否放入剩余空间、是否需要分段读取或委派；不写时它只能先读取，
+ * 而几份大附件同时读取后已进入上下文，此时再委派只会重复读取。按读取格式估算而不是只计正文：
+ * 行号与转义约占四分之一，只计正文时，超出剩余空间的附件会被判断为能够放入。
+ * 使用默认档密度而不是当前模型的密度：这一行随历史每轮重新生成，按模型换算时切换模型会改变历史中的字节，
+ * 提示缓存随之失效。默认档偏高，表述为「约」。结果按「路径 + 修改时间 + 大小」缓存。
+ */
+async function textTokens(path: string, mtimeMs: number, size: number): Promise<number | null> {
+  const key = `${path}|${mtimeMs}|${size}`
+  if (sizeCache.has(key)) return sizeCache.get(key) ?? null
+  const handle = await open(path, 'r').catch(() => null)
+  if (!handle) return null
+  const buf = Buffer.alloc(Math.min(size, SIZE_SAMPLE_BYTES))
+  const { bytesRead } = await handle.read(buf, 0, buf.length, 0).finally(() => handle.close())
+  const sample = buf.subarray(0, bytesRead)
+  let tokens: number | null = null
+  if (bytesRead > 0 && !sample.includes(0)) {
+    const lines = sample.toString('utf8').split(NEWLINE)
+    // 样本未包含文件末尾时最后一行不完整，不计入样本。
+    if (bytesRead < size && lines.length > 1) lines.pop()
+    const kept = lines.map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l))
+    const keptBytes = Buffer.byteLength(kept.join(NEWLINE)) + 1
+    const totalLines = bytesRead < size ? Math.round((kept.length * size) / keptBytes) : kept.length
+    tokens = readTokens(kept, size, totalLines, DEFAULT_DENSITY)
+  }
+  if (sizeCache.size >= ATTACHMENT_CACHE_LIMIT) {
+    const oldest = sizeCache.keys().next().value
+    if (oldest !== undefined) sizeCache.delete(oldest)
+  }
+  sizeCache.set(key, tokens)
+  return tokens
 }
 
 /**
@@ -96,7 +139,15 @@ export async function withAttachments(
       })
       continue
     }
-    if (!isInlineImage(a.path)) continue
+    if (!isInlineImage(a.path)) {
+      // 1 万 token 以下的附件不写：大小不影响读取方式，写入只增加每轮重复发送的字节。
+      const tokens = await textTokens(abs, info.mtimeMs, info.size)
+      if (tokens !== null && tokens >= 10_000) {
+        notes[line] =
+          `（附件 ${a.name}：${toPosixPath(abs)}，约 ${Math.round(tokens / 1000) / 10} 万 token）`
+      }
+      continue
+    }
     const fit = await encodedAttachment(abs, info.mtimeMs, info.size, mimeOf(a.path))
     if (!fit) {
       notes.push(`（附件 ${a.name} 读取失败，跳过）`)

@@ -21,6 +21,7 @@ import { applySpecOverride, lookupModel, type TokenDensity } from '@qywork/ai'
 import {
   type Conversation,
   type ConversationId,
+  type DispatchUsage,
   type EffortLevel,
   type FileChange,
   type FollowUp,
@@ -124,6 +125,14 @@ interface Outcome {
   note?: string
   /** 仅外部 CLI 具有：它是本机的另一个进程，其文件改动只能由工作区观察器获知。 */
   fileChanges?: FileChange[]
+  /** 仅内置子 agent 具有：外部 CLI 使用自身的账号，用量不经过本应用。 */
+  usage?: DispatchUsage
+}
+
+/** 回执中的用量一句，单位与运行上下文的上下文占用相同（万 token）。 */
+function usageText(u: DispatchUsage): string {
+  const wan = (n: number) => (n < 10_000 ? '不足 1 万' : `约 ${Math.round(n / 1000) / 10} 万`)
+  return `用量：输入${wan(u.promptTokens)} token（其中缓存命中${wan(u.cachedTokens)}），输出${wan(u.outputTokens)} token`
 }
 
 /**
@@ -697,6 +706,7 @@ export function makeDelegate(ctx: {
         ...(res.error ? { error: res.error } : {}),
         stop: res.stop,
         ...(notes.length ? { note: notes.join('；') } : {}),
+        usage: res.usage,
       }
     } catch (err) {
       // 成员会话内部捕获异常、不抛出（`team-run.ts`），到达此处的是装配阶段的意外异常。
@@ -750,6 +760,7 @@ export function makeDelegate(ctx: {
       ...(output ? { output } : {}),
       ...(outcome.note ? { note: outcome.note } : {}),
       ...(outcome.fileChanges?.length ? { fileChanges: outcome.fileChanges } : {}),
+      ...(outcome.usage ? { usage: outcome.usage } : {}),
     })
     if (interrupted) {
       if (stoppedByParent && at.workflow) {
@@ -765,15 +776,19 @@ export function makeDelegate(ctx: {
     const unread = missed.length
       ? `以下 ${missed.length} 条补充指令在子 agent 结束前未送达，需要时再次派发：\n${missed.map((m) => `- ${m}`).join('\n')}`
       : ''
-    send([head(resolved, outcome.ok, error), output, unread].filter(Boolean).join('\n'), 'subagent')
+    send(
+      [head(resolved, outcome.ok, error, outcome.usage), output, unread].filter(Boolean).join('\n'),
+      'subagent',
+    )
   }
 
-  /** 回执首行：执行者与结果。种类名称与界面、提示词使用同一张表。 */
-  const head = (resolved: Resolved, ok: boolean, error?: string): string => {
+  /** 回执首行：执行者、结果与用量。种类名称与界面、提示词使用同一张表。 */
+  const head = (resolved: Resolved, ok: boolean, error?: string, usage?: DispatchUsage): string => {
     const kind = resolved.conversation.source ?? 'temp'
     const who = `${SUBAGENT_KIND_LABEL[kind]} ${resolved.conversation.title}`
     const tail = ok ? '已返回' : `失败：${error ?? '未说明原因'}`
-    return `[子 agent 回执] ${who}（subagentId ${resolved.conversation.id}）${tail}`
+    const spent = usage ? `。${usageText(usage)}` : ''
+    return `[子 agent 回执] ${who}（subagentId ${resolved.conversation.id}）${tail}${spent}`
   }
 
   /**
@@ -921,7 +936,7 @@ export function makeDelegate(ctx: {
       const receipt = projection.results[just.nodeId]
       send(
         [
-          `[workflow 回执] ${just.nodeId}（${receipt?.label ?? just.nodeId}）失败：${receipt?.error ?? '未说明原因'}`,
+          `[workflow 回执] ${just.nodeId}（${receipt?.label ?? just.nodeId}）失败：${receipt?.error ?? '未说明原因'}${receipt?.usage ? `。${usageText(receipt.usage)}` : ''}`,
           `workflowId=${workflowId}`,
         ].join('\n'),
         'workflow',
@@ -945,7 +960,8 @@ export function makeDelegate(ctx: {
         const state =
           receipt.status === 'done' ? '已返回' : `失败：${receipt.error ?? receipt.status}`
         const body = [receipt.output, receipt.note].filter(Boolean).join('\n')
-        return `### ${receipt.nodeId}（${receipt.label}）${state}\n${body || '无产出'}`
+        const spent = receipt.usage ? `\n${usageText(receipt.usage)}` : ''
+        return `### ${receipt.nodeId}（${receipt.label}）${state}${spent}\n${body || '无产出'}`
       })
     send(
       [

@@ -74,6 +74,8 @@ export {
   type DesktopWindowInfo,
 } from './desktop/port.ts'
 export { FileReadPort } from './files/port.ts'
+// 附件说明按读取工具的投递格式写出估算大小，两处共用同一个函数
+export { readTokens } from './files/read-size.ts'
 export { type MediaCall, type MediaCallResult, MediaPort } from './generate/port.ts'
 // 生成工具按类别查询：runtime 据此判断本轮快照是否列出该类别的模型。
 // 生成的执行路径与任务记录后缀：server 的画布服务与生成工具使用同一个 `generateMedia`

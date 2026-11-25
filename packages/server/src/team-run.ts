@@ -15,6 +15,7 @@ import type {
   AgentEvent,
   BackgroundCommand,
   ConversationId,
+  DispatchUsage,
   EffortLevel,
   ErrorCode,
   FollowUp,
@@ -228,6 +229,8 @@ export async function runBuiltinMember(
   stop: StopReason | null
   /** 本轮 `run.error` 的失败码；没有报错时为 null。派发方据此判定是否属于暂时故障。 */
   code: ErrorCode | null
+  /** 本次派发各轮 `run.finished` 用量的合计，随回执告知父会话。 */
+  usage: DispatchUsage
 }> {
   const { role } = input
   const { deps } = ctx
@@ -251,6 +254,7 @@ export async function runBuiltinMember(
   let stop: StopReason | null = null
   let detail: string | null = null
   let code: ErrorCode | null = null
+  const usage: DispatchUsage = { promptTokens: 0, cachedTokens: 0, outputTokens: 0 }
   let session: Session | null = null
   /** 本次派发中后台命令的回执：作为成员的下一轮消息执行，不发起顶层会话的一轮（`settleAfterRound`）。 */
   const receipts: FollowUp[] = []
@@ -357,6 +361,10 @@ export async function runBuiltinMember(
         } else if (ev.type === 'run.finished') {
           stop = ev.stopReason
           detail = ev.stopDetail ?? null
+          const u = ev.usage
+          usage.promptTokens += u.inputTokens + (u.cachedTokens ?? 0) + (u.cacheWriteTokens ?? 0)
+          usage.cachedTokens += u.cachedTokens ?? 0
+          usage.outputTokens += u.outputTokens
         }
         ctx.onEvent?.(ev, conversationId)
       }
@@ -401,7 +409,13 @@ export async function runBuiltinMember(
   const notice = stopped.length
     ? `子 agent 结束时停止了仍在运行的后台命令：${stopped.map((c) => `${c.id}（${c.command}）`).join('、')}`
     : ''
-  return { ...outcome, output: [output, notice].filter(Boolean).join(ROUND_SEPARATOR), stop, code }
+  return {
+    ...outcome,
+    output: [output, notice].filter(Boolean).join(ROUND_SEPARATOR),
+    stop,
+    code,
+    usage,
+  }
 }
 
 /** 多轮正文、多条回执与停止说明之间的分隔。 */

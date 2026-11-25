@@ -38,6 +38,7 @@ import { CanvasPort } from './canvas/port.ts'
 import { cloudReadOnly, cloudTarget, listCloudDir, readCloudFile } from './cloud-skills/source.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import { FileReadPort } from './files/port.ts'
+import { readTokens } from './files/read-size.ts'
 import { fitBudget, SCAN_LIMITS, truncationNote } from './files/scan.ts'
 import {
   downscaleNote,
@@ -148,10 +149,11 @@ async function pdfText(ctx: ToolContext, abs: string, stamp: string): Promise<st
 // biome-ignore lint/suspicious/noControlCharactersInRegex: 有意匹配 NUL，这是判断文件是否为二进制的标准做法
 const BINARY_SNIFF = /\x00/
 
-/** 一次按行读取的结果：请求范围内保留下来的行、文件总行数、范围内的行是否全部保留、整份正文的哈希。 */
+/** 一次按行读取的结果：请求范围内保留下来的行、文件总行数、整份正文的 UTF-8 字节数、范围内的行是否全部保留、整份正文的哈希。 */
 interface LineScan {
   lines: string[]
   total: number
+  bytes: number
   complete: boolean
   digest: string
 }
@@ -174,6 +176,7 @@ async function scanLines(
   const lines: string[] = []
   let kept = 0
   let total = 0
+  let bytes = 0
   let complete = true
   let pending = ''
   let sniffed = false
@@ -189,6 +192,7 @@ async function scanLines(
   }
   for await (const text of chunks) {
     hasher.update(text)
+    bytes += Buffer.byteLength(text)
     const buf = pending + text
     if (!sniffed && buf.length >= 4096) {
       if (BINARY_SNIFF.test(buf.slice(0, 4096))) return 'binary'
@@ -207,7 +211,14 @@ async function scanLines(
   }
   if (!sniffed && BINARY_SNIFF.test(pending.slice(0, 4096))) return 'binary'
   take(pending)
-  return { lines, total, complete, digest: hasher.digest('hex') }
+  return { lines, total, bytes, complete, digest: hasher.digest('hex') }
+}
+
+/** 估算的 token 数：1 万及以上折算为「万」并保留一位小数，与运行上下文中上下文占用的单位一致。 */
+function approxTokens(tokens: number): string {
+  return tokens >= 10_000
+    ? `约 ${Math.round(tokens / 1000) / 10} 万 token`
+    : `约 ${Math.max(1, Math.round(tokens / 100)) * 100} token`
 }
 
 /**
@@ -571,6 +582,17 @@ export const readFileTool: ToolSpec = {
     const secrets = ctx.secrets ?? EMPTY_SECRETS
 
     /*
+     * 全文的估算 token 数（`readTokens`，以本次保留的行为样本）。只写入没有整份返回的结果，
+     * 模型据此与上下文剩余空间比较，决定分段读取、检索或委派；字符构成不均时偏差随之增大，因此表述为「约」。
+     * 只在需要时计算一次，二分查找中的各次结果使用同一个值。
+     */
+    let fileTokens: number | null = null
+    const sizeNote = (): string => {
+      fileTokens ??= readTokens(slice, scan.bytes, totalLines, ctx.density)
+      return fileTokens > 0 ? `，全文${approxTokens(fileTokens)}` : ''
+    }
+
+    /*
      * 由所请求范围的前 n 行组成的结果。
      *
      * 正文经过脱敏处理。该路径不接入凭证保护时，`read_file` 会把磁盘上的字节直接交给模型：
@@ -591,11 +613,11 @@ export const readFileTool: ToolSpec = {
       const complete = n === slice.length && scan.complete
       return {
         message: complete
-          ? `读取 ${shown}（${n} 行${end < totalLines ? '，已截断' : ''}）`
+          ? `读取 ${shown}（${n} 行${end < totalLines ? `，已截断；共 ${totalLines} 行${sizeNote()}` : ''}）`
           : opening
-            ? `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行）。` +
+            ? `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${sizeNote()}）。` +
               `文件较大，先返回开头部分；从 offset=${end + 1} 续读，或用 offset/limit 读取指定范围。`
-            : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行）。` +
+            : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${sizeNote()}）。` +
               `超出上下文剩余空间，从 offset=${end + 1} 续读；已读取的段落在压缩时会被折叠，要点写在回复中。`,
         data: {
           content: redactSecrets(numbered, secrets),

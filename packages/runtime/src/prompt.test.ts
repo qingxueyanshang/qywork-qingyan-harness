@@ -560,6 +560,33 @@ describe('能力段', () => {
   })
 
   /**
+   * 原始失败形状（2026-11-25 真实模型对照）：要求「先完整读一遍附件，再梳理第 1–60 章」，模型把 2017 章的全书
+   * 拆给 55 个子 agent，每个分到约 80 万 token、超出其上下文上限，又经 revise 反复补读；子 agent 的请求占全部花费的 94%。
+   * 能力段只写了委派的用法与「不占用当前上下文」，没有写代价、适用范围与数量的依据。
+   */
+  test('注册了 subagent 时写明委派的代价、适用范围与数量依据，超出交付所需的委派属于 spend', () => {
+    const lines = buildSystemPrompt(new Set(['subagent', 'workflow'])).split('\n')
+    const cost = lines.find((l) => l.startsWith('- 委派的代价：'))
+    expect(cost).toContain('单独计费')
+    expect(cost).toContain('回执只包含它的最终回复与用量')
+    expect(cost).toContain('上下文上限')
+    const judge = lines.find((l) => l.startsWith('- 委派的判断：'))
+    // 调用次数少与材料能放入剩余空间须同时成立：读取三份大文件只需三次调用，材料合计却超出剩余空间。
+    expect(judge).toContain('所需材料能放入本会话剩余空间、且几次工具调用即可完成的工作')
+    expect(judge).toContain('按所需的全部文件合计')
+    expect(judge).toContain('不超过其上下文上限的一半')
+    // 原始失败形状：三份各约 33 万 token 的文件拆给 6 个子 agent，一份文件的前后两段之间漏读 145 行。
+    expect(judge).toContain('同一份文件优先整份交给一个子 agent')
+    expect(judge).toContain('各模型的上限见可分配给子 agent 的模型清单')
+    expect(judge).toContain('附件写有估算时，先据此决定读取方式与是否委派，再读取')
+    expect(lines.find((l) => l.startsWith('- 工作流：'))).toContain(
+      'revise 让节点继续执行的部分重新计费',
+    )
+    expect(lines.find((l) => l.startsWith('- spend：'))).toContain('超出交付所需的部分')
+    expect(buildSystemPrompt(new Set(['run_command']))).not.toContain('委派的代价')
+  })
+
+  /**
    * 原始失败形状（2026-11-19 真实模型回归）：Office 一行写「制作前先用 read_office_guide 获取说明」，read_office_guide 按需，
    * DeepSeek 与 Claude 按该行直接以空参数调用，报「缺少必填参数：format」后才读取定义。
    */
