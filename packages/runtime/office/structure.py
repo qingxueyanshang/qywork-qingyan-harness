@@ -91,8 +91,12 @@ def check(path, fmt):
 
 
 def read(path, fmt, rng=None):
-    text = {"docx": read_docx, "pptx": read_pptx, "xlsx": read_xlsx}[fmt](path, rng)
-    checks = check(path, fmt)
+    text, checks = {
+        "docx": lambda: (read_docx(path, rng), check_docx(path)),
+        "pptx": lambda: (read_pptx(path, rng), check_pptx(path)),
+        "xlsx": lambda: read_xlsx(path, rng),
+    }[fmt]()
+    checks = _condense(checks + check_metadata(path))
     if checks:
         text += "\n\n检查：\n" + "\n".join(f"- [{c['level']}] {c['message']}" for c in checks)
     return text, checks
@@ -580,42 +584,136 @@ def _formula(v):
     return None
 
 
-def _load_xlsx(path):
+XL_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+XL_ROW, XL_CELL, XL_F, XL_V = (f"{{{XL_MAIN}}}{t}" for t in ("row", "c", "f", "v"))
+XL_MERGE, XL_PANE = f"{{{XL_MAIN}}}mergeCell", f"{{{XL_MAIN}}}pane"
+
+
+def _open_xlsx(path):
+    """只读模式：单元格按需从工作表 XML 解析，不在内存中建立整表。调用方负责 close()。
+
+    不要改为普通模式：超过 20 万行的工作表在普通模式下加载一次需要数分钟与数 GB 内存，超出 read 的时限。
+    """
     from openpyxl import load_workbook
 
-    return load_workbook(str(path), data_only=False), load_workbook(str(path), data_only=True)
+    return load_workbook(str(path), read_only=True)
 
 
-def check_xlsx(path):
-    wbf, wbv = _load_xlsx(path)
-    errors, missing, volatile = {}, 0, 0
-    samples = {}
-    for ws in wbf.worksheets:
-        vs = wbv[ws.title]
-        for row in ws.iter_rows():
-            for c in row:
-                formula = _formula(c.value)
-                if formula is None:
+class _SheetScan:
+    """一张工作表的流式扫描结果。bounds 为 (首行, 首列, 末行, 末列)，没有单元格时为 None。"""
+
+    def __init__(self, title):
+        self.title = title
+        self.bounds = None
+        self.formulas = self.missing = self.volatile = 0
+        self.errors = {}  # 错误值 → [个数, 前 SHOWN_PER_CODE 个单元格引用]
+        self.freeze = None
+        self.merged = []
+
+    def extend(self, r0, c0, r1, c1):
+        b = self.bounds
+        self.bounds = (r0, c0, r1, c1) if b is None else \
+            (min(b[0], r0), min(b[1], c0), max(b[2], r1), max(b[3], c1))
+
+
+def _scan_sheet(wb, ws):
+    """逐行流式遍历工作表 XML 一次，统计范围、公式与其缓存值、冻结与合并区域，每行处理后即释放。
+
+    按行而不是按单元格回调 Python：逐单元格回调约慢 2 倍，经 openpyxl 逐单元格读取约慢 6 倍，超过 20 万行的工作表会超出 read 的时限。
+    公式的计数与 openpyxl 一致：数据表公式（t="dataTable"）不计入，共享公式的从属单元格按主公式判断易变函数。
+    省略 r 属性的行与单元格按位置编号，与 openpyxl 的解析规则相同。
+    """
+    from openpyxl.utils.cell import coordinate_to_tuple, get_column_letter, range_boundaries
+
+    scan = _SheetScan(ws.title)
+    shared = {}  # 共享公式编号 → 主公式是否含易变函数
+    row_idx = 0
+
+    def col_of(c, row):
+        ref = c.get("r")
+        return coordinate_to_tuple(ref)[1] if ref else row.index(c) + 1
+
+    with wb._archive.open(ws._worksheet_path) as src:
+        for _, el in etree.iterparse(src, events=("end",), tag=(XL_ROW, XL_MERGE, XL_PANE)):
+            if el.tag == XL_MERGE:
+                scan.merged.append(el.get("ref"))
+                continue
+            if el.tag == XL_PANE:
+                scan.freeze = scan.freeze or el.get("topLeftCell")
+                continue
+            row_idx = int(el.get("r")) if el.get("r") else row_idx + 1
+            first = el.find(XL_CELL)
+            if first is not None:
+                last = next(el.iterchildren(XL_CELL, reversed=True))
+                scan.extend(row_idx, col_of(first, el), row_idx, col_of(last, el))
+            for f in el.iter(XL_F):
+                kind = f.get("t")
+                if kind == "dataTable":
                     continue
-                cached = vs[c.coordinate].value
+                scan.formulas += 1
+                if kind == "shared":
+                    si = f.get("si")
+                    if si not in shared and f.text:
+                        shared[si] = bool(VOLATILE.search(f.text))
+                    scan.volatile += shared.get(si, False)
+                else:
+                    scan.volatile += bool(f.text and VOLATILE.search(f.text))
+                c = f.getparent()
+                cached = c.findtext(XL_V) or None
                 if cached is None:
-                    missing += 1
-                elif isinstance(cached, str) and cached in XL_ERROR_TEXTS:
-                    errors[cached] = errors.get(cached, 0) + 1
-                    samples.setdefault(cached, []).append(f"{ws.title}!{c.coordinate}")
-                if VOLATILE.search(formula):
-                    volatile += 1
+                    scan.missing += 1
+                elif cached in XL_ERROR_TEXTS:
+                    entry = scan.errors.setdefault(cached, [0, []])
+                    entry[0] += 1
+                    if len(entry[1]) < SHOWN_PER_CODE:
+                        entry[1].append(c.get("r") or f"{get_column_letter(col_of(c, el))}{row_idx}")
+            el.clear()
+            while el.getprevious() is not None:
+                del el.getparent()[0]
+    # 普通模式为合并区域内的每个单元格建立对象，范围包含整个合并区域。
+    for ref in scan.merged:
+        c0, r0, c1, r1 = range_boundaries(ref)
+        scan.extend(r0, c0, r1, c1)
+    return scan
+
+
+def _drawing_counts(wb, ws):
+    """工作表绘图中 openpyxl 能识别的图表数与图片数。"""
+    from openpyxl.drawing.spreadsheet_drawing import SpreadsheetDrawing
+    from openpyxl.packaging.relationship import get_dependents, get_rels_path
+    from openpyxl.reader.drawings import find_images
+
+    rels_path = get_rels_path(ws._worksheet_path)
+    if rels_path not in wb._archive.namelist():
+        return 0, 0
+    charts = images = 0
+    for rel in get_dependents(wb._archive, rels_path).find(SpreadsheetDrawing._rel_type):
+        found = find_images(wb._archive, rel.target)
+        charts += len(found[0])
+        images += len(found[1])
+    return charts, images
+
+
+def _xlsx_checks(wb, scans):
+    errors = {}
+    for scan in scans:
+        for kind, (n, refs) in scan.errors.items():
+            entry = errors.setdefault(kind, [0, []])
+            entry[0] += n
+            entry[1] += [f"{scan.title}!{r}" for r in refs]
+    missing = sum(s.missing for s in scans)
+    volatile = sum(s.volatile for s in scans)
     checks = []
-    for kind, n in errors.items():
-        refs = "、".join(samples[kind][:5]) + (" 等" if n > 5 else "")
+    for kind, (n, refs) in errors.items():
+        shown = "、".join(refs[:SHOWN_PER_CODE]) + (" 等" if n > SHOWN_PER_CODE else "")
         checks.append({"level": "error", "code": "cached_errors",
-                       "message": f"{n} 个公式的计算结果是 {kind}：{refs}"})
+                       "message": f"{n} 个公式的计算结果是 {kind}：{shown}"})
     if missing:
         checks.append({"level": "info", "code": "missing_cache",
                        "message": f"{missing} 个公式没有缓存值（结果为空字符串的公式同样计入）"})
-    if getattr(wbf, "_external_links", None):
+    if getattr(wb, "_external_links", None):
         checks.append({"level": "warning", "code": "external_links",
-                       "message": f"工作簿引用了 {len(wbf._external_links)} 个外部文件，重算时不更新外部链接"})
+                       "message": f"工作簿引用了 {len(wb._external_links)} 个外部文件，重算时不更新外部链接"})
     if volatile:
         checks.append({"level": "info", "code": "volatile_functions",
                        "message": f"{volatile} 个公式使用了易变函数（NOW / TODAY / RAND / OFFSET / INDIRECT），"
@@ -623,42 +721,60 @@ def check_xlsx(path):
     return checks
 
 
+def check_xlsx(path):
+    wb = _open_xlsx(path)
+    try:
+        return _xlsx_checks(wb, [_scan_sheet(wb, ws) for ws in wb.worksheets])
+    finally:
+        wb.close()
+
+
 def read_xlsx(path, rng=None):
-    wbf, wbv = _load_xlsx(path)
-    names = list(wbf.defined_names.keys()) if hasattr(wbf.defined_names, "keys") else []
-    lines = [f"xlsx · {len(wbf.worksheets)} 个工作表"
-             + (f" · 命名区域 {', '.join(names[:20])}" if names else "")]
-    selected = [ws for ws in wbf.worksheets if not rng or ws.title == rng]
-    if rng and not selected:
-        lines.append(f"没有名为「{rng}」的工作表；已有：{'、'.join(ws.title for ws in wbf.worksheets)}")
-    row_limit = 500 if rng else 60
-    for ws in wbf.worksheets:
-        formulas = sum(1 for row in ws.iter_rows() for c in row
-                       if _formula(c.value) is not None)
-        merged = [str(m) for m in ws.merged_cells.ranges]
-        lines.append(f"[{ws.title}] 范围 {ws.dimensions} · {ws.max_row} 行 × {ws.max_column} 列 · "
-                     f"公式 {formulas} 个 · 图表 {len(getattr(ws, '_charts', []))} · "
-                     f"图片 {len(getattr(ws, '_images', []))}"
-                     + (f" · 冻结 {ws.freeze_panes}" if ws.freeze_panes else "")
-                     + (f" · 合并 {', '.join(merged[:10])}" + (" …" if len(merged) > 10 else "")
-                        if merged else ""))
-        if ws not in selected:
-            continue
-        vs = wbv[ws.title]
-        shown = 0
-        for row in ws.iter_rows(max_row=min(ws.max_row, row_limit), max_col=min(ws.max_column, 30)):
-            cells = []
-            for c in row:
-                if c.value is None:
-                    continue
-                formula = _formula(c.value)
-                if formula is not None:
-                    cells.append(f"{c.coordinate}={formula} → {vs[c.coordinate].value!r}")
-                else:
-                    cells.append(f"{c.coordinate}={_clip(str(c.value), 60)}")
-            if cells:
-                lines.append("  " + "；".join(cells))
-                shown += 1
-        if ws.max_row > row_limit:
-            lines.append(f"  …只列出前 {row_limit} 行；range 填写工作表名可查看更多行")
-    return "\n".join(lines)
+    """返回 (文本, 检查)：两者来自同一次扫描，大工作表只遍历一遍。"""
+    from openpyxl.utils.cell import get_column_letter
+
+    wbf = _open_xlsx(path)
+    try:
+        scans = [_scan_sheet(wbf, ws) for ws in wbf.worksheets]
+        names = list(wbf.defined_names.keys()) if hasattr(wbf.defined_names, "keys") else []
+        lines = [f"xlsx · {len(wbf.worksheets)} 个工作表"
+                 + (f" · 命名区域 {', '.join(names[:20])}" if names else "")]
+        selected = [ws for ws in wbf.worksheets if not rng or ws.title == rng]
+        if rng and not selected:
+            lines.append(f"没有名为「{rng}」的工作表；已有：{'、'.join(ws.title for ws in wbf.worksheets)}")
+        row_limit = 500 if rng else 60
+        for ws, scan in zip(wbf.worksheets, scans):
+            r0, c0, max_row, max_col = scan.bounds or (1, 1, 1, 1)
+            charts, images = _drawing_counts(wbf, ws)
+            merged = scan.merged
+            lines.append(f"[{ws.title}] 范围 {get_column_letter(c0)}{r0}:{get_column_letter(max_col)}{max_row} · "
+                         f"{max_row} 行 × {max_col} 列 · 公式 {scan.formulas} 个 · 图表 {charts} · 图片 {images}"
+                         + (f" · 冻结 {scan.freeze}" if scan.freeze else "")
+                         + (f" · 合并 {', '.join(merged[:10])}" + (" …" if len(merged) > 10 else "")
+                            if merged else ""))
+            if ws not in selected:
+                continue
+            # 缓存值取自同一工作簿：只读工作表每次遍历时按 data_only 新建解析器，两次遍历按相同规则补齐行与列，逐行对应。
+            # 不要另开一个 data_only 工作簿：工作表没有 <dimension> 时，openpyxl 打开工作簿即整表扫描一遍。
+            window = {"max_row": min(max_row, row_limit), "max_col": min(max_col, 30)}
+            formula_rows = list(ws.iter_rows(**window))
+            wbf._data_only = True
+            value_rows = list(ws.iter_rows(**window))
+            wbf._data_only = False
+            for row, values in zip(formula_rows, value_rows):
+                cells = []
+                for c, v in zip(row, values):
+                    if c.value is None:
+                        continue
+                    formula = _formula(c.value)
+                    if formula is not None:
+                        cells.append(f"{c.coordinate}={formula} → {v.value!r}")
+                    else:
+                        cells.append(f"{c.coordinate}={_clip(str(c.value), 60)}")
+                if cells:
+                    lines.append("  " + "；".join(cells))
+            if max_row > row_limit:
+                lines.append(f"  …只列出前 {row_limit} 行；range 填写工作表名可查看更多行")
+        return "\n".join(lines), _xlsx_checks(wbf, scans)
+    finally:
+        wbf.close()

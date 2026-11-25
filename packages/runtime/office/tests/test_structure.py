@@ -1,4 +1,4 @@
-"""覆盖 structure.py 的三种格式检查（check_docx / check_pptx / check_xlsx / check_metadata）、同类合并与结构提取（read_*）。"""
+"""覆盖 structure.py 的三种格式检查（check_docx / check_pptx / check_xlsx / check_metadata）、同类合并与结构提取（read / read_*）。"""
 
 import unittest
 
@@ -246,8 +246,64 @@ class XlsxTest(unittest.TestCase):
             checks = structure.check_xlsx(path)
             self.assertIn("cached_errors", codes(checks))
             self.assertIn("S!B1", [c for c in checks if c["code"] == "cached_errors"][0]["message"])
-            text = structure.read_xlsx(path, "S")
+            text, read_checks = structure.read_xlsx(path, "S")
             self.assertIn("B1==A1/0 → '#DIV/0!'", text)
+            self.assertEqual(read_checks, checks)
+
+    def test_shared_formulas_and_positional_cells(self):
+        """办公软件写出的共享公式只在主单元格带公式文本；省略 r 的行与单元格按位置编号；合并区域计入范围。"""
+        import zipfile
+        from openpyxl import Workbook
+
+        sheet_data = (
+            '<sheetData>'
+            '<row r="1"><c r="A1"><v>1</v></c>'
+            '<c r="B1"><f t="shared" ref="B1:B3" si="0">OFFSET(A1,0,0)</f><v>1</v></c></row>'
+            '<row r="2"><c r="A2"><v>2</v></c><c r="B2" t="e"><f t="shared" si="0"/><v>#REF!</v></c></row>'
+            '<row><c><v>3</v></c><c t="str"><f t="shared" si="0"/></c><c><v>9</v></c></row>'
+            '</sheetData><mergeCells count="1"><mergeCell ref="D5:E6"/></mergeCells>'
+        )
+        with TempDir() as d:
+            Workbook().save(d / "src.xlsx")
+            path = d / "a.xlsx"
+            with zipfile.ZipFile(d / "src.xlsx") as zi, zipfile.ZipFile(path, "w") as zo:
+                for item in zi.infolist():
+                    data = zi.read(item.filename)
+                    if item.filename == "xl/worksheets/sheet1.xml":
+                        data = data.replace(b"<sheetData></sheetData>", sheet_data.encode())
+                    zo.writestr(item, data)
+            text, checks = structure.read_xlsx(path)
+            self.assertIn("范围 A1:E6 · 6 行 × 5 列 · 公式 3 个", text)
+            self.assertIn("合并 D5:E6", text)
+            self.assertIn("B2==OFFSET(A2,0,0) → '#REF!'", text)
+            self.assertIn("A3=3；B3=", text)
+            self.assertIn("→ None；C3=9", text)
+            messages = {c["code"]: c["message"] for c in checks}
+            self.assertEqual(messages["cached_errors"], "1 个公式的计算结果是 #REF!：Sheet!B2")
+            self.assertIn("1 个公式没有缓存值", messages["missing_cache"])
+            self.assertIn("3 个公式使用了易变函数", messages["volatile_functions"])
+
+    def test_read_streams_rows(self):
+        """读取不在内存中建立整表：峰值内存不随行数增长。整表加载时 5000 行约需 45 MiB，逐行扫描约 1 MiB。"""
+        import tracemalloc
+        from openpyxl import Workbook
+
+        with TempDir() as d:
+            wb = Workbook()
+            ws = wb.active
+            for i in range(1, 5001):
+                ws.append([i * c for c in range(1, 11)])
+            ws["A1"] = "=1+1"
+            path = d / "big.xlsx"
+            wb.save(path)
+            tracemalloc.start()
+            try:
+                text, _ = structure.read(path, "xlsx")
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+            self.assertIn("范围 A1:J5000 · 5000 行 × 10 列 · 公式 1 个", text)
+            self.assertLess(peak, 8 * 2**20)
 
 
 if __name__ == "__main__":
