@@ -188,6 +188,38 @@ describe('越界拒绝是判定，不是崩溃', () => {
 })
 
 /**
+ * 原始失败形状（会话 `cv_0mww5s5wo000082j3b2`）：模型在已存在的文件名之后多写了「行数？ no!」，回执只有「路径不存在：<路径>」。
+ * 模型 `list_dir` 看到该文件存在，判为工具在路径后追加了内容，以同一路径连续调用三次后运行停止。
+ */
+describe('路径不存在的回执写明错在哪里', () => {
+  test('已存在的文件名之后多出文字时，写明参数原文、缺失的一段与多出的文字', async () => {
+    const root = await workspace()
+    const out = await registry().execute('read_file', { path: 'src/main.ts行数？ no!' }, ctx(root))
+    expect(out.errorKind).toBe('path_not_found')
+    expect(out.executed).toBe(false)
+    expect(out.message).toContain('「src/main.ts行数？ no!」（本次调用参数的原文）')
+    expect(out.message).toContain('目录「src」中没有「main.ts行数？ no!」')
+    expect(out.message).toContain('该目录中有文件「main.ts」，参数在该名称之后多出「行数？ no!」')
+    expect(out.message).not.toContain('list_dir')
+  })
+
+  test('目录名之后多出文字时同样写明，并按目录称呼', async () => {
+    const root = await workspace()
+    const out = await registry().execute('read_file', { path: 'src进度/main.ts' }, ctx(root))
+    expect(out.message).toContain('工作区根目录中没有「src进度」')
+    expect(out.message).toContain('该目录中有目录「src」，参数在该名称之后多出「进度」')
+  })
+
+  test('目录中没有名称是缺失一段开头的条目时，写明已存在的部分并给出查找方式', async () => {
+    const root = await workspace()
+    const out = await registry().execute('read_file', { path: 'src/lib/util.ts' }, ctx(root))
+    expect(out.message).toContain('目录「src」中没有「lib」')
+    expect(out.message).not.toContain('多出')
+    expect(out.message).toContain('用 list_dir 或 glob 确认其实际位置后重试')
+  })
+})
+
+/**
  * 「完全访问」即全部权限，路径边界也由它决定。
  *
  * 原始失败（会话 `cv_0msw3jst9`）：用户开启完全访问，`read_file` 读取桌面上的

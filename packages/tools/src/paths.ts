@@ -9,7 +9,7 @@
  */
 
 import { realpathSync } from 'node:fs'
-import { readlink, realpath, stat } from 'node:fs/promises'
+import { readdir, readlink, realpath, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   CREDENTIAL_FILES,
@@ -34,12 +34,19 @@ import { defaultMaskPaths, detectSandbox } from './process/sandbox.ts'
 export class PathNotFoundError extends Error {
   readonly errorKind = 'path_not_found'
 
+  /**
+   * 参数原文写在「」中并注明是参数原文：只写路径时，模型 `list_dir` 看到同名文件存在，会判为工具在路径后追加了内容，
+   * 以同一路径重复调用（会话 `cv_0mww5s5wo000082j3b2`）。`detail` 写明缺失的一段，见 `missingDetail`。
+   */
   constructor(
     readonly attempted: string,
     param?: string,
+    detail?: string,
   ) {
-    super(`${paramPrefix(param)}路径不存在：${attempted}
-用 list_dir 或 glob 确认其实际位置后重试。`)
+    super(
+      `${paramPrefix(param)}路径不存在：「${attempted}」（本次调用参数的原文）。\n` +
+        (detail ?? '用 list_dir 或 glob 确认其实际位置后重试。'),
+    )
     this.name = 'PathNotFoundError'
   }
 }
@@ -411,7 +418,35 @@ async function assertExists(target: string, candidate: string, param?: string): 
     () => true,
     () => false,
   )
-  if (!ok) throw new PathNotFoundError(candidate, param)
+  if (!ok) throw new PathNotFoundError(candidate, param, await missingDetail(target, candidate))
+}
+
+/**
+ * 「路径不存在」的说明：已存在的部分到哪一级目录为止、其中没有哪一段；该目录中有条目的名称是缺失一段的开头时，
+ * 写明参数在该名称之后多出的文字。目录按参数原文的写法称呼，相对路径的基准是工作区根目录。
+ *
+ * 只报告名称已在参数中写出的条目，不列出其他文件名；凭证文件不报告，与 `CredentialPathError` 不说明目标是否存在一致。
+ */
+async function missingDetail(target: string, candidate: string): Promise<string | undefined> {
+  const { real: dir, rest } = await nearestExisting(target)
+  const missing = rest[0]
+  const parts = candidate.split(/[\\/]/).filter((p, i) => p !== '' || i === 0)
+  const kept = parts.length - rest.length
+  if (missing === undefined || kept < 0) return undefined
+  const shown = parts.slice(0, kept).join('/')
+  const place =
+    !isAbsolute(candidate) && (shown === '' || shown === '.')
+      ? '工作区根目录'
+      : `目录「${shown || '/'}」`
+  const where = `${place}中没有「${missing}」`
+  const names = await readdir(dir).catch(() => [] as string[])
+  const head = names
+    .filter((n) => n.length < missing.length && missing.startsWith(n))
+    .filter((n) => !mentionsCredentialFile(join(dir, n)))
+    .sort((a, b) => b.length - a.length)[0]
+  if (head === undefined) return `${where}。\n用 list_dir 或 glob 确认其实际位置后重试。`
+  const kind = (await stat(join(dir, head)).catch(() => null))?.isDirectory() ? '目录' : '文件'
+  return `${where}；该目录中有${kind}「${head}」，参数在该名称之后多出「${missing.slice(head.length)}」。`
 }
 
 /** 已存在的最近祖先目录，以及从该目录到目标之间的剩余路径段。 */

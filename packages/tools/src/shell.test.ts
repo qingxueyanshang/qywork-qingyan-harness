@@ -126,7 +126,7 @@ describe('run_command 参数校验', () => {
         workspaceRoot: process.cwd(),
         signal: new AbortController().signal,
       } as ToolContext),
-    ).rejects.toThrow('参数 cwd 的路径不存在：null')
+    ).rejects.toThrow('参数 cwd 的路径不存在：「null」')
   })
 })
 
