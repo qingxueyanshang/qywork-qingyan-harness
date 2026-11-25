@@ -1,6 +1,6 @@
 {
   "name": "qywork",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "private": true,
   "type": "module",
   "description": "qywork：多模型接入、多 Agent 协作的轻量化开源 Agent Harness",
