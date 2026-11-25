@@ -343,7 +343,7 @@ describe('运行环境', () => {
    */
   test('逐条报告路径、缺失影响与能否一键安装', () => {
     const env = probe()
-    // 表中每一条都对应代码中一处真实的 spawn。
+    // 表中每一条都对应代码中一处真实的 spawn；内置浏览器一行只在 macOS 与 Linux 上列出。
     expect(env.map((d) => d.id)).toEqual([
       'bash',
       'git',
@@ -352,6 +352,7 @@ describe('运行环境', () => {
       'python',
       'office-libs',
       'video-decoder',
+      ...(process.platform === 'win32' ? [] : ['browser']),
     ])
     for (const d of env) {
       expect(d.label.length).toBeGreaterThan(0)
