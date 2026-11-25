@@ -281,7 +281,9 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
         <RechargeDialog onClose={() => setRecharging(false)} />
       </Show>
       <Show when={supportOpen()}>
-        <SupportDialog />
+        <SupportDialog
+          self={{ label: props.signed.name || props.signed.email, avatar: props.signed.avatar }}
+        />
       </Show>
       {/* 头部在滚动区外：滚动条从头部下方开始，不经过关闭按钮。 */}
       <div class="account-scroll">

@@ -437,7 +437,8 @@
 }
 
 /* ── 联系客服窗口 ──
- * 尺寸固定（B9），对话在 `.support-list` 内滚动。待发送附件的一行固定高度：添加或移除附件时输入框与按钮不移动。 */
+ * 尺寸固定（B9），对话在 `.support-list` 内滚动。输入区使用会话输入框的样式（`.composer`、composer.css），
+ * 待发送附件在输入框内部；输入框向上增高，工具栏不移动。 */
 .support-dialog {
   position: relative;
   width: min(560px, calc(100vw - 32px));
@@ -479,24 +480,46 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--s-3);
+  gap: var(--s-4);
   padding: var(--s-4) var(--s-5);
 }
-/* 客服的回复靠左，自己发送的靠右。 */
+/* 消息贴近输入框排列：条数少时空白留在上方。不要改为 `justify-content: flex-end`，它使溢出的内容无法滚动到顶部。 */
+.support-list > :first-child {
+  margin-top: auto;
+}
+/* 头像在气泡外侧：客服的回复靠左，自己发送的靠右。 */
 .support-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+}
+.support-msg.mine {
+  flex-direction: row-reverse;
+}
+.support-msg .account-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: var(--fs-sm);
+}
+.support-agent {
+  color: var(--text-secondary);
+}
+.support-body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
+  min-width: 0;
+  max-width: 78%;
 }
-.support-msg.mine {
+.support-msg.mine .support-body {
   align-items: flex-end;
 }
 .support-bubble {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
-  max-width: 78%;
+  max-width: 100%;
   padding: var(--s-2) var(--s-3);
   border-radius: var(--r-md);
   background: var(--bg-active);
@@ -551,77 +574,13 @@
 }
 .support-compose {
   flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  padding: var(--s-3) var(--s-5) var(--s-4);
-  border-top: 1px solid var(--border-subtle);
+  padding: 0 var(--s-4) var(--s-4);
 }
-.support-pending {
-  display: flex;
-  gap: var(--s-2);
-  height: 24px;
-  min-height: 24px;
-  max-height: 24px;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-.support-chip {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-1);
-  max-width: 180px;
-  height: 24px;
-  padding: 0 var(--s-1) 0 var(--s-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-sm);
-  font-size: var(--fs-xs);
-}
-.support-chip-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.support-chip-remove {
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
-}
-.support-chip-remove:hover {
-  color: var(--text-primary);
-}
-.support-input {
-  box-sizing: border-box;
-  height: 72px;
-  min-height: 72px;
-  max-height: 72px;
-  padding: var(--s-2) var(--s-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: var(--fs-sm);
-  resize: none;
-  outline: none;
-}
-.support-input:focus {
-  border-color: var(--border-strong);
-}
-.support-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-}
-/* 错误一行，固定高度，出现与消失时按钮不移动。 */
+/* 错误在工具栏中占据「+」与发送按钮之间的位置，一行，出现与消失时按钮不移动。 */
 .support-error {
   flex: 1;
   min-width: 0;
+  padding: 0 var(--s-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

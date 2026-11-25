@@ -883,6 +883,8 @@ test('联系客服窗口：打开时读取对话并把客服的新回复记为�
   await until(() => view.host.querySelector('[aria-label="联系客服"]') !== null)
   ;(view.host.querySelector('[aria-label="联系客服"]') as HTMLButtonElement).click()
   await until(() => view.text().includes('请提供截图'))
+  // 客服的回复以耳机图标为头像，自己的消息以账号头像（未设置时为名称首字符）。
+  expect(view.host.querySelector('.support-msg:not(.mine) .support-agent svg')).not.toBeNull()
   expect(view.host.querySelector<HTMLDialogElement>('.support-dialog')?.open).toBe(true)
   expect(view.host.querySelector('.support-image img')?.getAttribute('src')).toContain(
     '/api/cloud/support/files/3',
@@ -905,23 +907,28 @@ test('联系客服窗口：打开时读取对话并把客服的新回复记为�
   expect(clicked).toEqual(['步骤.png'])
   expect(calls).toContain('GET /api/cloud/support/files/3')
 
-  const input = view.host.querySelector('.support-input') as HTMLTextAreaElement
-  const send = view.host.querySelector('.support-actions .send-btn') as HTMLButtonElement
+  // 输入区使用会话输入框的同一组件样式，待发送附件在输入框内部。
+  const input = view.host.querySelector('.support-compose .composer-input') as HTMLTextAreaElement
+  const send = view.host.querySelector('.support-compose .send-btn') as HTMLButtonElement
   expect(send.disabled).toBe(true)
   input.value = '登录后一直转圈'
   input.dispatchEvent(new Event('input', { bubbles: true }))
-  const picker = view.host.querySelector('.support-actions input[type="file"]') as HTMLInputElement
+  const picker = view.host.querySelector('.support-compose input[type="file"]') as HTMLInputElement
   const log = new File(['日志'], 'qywork.log', { type: 'text/plain' })
   Object.defineProperty(picker, 'files', { value: [log], configurable: true })
   picker.dispatchEvent(new Event('change', { bubbles: true }))
   await until(() => view.text().includes('qywork.log'))
+  expect(
+    view.host.querySelector('.support-compose .composer-body .attach-chip.file'),
+  ).not.toBeNull()
   send.click()
   await until(() => supportSent.length === 1)
   expect(supportSent[0]?.get('body')).toBe('登录后一直转圈')
   expect((supportSent[0]?.getAll('files') as File[]).map((f) => f.name)).toEqual(['qywork.log'])
   await until(() => view.host.querySelectorAll('.support-msg.mine').length === 1)
+  expect(view.host.querySelector('.support-msg.mine .account-avatar')?.textContent).toBe('M')
   expect(input.value).toBe('')
-  expect(view.host.querySelector('.support-chip')).toBeNull()
+  expect(view.host.querySelector('.support-compose .attach-row')).toBeNull()
 
   supportRefusal = '账号服务返回 400：消息不能为空'
   input.value = 'x'
