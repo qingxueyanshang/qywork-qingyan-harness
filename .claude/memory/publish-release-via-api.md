@@ -23,6 +23,10 @@ GitHub 令牌，直接调用仓库接口。该脚本在 `.tmp/` 下、不入库�
 
 **易错点**：
 
+- 从 PowerShell 工具调用时在当前会话中点源（`. .\.tmp\scratch\release-api.ps1 -Mode Call ...`），先设置编码；
+  `powershell -File` 另起的进程不继承编码设置，`git credential fill` 失败，请求不会发出（0.3.27 实测）。
+- 发布工作流在 macOS 与 Linux 上运行同一套门禁，本机 Windows 门禁不覆盖按平台分支的用例（0.3.27 因运行环境清单在 Linux 上多一行而失败）；
+  改动含平台分支时，发版前在 WSL 中运行相关测试文件（见 [[linux-e2e-via-wsl]]）。
 - 从 Git Bash 调用时须设置 `MSYS_NO_PATHCONV=1`：`/actions/...` 这类参数会被改写为 Windows 路径，
   脚本以「Expected a repository-relative API path」拒绝，请求不会发出。
 - PowerShell 须先把 `[Console]::InputEncoding`、`[Console]::OutputEncoding` 与 `$OutputEncoding` 设为无 BOM 的 UTF-8，
