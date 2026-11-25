@@ -1,14 +1,14 @@
 /**
- * 覆盖范围：`http-util.ts` 的网页构建产物来源（`directoryAssets`、`embeddedAssets`）、`serveStatic`、
- * 网页来源 `fileSource`，以及 `server.ts` 经 `web` 选项提供页面的路径。
+ * 覆盖范围：`http-util.ts` 的本机名称 `hostLabel`、网页构建产物来源（`directoryAssets`、
+ * `embeddedAssets`）、`serveStatic`、网页来源 `fileSource`，以及 `server.ts` 经 `web` 选项提供页面的路径。
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
 import { Store } from '@qywork/store'
-import { directoryAssets, embeddedAssets, fileSource, serveStatic } from './http-util.ts'
+import { directoryAssets, embeddedAssets, fileSource, hostLabel, serveStatic } from './http-util.ts'
 import { serve } from './server.ts'
 
 const INDEX = '<!doctype html><title>qywork</title>'
@@ -30,6 +30,18 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await rm(dir, { recursive: true, force: true }).catch(() => {})
+})
+
+test('本机名称取系统主机名，进程环境中没有 COMPUTERNAME 与 HOSTNAME 时同样如此', () => {
+  const saved = { COMPUTERNAME: process.env.COMPUTERNAME, HOSTNAME: process.env.HOSTNAME }
+  delete process.env.COMPUTERNAME
+  delete process.env.HOSTNAME
+  try {
+    expect(hostLabel()).toBe(hostname())
+    expect(hostLabel()).not.toBe('qywork')
+  } finally {
+    for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v
+  }
 })
 
 test('嵌入的构建产物按相对路径的扩展名带 Content-Type', async () => {

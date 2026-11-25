@@ -6,6 +6,7 @@
  * **令牌校验不在这里**：它属于 `pairing.ts` 的 `Pairing.verify()`，那是唯一入口。
  */
 
+import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type { QyConfig } from '@qywork/runtime'
 import type { EventBus } from './bus.ts'
@@ -112,6 +113,11 @@ export async function serveStatic(web: WebAssets, pathname: string): Promise<Res
   return index ? new Response(index) : null
 }
 
+/**
+ * 本机名称，用于云端的电脑列表与配对握手。
+ * 不要改为读取 `COMPUTERNAME` / `HOSTNAME` 环境变量：`HOSTNAME` 是 shell 变量且不导出，
+ * macOS 与 Linux 上从图形界面启动的进程中没有它。
+ */
 export function hostLabel(): string {
-  return process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'qywork'
+  return hostname() || 'qywork'
 }
