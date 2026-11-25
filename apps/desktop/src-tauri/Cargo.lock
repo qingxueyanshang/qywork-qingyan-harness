@@ -2894,7 +2894,7 @@ dependencies = [
 
 [[package]]
 name = "qywork"
-version = "0.3.26"
+version = "0.3.27"
 dependencies = [
  "anyhow",
  "gtk-sys",
