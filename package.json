@@ -3,7 +3,7 @@
   "version": "0.3.27",
   "private": true,
   "type": "module",
-  "description": "qywork — 开源本地编程 agent：Tauri 2 外壳 + Bun agent 内核 + Solid UI，桌面与移动同协议",
+  "description": "qywork：多模型接入、多 Agent 协作的轻量化开源 Agent Harness",
   "license": "Apache-2.0",
   "packageManager": "bun@1.4.2",
   "engines": {

@@ -28,10 +28,11 @@
 | `mediabunny` | 1.61.0 | MPL-2.0 |
 | `modern-screenshot` | 4.7.0 | MIT |
 | `openai` | 6.49.0 | Apache-2.0 |
-| `qrcode` | 1.5.4 | MIT |
+| `pdfjs-dist` | 6.5.438 | Apache-2.0 |
 | `solid-js` | 1.9.14 | MIT |
 | `three` | 0.186.1 | MIT |
 | `unpdf` | 1.8.1 | MIT |
+| `uqr` | 0.1.3 | MIT |
 | `xss` | 1.0.15 | MIT |
 
 ## Rust / Cargo 桌面运行时依赖
@@ -40,12 +41,21 @@
 | --- | ---: | --- |
 | `anyhow` | 1.0.104 | MIT OR Apache-2.0 |
 | `atspi` | 0.30.0 | Apache-2.0 OR MIT |
+| `block2` | 0.6.2 | MIT |
+| `gtk-sys` | 0.18.2 | MIT |
 | `libc` | 0.2.189 | MIT OR Apache-2.0 |
 | `log` | 0.4.33 | MIT OR Apache-2.0 |
 | `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
+| `objc2` | 0.6.4 | MIT |
+| `objc2-application-services` | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
+| `objc2-core-foundation` | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
+| `objc2-core-graphics` | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
+| `objc2-foundation` | 0.3.2 | MIT |
+| `objc2-screen-capture-kit` | 0.3.2 | Zlib OR Apache-2.0 OR MIT |
 | `parking_lot` | 0.12.5 | MIT OR Apache-2.0 |
 | `portable-pty` | 0.9.0 | MIT |
 | `reqwest` | 0.12.28 | MIT OR Apache-2.0 |
+| `rfd` | 0.16.0 | MIT |
 | `serde` | 1.0.229 | MIT OR Apache-2.0 |
 | `serde_json` | 1.0.151 | MIT OR Apache-2.0 |
 | `tauri` | 2.11.5 | Apache-2.0 OR MIT |
@@ -54,8 +64,10 @@
 | `tauri-plugin-shell` | 2.3.5 | Apache-2.0 OR MIT |
 | `tauri-plugin-updater` | 2.11.0 | Apache-2.0 OR MIT |
 | `tokio` | 1.53.1 | MIT |
-| `zbus` | 5.19.0 | MIT |
+| `webview2-com` | 0.38.2 | MIT |
 | `windows` | 0.61.3 | MIT OR Apache-2.0 |
+| `x11rb` | 0.14.0 | MIT OR Apache-2.0 |
+| `zbus` | 5.19.0 | MIT |
 
 ## 构建与开发依赖
 
@@ -70,7 +82,6 @@
 | `@tauri-apps/cli` | 2.11.4 | Apache-2.0 OR MIT |
 | `@types/babel__core` | 7.20.5 | MIT |
 | `@types/bun` | 1.3.14 | MIT |
-| `@types/qrcode` | 1.5.6 | MIT |
 | `babel-preset-solid` | 1.9.15 | MIT |
 | `happy-dom` | 20.11.6 | MIT |
 | `playwright` | 1.62.1 | Apache-2.0 |
@@ -83,3 +94,5 @@
 
 - qywork 自身以 [Apache-2.0](LICENSE) 发布；本清单不会改变 qywork 的许可证。
 - 每项组件仍按其上游许可证授权；完整依赖图与精确版本见 `bun.lock` 和 `apps/desktop/src-tauri/Cargo.lock`。
+- `pdfjs-dist` 附带的标准字体、字符映射表、色彩配置与图片解码模块各有许可证（BSD、MIT、CC0；Liberation 字体为带字体例外条款的 GPL-2.0，未经修改原样分发），许可证文本随这些数据一同发布在界面资源的 `assets/pdfjs-*/` 目录中（没有扩展名的文件以 `.txt` 结尾）。
+- 「运行环境」中安装的内置浏览器（Chromium）在安装时下载，不随安装包分发，其许可证随下载的文件提供。
