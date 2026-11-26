@@ -147,6 +147,23 @@ function withoutCloud(entry: StoredCatalogEntry): StoredCatalogEntry | undefined
 const known = (id: string, kind: ProviderKind) => lookupModel(id, kind).catalogued !== false
 
 /**
+ * 「旧型号 id → 对外编号」。云端型号使用对外编号之前，配置与会话按云端的内部 id 记录型号；内部 id 是模型库 id 时，
+ * 清单中该型号的对应型号（`spec.base`）即该 id。对应型号为该 id 的型号恰有一个、且该 id 不是清单中的型号时列入；
+ * 对应型号相同的型号有多个时无法确定是哪一个，不列入。
+ */
+function renamedModels(list: readonly CatalogModel[]): Map<string, string> {
+  const listed = new Set(list.map((m) => m.id))
+  const byBase = new Map<string, string[]>()
+  for (const m of list) {
+    const base = m.spec?.base
+    if (base && !listed.has(base)) byBase.set(base, [...(byBase.get(base) ?? []), m.id])
+  }
+  return new Map(
+    [...byBase].flatMap(([base, ids]) => (ids.length === 1 ? [[base, ids[0] as string]] : [])),
+  )
+}
+
+/**
  * 云端规格写入模型库覆盖层后的 `catalog`。带 `cloud` 标记的条目中，显示名称、对应型号、窗口与输出上限四项归云端同步所有，
  * 同步只写入后三项：显示名称写在云端接口的型号条目上（`storedModels`），写入覆盖层会使用户自建接口中的同名型号也显示云端的名称。
  * - 本机模型库已收录该型号时删除这四项，不论该型号是否仍在清单中：否则旧值（尤其是对应型号）继续优先于内置模型库；
@@ -197,6 +214,11 @@ export class CloudAccountError extends Error {}
 export interface CloudAccountOptions {
   /** 云端接口写入或删除之后。 */
   onChange?: () => void
+  /**
+   * 每次写入型号清单之后，传入「旧型号 id → 对外编号」（`renamedModels`），没有时不调用。装配方据此改写会话记录的型号：
+   * 会话按记录的型号 id 发送，云端只接受对外编号。
+   */
+  onModelsRenamed?: (renamed: ReadonlyMap<string, string>) => void
   /**
    * 每个云端请求的超时，默认 20 秒。每个请求都必须设置：账号窗口与登录按钮等待请求返回，
    * 连接停滞而没有超时时，界面持续显示读取中，不显示失败原因，也无法重试。
@@ -347,6 +369,7 @@ export class CloudAccount {
   /** 进行中的后台同步，同一时刻只有一个。 */
   private syncing: Promise<void> | null = null
   private readonly onChange: () => void
+  private readonly onModelsRenamed: (renamed: ReadonlyMap<string, string>) => void
   private readonly timeoutMs: number
   private readonly resendDelaysMs: readonly number[]
 
@@ -356,6 +379,7 @@ export class CloudAccount {
     options: CloudAccountOptions = {},
   ) {
     this.onChange = options.onChange ?? (() => {})
+    this.onModelsRenamed = options.onModelsRenamed ?? (() => {})
     this.timeoutMs = options.timeoutMs ?? 20_000
     this.resendDelaysMs = options.resendDelaysMs ?? [300, 1000]
   }
@@ -726,7 +750,13 @@ export class CloudAccount {
       )
     }
     this.syncedAt = Date.now()
+    this.reportRenamed(list.models)
     this.onChange()
+  }
+
+  private reportRenamed(list: readonly CatalogModel[]): void {
+    const renamed = renamedModels(list)
+    if (renamed.size) this.onModelsRenamed(renamed)
   }
 
   /** 以设备密钥读取云端型号清单（登录完成时尚未写入接口，因此不经 `call`）。 */
@@ -830,14 +860,22 @@ export class CloudAccount {
         if (m.displayName) media[id] ??= { ...m, delisted: true }
       const catalog = withSpecs(current.catalog, list.models)
       // 默认对话模型与默认生成模型指向已删除的条目时删除该默认值。不要改用清单中的其他型号：
-      // 默认模型由用户选定，替换会静默改变新会话使用的模型与计费。
+      // 默认模型由用户选定，替换会静默改变新会话使用的模型与计费。默认对话模型是旧型号 id 时改为该型号的对外编号
+      // （`renamedModels`）：两者是同一个型号。
       const gone = (ref: { provider: string; model: string } | undefined, kept: object) =>
         ref?.provider === CLOUD_PROVIDER && !(ref.model in kept)
       // 默认对话模型指向已下架的型号时同样删除：新会话的请求必然被拒绝，模型选择不列出已下架的型号，界面上无处显示该默认值。
       // 默认生成模型不在此列：画布在默认型号已下架时显示并固定另一个可用的型号。
       const retired =
         current.active?.provider === CLOUD_PROVIDER && models[current.active.model]?.delisted
-      const active = gone(current.active, models) || retired ? undefined : current.active
+      const renamed = gone(current.active, models)
+        ? renamedModels(list.models).get(current.active?.model ?? '')
+        : undefined
+      const active = renamed
+        ? { provider: CLOUD_PROVIDER, model: renamed }
+        : gone(current.active, models) || retired
+          ? undefined
+          : current.active
       const mediaDefaults = current.mediaDefaults
         ? Object.fromEntries(
             Object.entries(current.mediaDefaults).filter(([, ref]) => !gone(ref, media)),
@@ -866,6 +904,7 @@ export class CloudAccount {
       }
     })
     this.syncedAt = Date.now()
+    this.reportRenamed(list.models)
   }
 
   private async me(key: string): Promise<Me | 'revoked' | null> {

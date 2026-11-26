@@ -74,6 +74,7 @@ import { watchRunEnds } from './cloud/notify.ts'
 import { cloudOrigin } from './cloud/origin.ts'
 import { RemoteAccess } from './cloud/remote.ts'
 import { remoteTransfer } from './cloud/remote-transfer.ts'
+import { renameCloudConversations } from './cloud/rename.ts'
 import { CommandTaskTable } from './command-tasks/table.ts'
 import { handleCommand, reject } from './commands.ts'
 import type { SocketData } from './deps.ts'
@@ -417,7 +418,10 @@ export function serve(opts: ServeOptions) {
 
   const origin = cloudOrigin()
   const cloud = origin
-    ? new CloudAccount(opts.config, origin, { onChange: () => remote.sync() })
+    ? new CloudAccount(opts.config, origin, {
+        onChange: () => remote.sync(),
+        onModelsRenamed: (renamed) => renameCloudConversations(opts.store, bus, renamed),
+      })
     : null
   const syncCloudPrices = cloud ? { syncCloudPrices: () => cloud.syncModels() } : {}
 

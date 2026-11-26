@@ -271,6 +271,24 @@ export function renameConversationProvider(store: Store, from: string, to: strin
 }
 
 /**
+ * 接口下的型号改名：记录为该接口旧型号 id 的会话（含子 agent 的会话）改为新 id，返回改动后的会话。不修改 `updated_at`，
+ * 理由同 `renameConversationProvider`。不改时这些会话的下一轮以接口已不接受的型号 id 发送并被拒绝。
+ */
+export function renameConversationModel(
+  store: Store,
+  provider: string,
+  from: string,
+  to: string,
+): Conversation[] {
+  const ids = store.db
+    .query<{ id: string }, [string, string, string]>(
+      'UPDATE conversations SET model = ? WHERE provider = ? AND model = ? RETURNING id',
+    )
+    .all(to, provider, from)
+  return ids.flatMap(({ id }) => getConversation(store, id as ConversationId) ?? [])
+}
+
+/**
  * 切换会话的权限模式。不修改 `updated_at`，理由同 `setConversationTitle`。
  * 返回 null 表示会话不存在。
  */

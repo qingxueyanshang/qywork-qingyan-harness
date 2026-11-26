@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`、`cloud/support.ts`，`api/cloud.ts` 的路由表、错误返回、充值、兑换码、本版说明、公告列表与客服对话，
+ * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`、`cloud/rename.ts`、`cloud/support.ts`，`api/cloud.ts` 的路由表、错误返回、充值、兑换码、本版说明、公告列表与客服对话，
  * `api/conversations.ts` 的 `/api/models` 中云端型号的显示名称。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
@@ -9,12 +9,15 @@ import { readFile, stat, utimes } from 'node:fs/promises'
 import { cloudModelSpec, lookupMediaModel, lookupModel, quoteMedia } from '@qywork/ai'
 import type { Announcement, CloudModelSpec } from '@qywork/core'
 import { catalogKey, configPath, loadConfig, modelSpecOf, type QyConfig } from '@qywork/runtime'
+import { createConversation, getConversation, Store, upsertWorkspace } from '@qywork/store'
 import { handleCloudApi } from '../api/cloud.ts'
 import { writeConfig } from '../api/config.ts'
 import { handleConversationsApi, type ModelsResponse } from '../api/conversations.ts'
 import type { ApiRequestDeps } from '../api/types.ts'
+import type { EventBus } from '../bus.ts'
 import { CLOUD_PROVIDER, CloudAccount, CloudAccountError } from './account.ts'
 import { cloudOrigin } from './origin.ts'
+import { renameCloudConversations } from './rename.ts'
 
 const PASSWORD = 'password-123'
 
@@ -962,6 +965,66 @@ test('同步型号清单：默认对话模型下架时清除默认值，不改�
   expect(live.providers[CLOUD_PROVIDER]?.models['claude-old']?.delisted).toBe(true)
   expect(live.active).toBeUndefined()
   expect((await loadConfig()).active).toBeUndefined()
+})
+
+/**
+ * 原始失败形状（2026-11-26 用户会话诊断）：云端型号改用对外编号之前创建的会话记录内部 id（`deepseek-flash`），
+ * 同步删除旧条目之后，下一轮仍以该 id 发送，云端以「模型不可用」拒绝；指向旧 id 的默认对话模型被删除。
+ */
+test('同步型号清单：记录旧型号 id 的云端会话与默认对话模型改为该型号的对外编号；对应型号相同的型号有多个时不改', async () => {
+  cloud.publicChat = true
+  const store = new Store({ path: ':memory:' })
+  const published: unknown[] = []
+  const bus = { publish: (event: unknown) => published.push(event) }
+  const syncing = new CloudAccount(live, origin, {
+    onModelsRenamed: (renamed) =>
+      renameCloudConversations(store, bus as unknown as Pick<EventBus, 'publish'>, renamed),
+  })
+  await syncing.login('me@example.com', PASSWORD)
+  const ws = upsertWorkspace(store, '/ws', 'ws')
+  const onCloud = (model: string) =>
+    createConversation(store, { workspaceId: ws.id, provider: CLOUD_PROVIDER, model })
+  // 同步之前的配置：旧 id 的条目没有显示名称，默认对话模型指向它。
+  const staleDefault = () =>
+    writeConfig(live, (c) => {
+      const p = c.providers[CLOUD_PROVIDER]!
+      return {
+        ...c,
+        providers: {
+          ...c.providers,
+          [CLOUD_PROVIDER]: { ...p, models: { ...p.models, 'claude-opus-5-5': {} } },
+        },
+        active: { provider: CLOUD_PROVIDER, model: 'claude-opus-5-5' },
+      }
+    })
+
+  const stale = onCloud('claude-opus-5-5')
+  const own = createConversation(store, {
+    workspaceId: ws.id,
+    provider: 'main',
+    model: 'claude-opus-5-5',
+  })
+  await staleDefault()
+  await syncing.catalogChanged()
+  expect(live.active).toEqual({ provider: CLOUD_PROVIDER, model: OPUS_PUBLIC })
+  expect(getConversation(store, stale.id)?.model).toBe(OPUS_PUBLIC)
+  expect(getConversation(store, own.id)?.model).toBe('claude-opus-5-5')
+  expect(published).toEqual([
+    expect.objectContaining({
+      type: 'conversation.updated',
+      conversationId: stale.id,
+      model: OPUS_PUBLIC,
+    }),
+  ])
+
+  // 另一个型号的对应型号也是 claude-opus-5-5：无法确定旧 id 对应哪一个，会话与默认值都不改为其中之一。
+  cloud.nextBase = 'claude-opus-5-5'
+  const ambiguous = onCloud('claude-opus-5-5')
+  await staleDefault()
+  await syncing.catalogChanged()
+  expect(live.active).toBeUndefined()
+  expect(getConversation(store, ambiguous.id)?.model).toBe('claude-opus-5-5')
+  expect(published).toHaveLength(1)
 })
 
 /** 以配置接口写入一条模型库覆盖，与用户在模型库中修改的写入路径相同。 */

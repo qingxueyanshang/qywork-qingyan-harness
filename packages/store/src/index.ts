@@ -43,6 +43,7 @@ export {
   listConversations,
   listRecentConversations,
   permissionModeOf,
+  renameConversationModel,
   renameConversationProvider,
   setCompactionManifest,
   setConversationExternalSession,
