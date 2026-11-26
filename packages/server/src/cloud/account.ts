@@ -1,5 +1,5 @@
 /**
- * 云端账号：电脑端以邮箱密码登录或注册、退出、内置模型的接口，以及账号界面读取的用量、使用记录与充值；
+ * 云端账号：电脑端以邮箱密码登录或注册、退出、内置模型的接口，以及账号界面读取的用量、使用记录、充值与兑换码；
  * 另有不需要登录的本版说明（云端的版本公告）与公告列表。
  *
  * 不变量：
@@ -26,6 +26,7 @@ import {
   type CloudModelSpec,
   type CloudRechargeOrder,
   type CloudRechargeStatus,
+  type CloudRedeemResult,
   type CloudRequest,
   type CloudState,
   type CloudUsage,
@@ -563,6 +564,16 @@ export class CloudAccount {
       `/v1/recharge/${encodeURIComponent(orderNo)}`,
     )
     return reply.status
+  }
+
+  /** 以兑换码兑换积分（`POST /v1/redeem`），返回得到的积分与兑换之后的账号状态。次数、期限与适用账号由云端判定。 */
+  async redeem(code: string): Promise<CloudRedeemResult> {
+    const { credits } = await this.call<{ credits: number }>('/v1/redeem', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })
+    return { credits, state: await this.state() }
   }
 
   /** 云端答复本设备已被移除（网关或隧道）：删除本地接口，账号界面显示原因。 */

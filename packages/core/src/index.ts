@@ -449,6 +449,7 @@ export type {
   CloudModel,
   CloudRechargeOrder,
   CloudRechargeStatus,
+  CloudRedeemResult,
   CloudRequest,
   CloudState,
   CloudUsage,

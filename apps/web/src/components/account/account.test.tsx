@@ -1,6 +1,6 @@
 /**
  * 账号界面：`AccountEntry.tsx`（侧栏入口）、`AccountDialog.tsx`（账号弹窗，其中的手机接入见 `PairPanel.test.tsx`）、`LoginForm.tsx`（登录表单）、`NameEdit.tsx`（用户名的修改）、
- * `RechargeDialog.tsx`（充值窗口）、`SupportDialog.tsx`（联系客服窗口）与 `lib/store/support.ts`、
+ * `RechargeDialog.tsx`（充值窗口）、`RedeemDialog.tsx`（兑换码窗口）、`SupportDialog.tsx`（联系客服窗口）与 `lib/store/support.ts`、
  * `ActivityGrid.tsx`（Token 活动方格）、`../LoginGate.tsx`（首次启动的登录页），以及 `lib/store/cloud.ts`。
  * 服务端接口以替身代替，状态以替身返回值为准。
  */
@@ -37,6 +37,8 @@ let accountGate: Promise<void>
 let notices: Announcement[]
 /** 充值订单状态的依次答复；`Error` 表示该次读取失败。 */
 let rechargeReplies: (string | Error)[]
+/** 收到的兑换码；只有 NEW2026 兑换成功，得到 10 积分。 */
+let redeemCodes: string[]
 /** 为真时账号概览与使用记录的读取全部失败。 */
 let cloudDown: boolean
 /** 服务端配置：云端接口下有两个型号，默认对话模型是本地接口的型号。 */
@@ -249,6 +251,19 @@ beforeAll(async () => {
         expiresAt: '2026-11-04T04:05:00.000Z',
       } as T
     }
+    if (path === '/api/cloud/redeem') {
+      const { code } = JSON.parse(String(init?.body)) as { code: string }
+      redeemCodes.push(code)
+      if (code !== 'NEW2026') {
+        throw new ApiError(
+          400,
+          path,
+          JSON.stringify({ error: 'cloud', message: '账号服务返回 404：兑换码不存在' }),
+        )
+      }
+      cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), credits: 22.5 }
+      return { credits: 10, state: structuredClone(cloud) } as T
+    }
     if (path.startsWith('/api/cloud/recharge/')) {
       const reply = rechargeReplies.shift() ?? 'pending'
       if (reply instanceof Error) {
@@ -273,6 +288,7 @@ beforeEach(async () => {
   accountGate = Promise.resolve()
   notices = []
   rechargeReplies = []
+  redeemCodes = []
   cloudDown = false
   supportThread = []
   supportSent = []
@@ -823,22 +839,26 @@ test('用户名：未设置时入口显示邮箱、弹窗显示「设置用户�
   view.close()
 })
 
-test('充值按钮：云端开通充值时显示在头部行尾，未开通时不显示；点击打开充值窗口，关闭按钮移除窗口', async () => {
+test('充值按钮：云端开通充值时显示在头部行尾，未开通时不显示、兑换码仍显示；点击打开充值窗口，关闭按钮移除窗口', async () => {
   cloud = { ...(SIGNED_IN as Extract<CloudState, { state: 'signed_in' }>), recharge: false }
   await cloudStore.refreshCloudState()
   const off = await dialog()
   await until(() => off.host.querySelector('.account-head') !== null)
   expect(off.button('充值')).toBeUndefined()
+  expect(off.button('兑换码')).toBeDefined()
   off.close()
 
   cloud = SIGNED_IN
   await cloudStore.refreshCloudState()
   const view = await dialog()
   await until(() => view.button('充值') !== undefined)
-  // 充值在行尾，左侧是联系客服，再左侧是公告、官网与退出按钮组。
+  // 充值在行尾，左侧依次是兑换码、联系客服，再左侧是公告、官网与退出按钮组。
   const beside = view.button('充值')?.previousElementSibling
-  expect(beside?.getAttribute('aria-label')).toBe('联系客服')
-  expect(beside?.previousElementSibling?.classList.contains('account-actions')).toBe(true)
+  expect(beside?.textContent?.trim()).toBe('兑换码')
+  expect(beside?.previousElementSibling?.getAttribute('aria-label')).toBe('联系客服')
+  expect(
+    beside?.previousElementSibling?.previousElementSibling?.classList.contains('account-actions'),
+  ).toBe(true)
   view.button('充值')?.click()
   await until(() => view.host.querySelector('.recharge-dialog') !== null)
   expect(view.host.querySelector<HTMLDialogElement>('.recharge-dialog')?.open).toBe(true)
@@ -964,6 +984,65 @@ test('客服对话有新消息（support.changed）：重新读取未读数，�
   expect(supportStore.supportMessages()?.map((m) => m.body)).toEqual(['已处理'])
   expect(supportStore.supportUnread()).toBe(false)
   supportStore.closeSupport()
+})
+
+test('兑换码按钮：点击打开兑换码窗口，关闭按钮移除窗口，账号窗口保留', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  const view = await dialog()
+  await until(() => view.button('兑换码') !== undefined)
+  view.button('兑换码')?.click()
+  await until(() => view.host.querySelector('.redeem-dialog') !== null)
+  expect(view.host.querySelector<HTMLDialogElement>('.redeem-dialog')?.open).toBe(true)
+  view.host.querySelector<HTMLButtonElement>('.redeem-close')?.click()
+  await until(() => view.host.querySelector('.redeem-dialog') === null)
+  expect(view.host.querySelector('.account-dialog')).not.toBeNull()
+  view.close()
+})
+
+async function redeemWindow() {
+  const { default: RedeemDialog } = await import('./RedeemDialog.tsx')
+  let closed = 0
+  const view = await mount(() => <RedeemDialog onClose={() => closed++} />)
+  const submit = () => (view.host.querySelector('form') as HTMLFormElement).requestSubmit()
+  const input = () => view.host.querySelector('.redeem-input') as HTMLInputElement
+  const result = () => view.host.querySelector('.redeem-result') as HTMLElement
+  return { view, submit, input, result, closed: () => closed }
+}
+
+test('兑换码窗口：未输入时不能提交；失败时显示原因并保留输入；成功后显示得到的积分、清空输入框并更新余额；Escape 交给调用方关闭', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  const { view, submit, input, result, closed } = await redeemWindow()
+  expect(view.text()).toContain('余额 12.50 积分')
+  const button = () => view.host.querySelector<HTMLButtonElement>('.redeem-submit')
+  expect(button()?.disabled).toBe(true)
+  view.fill('text', '   ')
+  expect(button()?.disabled).toBe(true)
+  submit()
+  expect(redeemCodes).toEqual([])
+
+  view.fill('text', 'NOPE')
+  submit()
+  await until(() => result().textContent === '账号服务返回 404：兑换码不存在')
+  expect(result().classList.contains('error')).toBe(true)
+  expect(input().value).toBe('NOPE')
+
+  view.fill('text', ' NEW2026 ')
+  submit()
+  await until(() => result().textContent === '已兑换 10.00 积分')
+  expect(result().classList.contains('error')).toBe(false)
+  expect(result().classList.contains('done')).toBe(true)
+  expect(input().value).toBe('')
+  expect(view.text()).toContain('余额 22.50 积分')
+  expect((cloudStore.cloudState() as { credits?: number }).credits).toBe(22.5)
+  expect(redeemCodes).toEqual(['NOPE', 'NEW2026'])
+
+  view.host
+    .querySelector('.redeem-dialog')
+    ?.dispatchEvent(new Event('cancel', { cancelable: true }))
+  expect(closed()).toBe(1)
+  view.close()
 })
 
 async function recharge() {

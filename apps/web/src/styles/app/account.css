@@ -197,24 +197,34 @@
   font-size: var(--fs-sm);
   color: var(--danger);
 }
-/* 联系客服在充值左侧，两者一起靠行尾；云端未开通充值时它自身在行尾。 */
+/* 联系客服、兑换码与充值依次靠行尾。兑换码登录后始终显示：联系客服不显示时由它占据行尾之前的余量。 */
 .account-support {
   position: relative;
   margin-left: auto;
 }
-/* 充值按钮在头部行尾，右缘与下方内容对齐；高度与图标按钮相近。
-   上移 2px：带底色的按钮与线条图标按几何中心对齐时，视觉上偏下。 */
-.account-recharge {
+/* 兑换码与充值按钮的高度与图标按钮相近。
+   上移 2px：带底色或边框的按钮与线条图标按几何中心对齐时，视觉上偏下。 */
+.account-redeem {
   position: relative;
   top: -2px;
   flex: none;
+  align-self: auto;
   margin-left: auto;
   height: 24px;
   padding: 0 var(--s-3);
   font-size: var(--fs-xs);
 }
-.account-support + .account-recharge {
+.account-support + .account-redeem {
   margin-left: 0;
+}
+/* 充值按钮在头部行尾，右缘与下方内容对齐。 */
+.account-recharge {
+  position: relative;
+  top: -2px;
+  flex: none;
+  height: 24px;
+  padding: 0 var(--s-3);
+  font-size: var(--fs-xs);
 }
 
 /* ── 充值窗口 ──
@@ -435,6 +445,91 @@
   min-width: 96px;
   height: 34px;
   justify-content: center;
+}
+
+/* ── 兑换码窗口 ──
+ * 尺寸固定（B9）：结果行留有固定高度，有无内容时窗口不变形。 */
+.redeem-dialog {
+  position: relative;
+  width: min(340px, calc(100vw - 32px));
+  height: min(204px, calc(100svh - 48px));
+  box-sizing: border-box;
+  padding: var(--s-4) var(--s-5) var(--s-5);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+}
+/* 只在打开时改为纵向排列：写在未打开的 dialog 上会覆盖浏览器的 `display: none`。 */
+.redeem-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.redeem-dialog::backdrop {
+  background: var(--scrim);
+}
+.redeem-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  padding-right: var(--s-6);
+}
+.redeem-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.redeem-balance {
+  flex: 1;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.redeem-close {
+  position: absolute;
+  top: var(--dialog-close-inset);
+  right: var(--dialog-close-inset);
+}
+.redeem-form {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--s-3);
+}
+.redeem-input {
+  height: 40px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  outline: none;
+  background: transparent;
+  font-size: var(--fs-md);
+}
+.redeem-input:focus {
+  border-color: var(--accent);
+}
+.redeem-result {
+  display: block;
+  min-height: 1.5em;
+  max-height: 1.5em;
+  margin-top: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.redeem-result.done {
+  color: var(--text-primary);
+}
+.redeem-result.error {
+  color: var(--danger);
+}
+.redeem-submit {
+  height: 40px;
+  margin-top: var(--s-2);
+  font-size: var(--fs-md);
 }
 
 /* ── 联系客服窗口 ──

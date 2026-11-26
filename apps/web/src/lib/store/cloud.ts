@@ -7,6 +7,7 @@ import type {
   CloudAccountOverview,
   CloudRechargeOrder,
   CloudRechargeStatus,
+  CloudRedeemResult,
   CloudRequest,
   CloudState,
 } from '@qywork/core'
@@ -154,6 +155,16 @@ export async function fetchRechargeStatus(orderNo: string): Promise<CloudRecharg
     `/api/cloud/recharge/${encodeURIComponent(orderNo)}`,
   )
   return reply.status
+}
+
+/** 以兑换码兑换积分，返回得到的积分；账号状态随之更新。失败时抛出可直接显示的原因，状态不变。 */
+export async function redeemCode(code: string): Promise<number> {
+  const reply = await client.api<CloudRedeemResult>('/api/cloud/redeem', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
+  setCloudState(reply.state)
+  return reply.credits
 }
 
 /** 退出登录的原因，显示在登录表单上方。 */

@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`、`cloud/support.ts`，`api/cloud.ts` 的错误返回、充值、本版说明、公告列表与客服对话，
+ * 覆盖范围：`cloud/account.ts`、`cloud/origin.ts`、`cloud/support.ts`，`api/cloud.ts` 的路由表、错误返回、充值、兑换码、本版说明、公告列表与客服对话，
  * `api/conversations.ts` 的 `/api/models` 中云端型号的显示名称。云端是本文件中的模拟服务，接口与云端仓库的账号、设备与网关接口相同；
  * 配置经 `writeConfig` 写入测试进程的 `QYWORK_HOME`。
  */
@@ -102,6 +102,10 @@ const cloud = {
   avatar: null as string | null,
   /** 账号的用户名；未设置时为空字符串。 */
   name: '',
+  /** 积分余额；兑换成功后增加。 */
+  credits: 12.5,
+  /** 云端收到的兑换码。 */
+  redeemed: [] as string[],
   announcementSeen: null as string | null,
   /** 客服回复中未读的条数。 */
   supportUnread: 0,
@@ -191,7 +195,7 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
       return Response.json({
         email: 'me@example.com',
         name: cloud.name,
-        credits: 12.5,
+        credits: cloud.credits,
         avatar: cloud.avatar,
         recharge: true,
         announcementSeen: cloud.announcementSeen,
@@ -264,6 +268,16 @@ const server: ReturnType<typeof Bun.serve> = Bun.serve({
         amount,
         expiresAt: '2026-11-04T04:05:00.000Z',
       })
+    }
+    if (path === '/v1/redeem' && req.method === 'POST' && authed) {
+      const { code } = (await req.json()) as { code: string }
+      cloud.redeemed.push(code)
+      const refuse = (status: number, type: string, message: string) =>
+        Response.json({ type: 'error', error: { type, code: type, message } }, { status })
+      if (code === 'USED2026') return refuse(409, 'redeem_exhausted', '兑换码已兑换完')
+      if (code !== 'NEW2026') return refuse(404, 'redeem_not_found', '兑换码不存在')
+      cloud.credits += 10
+      return Response.json({ credits: 10 })
     }
     if (path === '/v1/recharge/QY20261104120000abcdef0123456789' && authed) {
       return Response.json({ status: 'paid' })
@@ -445,6 +459,8 @@ beforeEach(async () => {
     channelName: '视频通道1-480/720p',
     avatar: null,
     name: '',
+    credits: 12.5,
+    redeemed: [],
     announcementSeen: null,
     supportUnread: 0,
     supportForms: [],
@@ -1194,6 +1210,62 @@ test('充值：经本机接口下单与读取状态；缺少金额时不请求�
     error: 'cloud',
     message: '账号服务返回 400：充值金额须为 1–10000 的整数（元）',
   })
+})
+
+test('兑换码：经本机接口兑换，返回得到的积分与余额已增加的账号状态；兑换码去掉首尾空白，缺少时不请求云端；云端拒绝时以 400 返回原因', async () => {
+  await account.login('me@example.com', PASSWORD)
+  const deps = { cloud: account } as unknown as ApiRequestDeps
+  const redeem = (body: unknown) =>
+    handleCloudApi(
+      new URL('http://x/api/cloud/redeem'),
+      new Request('http://x/api/cloud/redeem', { method: 'POST', body: JSON.stringify(body) }),
+      deps,
+    )
+
+  const done = await redeem({ code: ' NEW2026 ' })
+  expect(done?.status).toBe(200)
+  expect(await done?.json()).toMatchObject({
+    credits: 10,
+    state: { state: 'signed_in', credits: 22.5 },
+  })
+  expect(cloud.redeemed).toEqual(['NEW2026'])
+
+  for (const body of [{}, { code: '  ' }, { code: 1 }]) {
+    const missing = await redeem(body)
+    expect(missing?.status).toBe(400)
+    expect(await missing?.json()).toEqual({ error: 'invalid_request', message: '缺少兑换码' })
+  }
+  expect(cloud.redeemed).toEqual(['NEW2026'])
+
+  const unknown = await redeem({ code: 'NOPE' })
+  expect(unknown?.status).toBe(400)
+  expect(await unknown?.json()).toEqual({
+    error: 'cloud',
+    message: '账号服务返回 404：兑换码不存在',
+  })
+  await expect(account.redeem('USED2026')).rejects.toThrow('账号服务返回 409：兑换码已兑换完')
+  expect(cloud.credits).toBe(22.5)
+})
+
+test('路由表：未配置云端时账号状态为 unavailable，其余路径（含带参数的路径）答复 404；已配置时不认识的路径与其他前缀交给下一个处理器', async () => {
+  const call = (cloud: CloudAccount | null, path: string, method = 'GET') =>
+    handleCloudApi(new URL(`http://x${path}`), new Request(`http://x${path}`, { method }), {
+      cloud,
+    } as unknown as ApiRequestDeps)
+  expect(await (await call(null, '/api/cloud/state'))?.json()).toEqual({ state: 'unavailable' })
+  for (const [path, method] of [
+    ['/api/cloud/recharge/QY1', 'GET'],
+    ['/api/cloud/redeem', 'POST'],
+    ['/api/cloud/unknown', 'GET'],
+  ] as const) {
+    const res = await call(null, path, method)
+    expect(res?.status).toBe(404)
+    expect(await res?.json()).toEqual({ error: 'unavailable', message: '未配置云端服务' })
+  }
+  expect(await call(account, '/api/cloud/unknown')).toBeNull()
+  expect(await call(account, '/api/cloud/recharge/')).toBeNull()
+  expect(await call(account, '/api/cloud/state', 'DELETE')).toBeNull()
+  expect(await call(account, '/api/models')).toBeNull()
 })
 
 test('云端地址：去掉首尾空白与末尾斜杠；带路径或多个地址时报错', () => {

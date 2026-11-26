@@ -278,6 +278,12 @@ export interface CloudRechargeOrder {
 /** `GET /api/cloud/recharge/:orderNo`：pending 待支付，paid 已到账，expired 付款码已过期。 */
 export type CloudRechargeStatus = 'pending' | 'paid' | 'expired'
 
+/** `POST /api/cloud/redeem`：本次兑换得到的积分与兑换之后的账号状态。 */
+export interface CloudRedeemResult {
+  credits: number
+  state: CloudState
+}
+
 /**
  * `GET /api/cloud/release-notes?version=`：云端为该版本发布的版本公告。没有、已撤回或未配置云端时为 null。
  * `body` 是 Markdown。
