@@ -3,7 +3,7 @@ name: publish-release-via-api
 description: 正式发布经 .tmp/scratch/release-api.ps1 调用 GitHub 接口触发三个发布工作流并公开草稿，本机没有 gh；Git Bash 中须设置 MSYS_NO_PATHCONV=1
 metadata:
   type: reference
-  modified: 2026-10-28
+  modified: 2026-11-26
 ---
 
 正式发布不需要 `gh`：`.tmp/scratch/release-api.ps1` 从 Git 凭据管理器（`git credential fill`）取得已保存的
@@ -50,5 +50,12 @@ GitHub 令牌，直接调用仓库接口。该脚本在 `.tmp/` 下、不入库�
   minisign 格式的 Ed25519 签名，依赖本机 Python 的 `cryptography`）。该文件曾在清理 `.tmp` 时被删除，2026-11-21 重写，
   清理时保留它。
 - 被点源的 `release-api.ps1` 带有 `param()`，调用方脚本中与其参数同名的变量（如 `$OutFile`）会被清空，调用方改用其他变量名。
+- 构建失败时先读取失败任务的日志（`.tmp/scratch/fetch-job-log.ps1 -JobId <id> -Target <文件>`），区分代码导致的失败与运行环境的失败。
+  后者以 `POST /actions/runs/<id>/rerun-failed-jobs` 只重新运行失败的任务：macOS 工作流的两个架构是两个任务，已成功并上传的任务不重新运行，
+  草稿中的附件保留。v0.3.30 实测两例：Windows 门禁中 Bun 的测试进程崩溃（`worker crashed: exit code 0xC0000409`，全部断言通过），
+  macOS x86_64 门禁通过后创建草稿时连接 GitHub 超时（`Connect Timeout Error`）；两者重新运行后均成功。
+  等待运行结束用 `.tmp/scratch/wait-release-runs.ps1 -Ids <id,id>`（每 60 秒输出一次状态）。
+- 调用 `.tmp/scratch/` 下这些脚本时，同样须先在当前会话中设置上述三项编码：脚本内部设置的 `$OutputEncoding` 只作用于脚本作用域，
+  `git credential fill` 仍报「missing protocol field」（v0.3.30 实测）。
 - 官网的下载清单地址是 `https://qywork.io/download/latest.json`（单数 `download`），由服务器每 10 分钟同步一次，
   同步记录在服务器的 `/opt/qywork-cloud/downloads/mirror.log`；同步后版本公告自动写入。
