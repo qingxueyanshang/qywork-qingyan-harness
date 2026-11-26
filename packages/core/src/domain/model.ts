@@ -1632,6 +1632,8 @@ export type ProviderRetryDecision =
   | 'limit_exhausted'
   | 'context_compaction'
   | 'context_compaction_failed'
+  /** 接口以 400 / 422 拒绝了包含图片或视频的请求，原样重发一次；再次被拒才移除该媒体。 */
+  | 'media_recheck'
   /** 接口拒绝了包含图片的请求，移除图片后重发。 */
   | 'images_removed'
   /** 接口拒绝了包含视频的请求，视频改为指向抽帧的说明后重发。 */

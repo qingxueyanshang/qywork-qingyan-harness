@@ -186,19 +186,20 @@ test('接口拒绝视频后本轮改为抽帧说明重发，同一会话之后�
     return (script.shift() ?? (() => text('完成')))()
   }, 10)
   try {
-    // 第一轮：读取视频 → 携带视频的请求被拒 → 视频改为说明后重发 → 本轮完成。
+    // 第一轮：读取视频 → 携带视频的请求被拒 → 原样重发再次被拒 → 视频改为说明后重发 → 本轮完成。
     const firstEvents = await h.ask('看视频')
     expect(firstEvents.filter((e) => e.type === 'run.error')).toEqual([])
     expect(finished(firstEvents)?.status).toBe('done')
-    expect(h.bodies.map(hasVideo)).toEqual([false, true, false])
-    expect(h.bodies[2]).toContain('接口拒绝视频输入，此视频未发送')
-    expect(h.bodies[2]).toContain('read_file')
-    expect(h.bodies[2]).toContain('The video file is too short')
+    expect(h.bodies.map(hasVideo)).toEqual([false, true, true, false])
+    expect(h.bodies[3]).toContain('接口拒绝视频输入，此视频未发送')
+    expect(h.bodies[3]).toContain('read_file')
+    expect(h.bodies[3]).toContain('The video file is too short')
 
     const firstRun = h.runs()[0]!
     const rows = listProviderRequests(h.store, firstRun.id).filter((r) => r.purpose === 'turn')
-    expect(rows.map((r) => r.status)).toEqual(['received', 'rejected', 'received'])
-    expect(rows[1]!.diagnostic?.retry.decision).toBe('videos_removed')
+    expect(rows.map((r) => r.status)).toEqual(['received', 'rejected', 'rejected', 'received'])
+    expect(rows[1]!.diagnostic?.retry.decision).toBe('media_recheck')
+    expect(rows[2]!.diagnostic?.retry.decision).toBe('videos_removed')
     expect(
       conversationRejectsVideos(h.store, firstRun.conversationId, 'relay', 'qwen3.8-flash'),
     ).toBe(true)
@@ -206,8 +207,8 @@ test('接口拒绝视频后本轮改为抽帧说明重发，同一会话之后�
     // 第二轮：再次读取视频时改为抽帧，之后的请求都不再直接携带视频。
     const secondEvents = await h.ask('再看一次')
     expect(finished(secondEvents)?.status).toBe('done')
-    expect(h.bodies.length).toBeGreaterThan(3)
-    expect(h.bodies.slice(3).some(hasVideo)).toBe(false)
+    expect(h.bodies.length).toBeGreaterThan(4)
+    expect(h.bodies.slice(4).some(hasVideo)).toBe(false)
   } finally {
     await h.close()
   }

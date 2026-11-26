@@ -6,7 +6,8 @@
  * `store/repos/steps.ts` 的记录写入与查询。经真实 `Session`、真实 `read_file`、真实 `Store` 与本地 HTTP 端点执行。
  *
  * 原始失败形状：`read_file` 读取图片成功，携带图片的下一次请求被 400 拒绝，本轮失败；
- * 图片留在之后的每次请求中，继续执行时再次被拒。断言针对端点实际收到的请求体。
+ * 图片留在之后的每次请求中，继续执行时再次被拒。被拒后先原样重发一次，连续两次被拒才移除图片。
+ * 断言针对端点实际收到的请求体。
  */
 
 import { expect, test } from 'bun:test'
@@ -162,18 +163,23 @@ test('接口拒绝图片后本轮移除图片重发，同一会话之后不再�
     return (script.shift() ?? (() => text('完成')))()
   })
   try {
-    // 第一轮：读取图片 → 携带图片的请求被拒 → 移除图片后重发 → 本轮完成。
+    // 第一轮：读取图片 → 携带图片的请求被拒 → 原样重发再次被拒 → 移除图片后重发 → 本轮完成。
     const firstEvents = await h.ask('看图')
     expect(firstEvents.filter((e) => e.type === 'run.error')).toEqual([])
     expect(finished(firstEvents)?.status).toBe('done')
-    expect(h.bodies.map(hasImage)).toEqual([false, true, false])
-    expect(h.bodies[2]).toContain('接口拒绝图片输入，此图片未发送')
-    expect(h.bodies[2]).toContain(CONTRACT_REJECTION.message)
+    expect(h.bodies.map(hasImage)).toEqual([false, true, true, false])
+    expect(h.bodies[3]).toContain('接口拒绝图片输入，此图片未发送')
+    expect(h.bodies[3]).toContain(CONTRACT_REJECTION.message)
 
     const firstRun = h.runs()[0]!
     const rows = listProviderRequests(h.store, firstRun.id).filter((r) => r.purpose === 'turn')
-    expect(rows.map((r) => r.status)).toEqual(['received', 'rejected', 'received'])
-    expect(rows[1]!.diagnostic?.retry.decision).toBe('images_removed')
+    expect(rows.map((r) => r.status)).toEqual(['received', 'rejected', 'rejected', 'received'])
+    expect(rows.map((r) => r.diagnostic?.retry.decision)).toEqual([
+      undefined,
+      'media_recheck',
+      'images_removed',
+      undefined,
+    ])
 
     // 未送达的那次读取：工具 step 带有标记，实时事件携带同一个 step id。
     const readStep = listSteps(h.store, firstRun.id).find((s) => s.toolCallId === 'call_1')!
@@ -188,8 +194,8 @@ test('接口拒绝图片后本轮移除图片重发，同一会话之后不再�
     // 第二轮：请求不再携带图片，读取图片直接返回。
     const secondEvents = await h.ask('再看一次')
     expect(finished(secondEvents)?.status).toBe('done')
-    expect(h.bodies).toHaveLength(5)
-    expect(h.bodies.slice(3).some(hasImage)).toBe(false)
+    expect(h.bodies).toHaveLength(6)
+    expect(h.bodies.slice(4).some(hasImage)).toBe(false)
     const secondRun = h.runs()[1]!
     const reread = listSteps(h.store, secondRun.id).find((s) => s.toolCallId === 'call_2')!
     expect(reread.status).toBe('failure')
@@ -226,11 +232,11 @@ test('移除图片后重发仍被拒时本轮结束并显示接口原文', async
         message: `HTTP 400 请求无效：${CONTRACT_REJECTION.message}`,
       },
     ])
-    expect(h.bodies.map(hasImage)).toEqual([false, true, false])
+    expect(h.bodies.map(hasImage)).toEqual([false, true, true, false])
     const decisions = listProviderRequests(h.store, h.runs()[0]!.id)
       .filter((r) => r.status === 'rejected')
       .map((r) => r.diagnostic?.retry.decision)
-    expect(decisions).toEqual(['images_removed', 'not_retryable'])
+    expect(decisions).toEqual(['media_recheck', 'images_removed', 'not_retryable'])
     // 原因不在图片：执行事实与未送达标记都不写入，继续执行时照常发送图片。
     expect(events.some((e) => e.type === 'tool.images_undelivered')).toBe(false)
     expect(
@@ -238,6 +244,40 @@ test('移除图片后重发仍被拒时本轮结束并显示接口原文', async
     ).toBe(false)
     const readStep = listSteps(h.store, h.runs()[0]!.id).find((s) => s.toolCallId === 'call_1')!
     expect(readStep.payload).not.toHaveProperty('imagesUndelivered')
+  } finally {
+    await h.close()
+  }
+}, 20_000)
+
+/**
+ * 原始失败形状（2026-11-26 用户会话诊断）：模型服务刷新凭据失败，以 400 拒绝一次带图片的请求，移除图片后的重发成功，
+ * 「接口拒绝图片」写入会话，此后该会话不再向该模型发送图片。原样重发一次即成功时图片照常发送，不写入记录。
+ */
+test('带图片的请求偶发一次 400 时原样重发成功，不移除图片、不写入记录', async () => {
+  let failures = 1
+  const script: (() => Response)[] = [() => toolCall('call_1'), () => text('看到了。')]
+  const h = await harness((body) => {
+    if (hasImage(body) && failures > 0) {
+      failures--
+      return Response.json(
+        { error: { type: 'invalid_request_error', message: 'OAuth refresh failed' } },
+        { status: 400 },
+      )
+    }
+    return (script.shift() ?? (() => text('完成')))()
+  })
+  try {
+    const events = await h.ask('看图')
+    expect(events.filter((e) => e.type === 'run.error')).toEqual([])
+    expect(finished(events)?.status).toBe('done')
+    expect(h.bodies.map(hasImage)).toEqual([false, true, true])
+    const rows = listProviderRequests(h.store, h.runs()[0]!.id).filter((r) => r.purpose === 'turn')
+    expect(rows.map((r) => r.status)).toEqual(['received', 'rejected', 'received'])
+    expect(rows[1]!.diagnostic?.retry.decision).toBe('media_recheck')
+    expect(events.some((e) => e.type === 'tool.images_undelivered')).toBe(false)
+    expect(
+      conversationRejectsImages(h.store, h.runs()[0]!.conversationId, 'relay', 'claude-opus-5-5'),
+    ).toBe(false)
   } finally {
     await h.close()
   }

@@ -217,6 +217,8 @@ export async function* sendTurn(
   /** 本轮各次可重发失败的分类短语，按发生顺序；携带上下文继续发送的一轮一并沿用。用尽时写入报错。 */
   const causes = run.carriedCauses
   run.carriedCauses = []
+  /** 上一次失败是含媒体的请求被 400 / 422 拒绝，且已原样重发（`media_recheck`）。 */
+  let rechecked = false
   for (;;) {
     turn.attemptThinking = []
 
@@ -349,13 +351,26 @@ export async function* sendTurn(
         continue
       }
 
-      if (pe && rejectedForVideos(run, turn, pe)) {
+      /*
+       * 含视频或图片的请求被 400 / 422 拒绝：先原样重发一次，连续两次被拒才按接口拒绝该媒体处理。
+       * 不要省去原样重发：对端的偶发故障同样以 400 答复（实例：模型服务刷新凭据失败），移除媒体后的重发随即成功，
+       * 「接口拒绝该媒体」被写入会话，此后该会话不再向该模型发送图片或视频。
+       */
+      const media = pe ? mediaRejectionOf(run, turn, pe) : null
+      if (media && !rechecked) {
+        rechecked = true
+        recordDecision('media_recheck')
+        continue
+      }
+      rechecked = false
+
+      if (pe && media === 'videos') {
         removeVideos(host, run, turn, pe)
         recordDecision('videos_removed')
         continue
       }
 
-      if (pe && rejectedForImages(run, turn, pe)) {
+      if (pe && media === 'images') {
         removeImages(host, run, turn, pe)
         recordDecision('images_removed')
         continue
@@ -533,6 +548,17 @@ export async function* sendTurn(
   }
 }
 
+/** 被拒的请求可能因哪种媒体被拒：视频先于图片（`rejectedForVideos`）；与媒体无关时为 null。 */
+function mediaRejectionOf(
+  run: RunState,
+  turn: TurnState,
+  pe: ProviderError,
+): 'videos' | 'images' | null {
+  if (rejectedForVideos(run, turn, pe)) return 'videos'
+  if (rejectedForImages(run, turn, pe)) return 'images'
+  return null
+}
+
 /**
  * 被拒的请求是否按「接口拒绝视频」处理：provider 以 400 / 422 拒绝、本次请求含原生发送的视频、本 run 尚未停止发送视频。
  *
@@ -584,9 +610,9 @@ function removeVideos(host: LoopHost, run: RunState, turn: TurnState, pe: Provid
 /**
  * 被拒的请求是否按「接口拒绝图片」处理：provider 以 400 / 422 拒绝、本次请求含图像块、本 run 尚未停止发送图片。
  *
- * 不按报错文字判断：各第三方接口的措辞不同。判断有误的代价是一次不带图片的重发；重发仍被拒时
- * `imagesRejected` 已为 true，按不可重发的错误结束本轮。模型声明不接受图片时（`vision === false`），
- * 图片已在物化时替换为说明，被拒与图片无关。
+ * 不按报错文字判断：各第三方接口的措辞不同。判断有误且移除图片后的重发成功时，本会话此后不再向该模型发送图片，
+ * 因此调用方先原样重发一次（`media_recheck`），连续两次被拒才移除。移除后重发仍被拒时 `imagesRejected` 已为 true，
+ * 按不可重发的错误结束本轮。模型声明不接受图片时（`vision === false`），图片已在物化时替换为说明，被拒与图片无关。
  *
  * 不要放宽为全部 `invalid_request`：413 同属该码，原因是请求体大小，移除图片后重发虽然成功，
  * 记录的「接口拒绝图片」却不成立，本会话会在该接口上停止发送图片。
