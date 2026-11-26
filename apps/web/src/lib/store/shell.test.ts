@@ -1,5 +1,6 @@
 /**
- * 覆盖 `store/shell.ts`：只有外壳界面窗口按桌面端运行；外壳拖放分发按落点交给命中的接收方，悬停状态广播给全部接收方，注销后不再接收。
+ * 覆盖 `store/shell.ts`：只有外壳界面窗口按桌面端运行；外壳拖放分发按落点交给命中的接收方，悬停状态广播给全部接收方，注销后不再接收；
+ * 落点在 Windows 上按物理像素换算，在 macOS 与 Linux 上即 CSS 像素。
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
@@ -7,9 +8,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test
 /** 外壳事件桥的桩：记录每个事件的回调，由测试手动触发。 */
 const handlers = new Map<string, (raw: unknown) => void>()
 const pixelRatioDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'devicePixelRatio')
+const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
 
 const setPixelRatio = (value: number) => {
   Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, value })
+}
+
+/** WebView 的 `navigator.platform`：决定外壳落点的单位。 */
+const setPlatform = (platform: string) => {
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { platform } })
 }
 
 beforeAll(() => {
@@ -38,6 +45,7 @@ afterEach(() => {
   } else {
     Reflect.deleteProperty(globalThis, 'devicePixelRatio')
   }
+  if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor)
 })
 
 const fire = (event: string, payload: unknown) => handlers.get(event)!({ payload })
@@ -116,51 +124,56 @@ describe('外壳拖放分发', () => {
     left()
   })
 
-  test.each([1, 1.25, 1.5, 2])('缩放为 %s 时，输入框与画布按 CSS 坐标接收拖放', async (scale) => {
-    const { registerDropSink } = await import('./shell.ts')
-    setPixelRatio(scale)
-    const received: { target: string; paths: string[]; pos: { x: number; y: number } }[] = []
-    const hovered = new Set<string>()
-    const regions = [
-      { target: 'composer', left: 200, top: 600, right: 900, bottom: 750 },
-      { target: 'canvas', left: 950, top: 100, right: 1250, bottom: 750 },
-    ]
-    const unregister = regions.map((r) =>
-      registerDropSink({
-        hit: (p) => p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom,
-        over: (on) => {
-          if (on) hovered.add(r.target)
-          else hovered.delete(r.target)
-        },
-        paths: (paths, pos) => received.push({ target: r.target, paths, pos }),
-      }),
-    )
-    try {
-      for (const { target, x, y } of [
-        { target: 'composer', x: 500, y: 675 },
-        { target: 'canvas', x: 1100, y: 400 },
-      ]) {
-        const position = { x: x * scale, y: y * scale }
-        const paths = [`C:/${target}.png`]
-        fire('tauri://drag-over', { position })
-        expect([...hovered]).toEqual([target])
-        fire('tauri://drag-drop', { paths, position })
-        expect(received.at(-1)).toEqual({ target, paths, pos: { x, y } })
-        expect(hovered.size).toBe(0)
+  test.each([1, 1.25, 1.5, 2])(
+    'Windows 上缩放为 %s 时，输入框与画布按 CSS 坐标接收拖放',
+    async (scale) => {
+      const { registerDropSink } = await import('./shell.ts')
+      setPlatform('Win32')
+      setPixelRatio(scale)
+      const received: { target: string; paths: string[]; pos: { x: number; y: number } }[] = []
+      const hovered = new Set<string>()
+      const regions = [
+        { target: 'composer', left: 200, top: 600, right: 900, bottom: 750 },
+        { target: 'canvas', left: 950, top: 100, right: 1250, bottom: 750 },
+      ]
+      const unregister = regions.map((r) =>
+        registerDropSink({
+          hit: (p) => p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom,
+          over: (on) => {
+            if (on) hovered.add(r.target)
+            else hovered.delete(r.target)
+          },
+          paths: (paths, pos) => received.push({ target: r.target, paths, pos }),
+        }),
+      )
+      try {
+        for (const { target, x, y } of [
+          { target: 'composer', x: 500, y: 675 },
+          { target: 'canvas', x: 1100, y: 400 },
+        ]) {
+          const position = { x: x * scale, y: y * scale }
+          const paths = [`C:/${target}.png`]
+          fire('tauri://drag-over', { position })
+          expect([...hovered]).toEqual([target])
+          fire('tauri://drag-drop', { paths, position })
+          expect(received.at(-1)).toEqual({ target, paths, pos: { x, y } })
+          expect(hovered.size).toBe(0)
+        }
+        expect(received).toHaveLength(2)
+        fire('tauri://drag-drop', {
+          paths: ['C:/outside.png'],
+          position: { x: 925 * scale, y: 675 * scale },
+        })
+        expect(received).toHaveLength(2)
+      } finally {
+        for (const dispose of unregister) dispose()
       }
-      expect(received).toHaveLength(2)
-      fire('tauri://drag-drop', {
-        paths: ['C:/outside.png'],
-        position: { x: 925 * scale, y: 675 * scale },
-      })
-      expect(received).toHaveLength(2)
-    } finally {
-      for (const dispose of unregister) dispose()
-    }
-  })
+    },
+  )
 
-  test('跨屏或页面缩放变化后，悬停与松开使用各自事件发生时的缩放比例', async () => {
+  test('Windows 上跨屏或页面缩放变化后，悬停与松开使用各自事件发生时的缩放比例', async () => {
     const { registerDropSink } = await import('./shell.ts')
+    setPlatform('Win32')
     setPixelRatio(1)
     const received: { x: number; y: number }[] = []
     let hovered = false
@@ -190,4 +203,36 @@ describe('外壳拖放分发', () => {
       unregister()
     }
   })
+
+  /** 原始失败形状：Retina 屏上落点按物理像素再除以 2，拖到输入框与画布上的文件全部落空。 */
+  test.each(['MacIntel', 'Linux x86_64'])(
+    '平台为 %s 时落点即 CSS 像素，缩放为 2 时输入框与画布接收拖放',
+    async (platform) => {
+      const { registerDropSink } = await import('./shell.ts')
+      setPlatform(platform)
+      setPixelRatio(2)
+      const received: { target: string; pos: { x: number; y: number } }[] = []
+      const regions = [
+        { target: 'composer', left: 200, top: 600, right: 900, bottom: 750 },
+        { target: 'canvas', left: 950, top: 100, right: 1250, bottom: 750 },
+      ]
+      const unregister = regions.map((r) =>
+        registerDropSink({
+          hit: (p) => p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom,
+          over: () => {},
+          paths: (_paths, pos) => received.push({ target: r.target, pos }),
+        }),
+      )
+      try {
+        fire('tauri://drag-drop', { paths: ['/Users/a/a.png'], position: { x: 500, y: 675 } })
+        fire('tauri://drag-drop', { paths: ['/Users/a/b.png'], position: { x: 1100, y: 400 } })
+        expect(received).toEqual([
+          { target: 'composer', pos: { x: 500, y: 675 } },
+          { target: 'canvas', pos: { x: 1100, y: 400 } },
+        ])
+      } finally {
+        for (const dispose of unregister) dispose()
+      }
+    },
+  )
 })

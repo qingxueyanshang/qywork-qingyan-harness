@@ -106,10 +106,15 @@ export function registerDropSink(sink: DropSink): () => void {
   }
 }
 
+/**
+ * 外壳给出的落点单位随平台不同，事件类型虽标注为物理像素：Windows 上是客户区的物理像素，
+ * macOS 与 Linux 上是视图坐标，即 CSS 像素。不要在后两者上除以 `devicePixelRatio`：Retina 屏上比例为 2，
+ * 落点坐标减半，落到输入区与画布之外。Windows 上每次事件读取当前比例，适配跨屏移动和页面缩放。
+ */
 function dropClientPosition(position: { x: number; y: number } | undefined) {
   if (!position) return
-  // Tauri 提供物理像素；每次事件读取当前比例，适配跨屏移动和页面缩放。
-  const scale = globalThis.devicePixelRatio ?? 1
+  const physical = /^Win/.test(globalThis.navigator?.platform ?? '')
+  const scale = physical ? (globalThis.devicePixelRatio ?? 1) : 1
   return { x: position.x / scale, y: position.y / scale }
 }
 
