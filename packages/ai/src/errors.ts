@@ -314,6 +314,9 @@ const UPSTREAM_CODES: Readonly<{ any: Codes } & Partial<Record<ChannelVendor, Co
     // 为 `enforced_spend_limit_reached` 时是达到用量档位的月度支出上限，不是限流。
     billing_error: 'insufficient_quota',
     enforced_spend_limit_reached: 'insufficient_quota',
+    // Anthropic：400 `invalid_request_error` 的 `error.details.error_code` 为 `organization_on_hold` 时是组织已被停用，
+    // 与请求内容无关。按状态码归为参数错误时，带图片的请求被判为接口拒绝图片。
+    organization_on_hold: 'auth_failed',
     // Gemini API（Interactions）：429 You have exceeded your daily quota.
     quota_exceeded: 'insufficient_quota',
     // 阿里云百炼。

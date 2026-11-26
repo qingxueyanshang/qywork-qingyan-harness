@@ -609,6 +609,18 @@ describe('按用户的下一步动作分类', () => {
     expect(classifyProviderError(P, http(403, 'Forbidden')).code).toBe('auth_failed')
   })
 
+  /**
+   * 原始失败形状（2026-11-26 云端请求记录）：Anthropic 以 400 `invalid_request_error` 报告组织已停用，按状态码归为参数错误，
+   * 带图片的请求被判为接口拒绝图片。
+   */
+  test('400 带 organization_on_hold 归为鉴权失败，其余 400 仍是参数错误', () => {
+    const body =
+      '{"type":"error","error":{"type":"invalid_request_error","message":"This organization has been disabled.","details":{"error_code":"organization_on_hold"}}}'
+    expect(classifyProviderError(P, http(400, body), null, body).code).toBe('auth_failed')
+    const plain = '{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}'
+    expect(classifyProviderError(P, http(400, plain), null, plain).code).toBe('invalid_request')
+  })
+
   /** 第三方接口余额耗尽时返回 403；按 Anthropic 与 OpenAI 两种正文格式各取一份原文。 */
   test('403 带余额不足正文归账户额度不足，其余 403 仍是无权访问', () => {
     const anthropic = Object.assign(new Error('403 insufficient balance'), {
