@@ -1,15 +1,24 @@
 /**
  * 覆盖 `api/appearance.ts`：个性化接口的读取、保存、恢复默认、背景图片设置、图片直链与
- * `personalization.changed` 广播；宠物库接口的读取、删除、帧直链与 `pets.changed` 广播。
+ * `personalization.changed` 广播；界面偏好接口的读取、按字段合并保存、拒绝不合法内容与
+ * `preferences.changed` 广播（含 `runtime/appearance/preferences.ts` 的读写）；
+ * 宠物库接口的读取、删除、帧直链与 `pets.changed` 广播。
  *
  * 只构造 `bus` 一个依赖：接口不读取项目与配置，其余字段构造后即成为集成测试。
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type AgentEvent, DEFAULT_PERSONALIZATION, type PersonalizationEntry } from '@qywork/core'
+import {
+  type AgentEvent,
+  DEFAULT_PERSONALIZATION,
+  DEFAULT_UI_PREFERENCES,
+  type PersonalizationEntry,
+  type UiPreferences,
+  type UiPreferencesEntry,
+} from '@qywork/core'
 import { savePet } from '@qywork/runtime'
 import { handleAppearanceApi } from './appearance.ts'
 import type { ApiRequestDeps } from './types.ts'
@@ -106,6 +115,49 @@ describe('个性化接口', () => {
   test('图片文件名不合法时返回 422', async () => {
     const r = await call('/api/personalization/image?name=a.svg', { method: 'PUT', body: 'x' })
     expect(r.status).toBe(422)
+  })
+})
+
+describe('界面偏好接口', () => {
+  const prefs = async (r: Response) => (await r.json()) as UiPreferencesEntry
+  const file = () => join(process.env.QYWORK_HOME!, 'preferences.json')
+
+  test('从未保存时读取默认值；保存只提交改动的字段，其余字段保持；每次保存广播保存后的内容', async () => {
+    expect(await prefs(await call('/api/preferences'))).toEqual({
+      preferences: DEFAULT_UI_PREFERENCES,
+      updatedAt: 0,
+    })
+    expect((await call('/api/preferences', put({ theme: 'dark' }))).status).toBe(200)
+    const r = await prefs(await call('/api/preferences', put({ fontScale: 1.15 })))
+    const expected: UiPreferences = { theme: 'dark', fontScale: 1.15, followUpMode: 'queue' }
+    expect(r.preferences).toEqual(expected)
+    expect(r.updatedAt).toBeGreaterThan(0)
+    expect((await prefs(await call('/api/preferences'))).preferences).toEqual(expected)
+    expect(events).toEqual([
+      { type: 'preferences.changed', preferences: { ...expected, fontScale: 1 } },
+      { type: 'preferences.changed', preferences: expected },
+    ])
+  })
+
+  test('不合法的内容返回 422，不落盘、不广播', async () => {
+    await call('/api/preferences', put({ theme: 'dark' }))
+    const before = await readFile(file(), 'utf8')
+    events = []
+    for (const body of [{ theme: 'blue' }, { fontScale: 2 }, { followUpMode: 'later' }, { x: 1 }]) {
+      expect((await call('/api/preferences', put(body))).status).toBe(422)
+    }
+    expect(await readFile(file(), 'utf8')).toBe(before)
+    expect(events).toEqual([])
+  })
+
+  test('文件无法解析时读取返回 422 与原因；保存以默认值为基础覆盖该文件', async () => {
+    await writeFile(file(), '{', 'utf8')
+    const bad = await call('/api/preferences')
+    expect(bad.status).toBe(422)
+    expect(((await bad.json()) as { error: string }).error).toContain('preferences.json')
+    const r = await prefs(await call('/api/preferences', put({ followUpMode: 'steer' })))
+    expect(r.preferences).toEqual({ ...DEFAULT_UI_PREFERENCES, followUpMode: 'steer' })
+    expect((await call('/api/preferences')).status).toBe(200)
   })
 })
 

@@ -31,6 +31,8 @@ export {
   readPet,
   savePet,
 } from './appearance/pets.ts'
+// 界面偏好：server 的界面偏好接口读写
+export { readUiPreferences, saveUiPreferences } from './appearance/preferences.ts'
 // 会话导出：`qy export`
 export { exportConversation, exportConversationDiagnostics } from './archive.ts'
 // Art 页面可用的 three.js 附加模块：sidecar 按同一份清单提供库文件

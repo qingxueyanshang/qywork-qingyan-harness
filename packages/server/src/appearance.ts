@@ -1,10 +1,11 @@
 /**
- * 外观的服务端装配：个性化与宠物库变更的广播，以及注入会话的 `PersonalizationPort` / `PetPort`。
+ * 外观的服务端装配：个性化、界面偏好与宠物库变更的广播，以及注入会话的 `PersonalizationPort` / `PetPort`。
  *
  * HTTP 接口（`api/appearance.ts`）与 `personalize` / `pet` 工具都经由此处广播：
  * 两条修改路径各自广播时，一处遗漏即导致其他屏幕无法更新。
  */
 
+import type { UiPreferences } from '@qywork/core'
 import {
   listPets,
   readPersonalization,
@@ -19,6 +20,11 @@ import type { EventBus } from './bus.ts'
 /** 广播个性化变更。工作区级事件，不带 `conversationId`：所有客户端都需要收到。 */
 export function announcePersonalization(bus: EventBus): void {
   bus.publish({ type: 'personalization.changed' })
+}
+
+/** 广播界面偏好变更，携带保存后的内容。工作区级事件，理由同 `announcePersonalization`。 */
+export function announcePreferences(bus: EventBus, preferences: UiPreferences): void {
+  bus.publish({ type: 'preferences.changed', preferences })
 }
 
 export function personalizationPort(bus: EventBus): PersonalizationPort {

@@ -45,6 +45,17 @@ export {
   parsePetPack,
   petFrameFiles,
 } from './domain/appearance/pet.ts'
+// 界面偏好：主题、字体大小与跟进处理方式。界面偏好接口与界面共用
+export {
+  DEFAULT_UI_PREFERENCES,
+  FONT_SCALE_RANGE,
+  type FollowUpMode,
+  mergeUiPreferences,
+  parseUiPreferences,
+  type ThemePref,
+  type UiPreferences,
+  type UiPreferencesEntry,
+} from './domain/appearance/preferences.ts'
 // Art 页面：尺寸参数与 viewport 读写。服务端生成、尺寸读取与界面渲染共用
 export {
   ART_DEFAULT_SIZE,

@@ -1,11 +1,12 @@
 /**
- * 外观：个性化与宠物库的读写与图片。
+ * 外观：个性化、界面偏好与宠物库的读写与图片。
  *
- * 两者都是本机级数据（`<configDir>/personalization/`、`<configDir>/pets/`），与项目无关，接口忽略 `?ws=`。
- * 当前屏幕的主题与选用哪只宠物不在服务端记录，见界面的 `lib/store/theme.ts` 与 `appearance/pet.ts`。
+ * 三者都是本机级数据（`<configDir>/personalization/`、`<configDir>/preferences.json`、`<configDir>/pets/`），
+ * 与项目无关，接口忽略 `?ws=`。选用哪只宠物不在服务端记录，见界面的 `appearance/pet.ts`。
  *
  * 每次保存与恢复默认都经 `announcePersonalization` 广播 `personalization.changed`：设置页与
- * `personalize` 工具修改同一份个性化，其他屏幕据此重新读取。
+ * `personalize` 工具修改同一份个性化，其他屏幕据此重新读取。界面偏好保存后经 `announcePreferences`
+ * 广播 `preferences.changed`，携带保存后的内容。
  */
 
 import { isPersonalImageName, revealBackdrop } from '@qywork/core'
@@ -18,10 +19,12 @@ import {
   petImagePath,
   readPersonalization,
   readPet,
+  readUiPreferences,
   resetPersonalization,
   savePersonalization,
+  saveUiPreferences,
 } from '@qywork/runtime'
-import { announcePersonalization, announcePet } from '../appearance.ts'
+import { announcePersonalization, announcePet, announcePreferences } from '../appearance.ts'
 import type { EventBus } from '../bus.ts'
 import { type ApiHandler, json } from './types.ts'
 
@@ -45,6 +48,18 @@ export const handleAppearanceApi: ApiHandler = async (url, req, d) => {
       return json(entry)
     }
     const r = await readPersonalization()
+    return r.ok ? json(r.entry) : json({ error: r.error }, 422)
+  }
+
+  // 界面偏好：PUT 的请求体只含修改的字段，按字段合并后整体校验。
+  if (p === '/api/preferences') {
+    if (req.method === 'PUT') {
+      const r = await saveUiPreferences(await req.json().catch(() => undefined))
+      if (!r.ok) return json({ error: r.error }, 422)
+      announcePreferences(d.bus, r.entry.preferences)
+      return json(r.entry)
+    }
+    const r = await readUiPreferences()
     return r.ok ? json(r.entry) : json({ error: r.error }, 422)
   }
 

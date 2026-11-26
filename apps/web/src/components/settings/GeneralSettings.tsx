@@ -1,21 +1,23 @@
-import { isDefaultPersonalization, type PermissionMode } from '@qywork/core'
+import {
+  FONT_SCALE_RANGE,
+  type FollowUpMode,
+  isDefaultPersonalization,
+  type PermissionMode,
+  type ThemePref,
+} from '@qywork/core'
 import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js'
 import { suspendUntil } from '../../lib/resource.ts'
 import {
   client,
   currentPersonalization,
-  FONT_SCALE_RANGE,
-  type FollowUpMode,
+  editPreferences,
   followUpMode,
   fontScale,
   isDesktopShell,
   petPrefs,
+  preferencesError,
   refreshPetLibrary,
-  setFollowUpMode,
-  setFontScale,
   setPetPrefs,
-  setTheme,
-  type ThemePref,
   theme,
   workspace,
 } from '../../lib/store/index.ts'
@@ -194,7 +196,7 @@ export function GeneralSettings() {
                     class="seg-item"
                     classList={{ active: theme() === t.id }}
                     type="button"
-                    onClick={() => setTheme(t.id)}
+                    onClick={() => editPreferences({ theme: t.id })}
                   >
                     {t.label}
                   </button>
@@ -216,7 +218,7 @@ export function GeneralSettings() {
                   // 滑块在拖动过程中保持在指针下。
                   const input = e.currentTarget
                   const top = input.getBoundingClientRect().top
-                  setFontScale(Number(input.value) / 100)
+                  editPreferences({ fontScale: Number(input.value) / 100 })
                   input
                     .closest('.settings-scroll')
                     ?.scrollBy(0, input.getBoundingClientRect().top - top)
@@ -257,7 +259,7 @@ export function GeneralSettings() {
                     class="seg-item"
                     classList={{ active: followUpMode() === m.id }}
                     type="button"
-                    onClick={() => setFollowUpMode(m.id)}
+                    onClick={() => editPreferences({ followUpMode: m.id })}
                   >
                     {m.label}
                   </button>
@@ -283,6 +285,7 @@ export function GeneralSettings() {
               </For>
             </fieldset>
           </Row>
+          <Show when={preferencesError()}>{(e) => <div class="settings-error">{e()}</div>}</Show>
         </div>
       </section>
 

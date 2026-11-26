@@ -8,6 +8,7 @@ import { produce } from 'solid-js/store'
 import { loadAnnouncements } from '../announcements.ts'
 import { setPersonalizationChange } from '../appearance/personalization.ts'
 import { setPetsChange } from '../appearance/pet.ts'
+import { receivePreferences } from '../appearance/preferences.ts'
 import { projectRemoteTabs } from '../browser.ts'
 import { setExportRequests } from '../canvas.ts'
 import { openFileInPanel } from '../files.ts'
@@ -109,10 +110,15 @@ export const globalEvents = handlers({
     },
   },
 
-  // 个性化、配置与宠物库是本机级数据，不属于任何会话或项目。
+  // 个性化、界面偏好、配置与宠物库是本机级数据，不属于任何会话或项目。
   'personalization.changed': {
     process(_ev, seq) {
       setPersonalizationChange(seq)
+    },
+  },
+  'preferences.changed': {
+    process(ev) {
+      receivePreferences(ev.preferences)
     },
   },
   'config.changed': {

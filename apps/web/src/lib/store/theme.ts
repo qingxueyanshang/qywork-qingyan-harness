@@ -1,10 +1,9 @@
 /**
  * 外观：主题（跟随系统 / 浅色 / 深色）与正在显示的个性化。两者只由本文件写入 DOM。
  *
- * 主题不写入服务端配置。服务端配置决定本机 agent 如何运行，主题决定当前屏幕如何显示。
- * 桌面端与手机端连接同一个 `qy serve`：写入服务端时，手机上切换为深色会使桌面端随之切换。
- * 此外首屏即需要主题：经由服务端时，第一帧只能按推测的主题渲染，HTTP 返回后再切换，产生明显的闪白。
- * 代价是更换设备后需要重新设置主题，可以接受：主题不是配置，而是当前屏幕的偏好。
+ * 主题的权威是电脑上的界面偏好，全部屏幕相同；读取、推送与修改见 `appearance/preferences.ts`。
+ * 本文件另在 localStorage 中记录最近应用的主题，只用于连接之前的首次渲染：首屏即需要主题，
+ * 等待服务端返回时第一帧只能按推测的主题渲染，返回后再切换，产生明显的闪白。取得电脑上的值后即覆盖该记录。
  *
  * 个性化只有一套，存放在服务端（所有屏幕相同）；读取与保存见 `appearance/personalization.ts`，
  * 本文件只负责把读取到的内容写入骨架变量。
@@ -17,11 +16,9 @@
  * `data-theme` 与个性化变量只由本文件设置，修改此处前先确认 `tokens.css` 的判据仍与之一致。
  */
 
-import type { Personalization } from '@qywork/core'
+import type { Personalization, ThemePref } from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { contrast, mix, overlayFor, parseColor, type Rgba, toCss, withAlpha } from '../color.ts'
-
-export type ThemePref = 'system' | 'light' | 'dark'
 
 /** 正在显示的个性化。`imageUrl` 是图片背景的直链，其他背景为 null。 */
 export interface PaintedPersonalization {
@@ -77,7 +74,7 @@ function save(key: string, value: string): void {
   try {
     localStorage.setItem(key, value)
   } catch {
-    // 保存失败只影响下次启动时恢复外观，本次切换已生效，无需提示用户。
+    // 写入失败只影响下次启动时的首次渲染，本次切换已生效，无需提示用户。
   }
 }
 
@@ -197,7 +194,7 @@ function repaint(): void {
 }
 
 /**
- * 将已保存的主题写入 DOM。由入口在 `render()` 之前同步调用一次。
+ * 将本机记录的主题写入 DOM。由入口在 `render()` 之前同步调用一次。
  *
  * 不在模块顶层直接执行：`import` 的副作用会经由 `store/index.ts` 传递到每一个
  * 引用 store 的模块，包括在没有 DOM 的环境中运行的单测，这些单测在 import 时即报
@@ -214,7 +211,8 @@ export function initTheme(): void {
   })
 }
 
-export function setTheme(pref: ThemePref): void {
+/** 应用一个主题并写入本机记录。只由 `appearance/preferences.ts` 调用。 */
+export function applyTheme(pref: ThemePref): void {
   applyDataTheme(pref)
   repaint()
   setThemeSignal(pref)

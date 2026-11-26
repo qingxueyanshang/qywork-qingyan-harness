@@ -1,6 +1,6 @@
 /**
  * 通用设置：新对话默认权限（配置读取、即时保存、连续切换、失败回滚，不修改当前会话）；
- * 主题三项始终可选；「个性化」一行打开个性化弹窗（颜色选择可选空值，修改后保存，恢复默认需确认）；
+ * 主题三项始终可选，选择后提交到电脑上的界面偏好；「个性化」一行打开个性化弹窗（颜色选择可选空值，修改后保存，恢复默认需确认）；
  * 个性化弹窗中选择图片后界面与服务端一致（`PersonalizationDialog.tsx`）。
  */
 import { afterAll, beforeAll, beforeEach, expect, jest, test } from 'bun:test'
@@ -17,6 +17,7 @@ let failNext = false
 let pendingSave: Promise<void> | undefined
 let commands: unknown[] = []
 let personalCalls: string[] = []
+let preferenceCalls: unknown[] = []
 
 const payload = (): ConfigPayload => ({
   path: 'config.json',
@@ -44,6 +45,14 @@ beforeAll(async () => {
     if (path === '/api/pairing') return { available: false, enabled: false, tunnel: null } as T
     // 「运行环境」一节在页面显示时获取检测结果（`environmentStore.ts`）。
     if (path === '/api/host/environment') return { environment: [] } as T
+    if (path === '/api/preferences') {
+      const patch = init?.method === 'PUT' ? JSON.parse(String(init.body)) : {}
+      if (init?.method === 'PUT') preferenceCalls.push(patch)
+      return {
+        preferences: { theme: 'system', fontScale: 1, followUpMode: 'queue', ...patch },
+        updatedAt: 1,
+      } as T
+    }
     if (path === '/api/personalization') {
       personalCalls.push(init?.method ?? 'GET')
       const body = init?.method === 'PUT' ? JSON.parse(String(init.body)) : DEFAULT_PERSONALIZATION
@@ -158,7 +167,8 @@ test('连续切换时保留最后选择，保存失败时回滚并显示错误',
   }
 })
 
-test('主题三项始终可选，个性化不影响主题的选中项', async () => {
+test('主题三项始终可选，个性化不影响主题的选中项；选择后提交到电脑上', async () => {
+  preferenceCalls = []
   store.paintPersonalization({
     personalization: { ...DEFAULT_PERSONALIZATION, accent: '#7c3aed' },
     imageUrl: null,
@@ -172,8 +182,11 @@ test('主题三项始终可选，个性化不影响主题的选中项', async ()
     expect(store.theme()).toBe('light')
     expect(themes.find((b) => b.textContent === '浅色')!.classList.contains('active')).toBe(true)
     expect(store.paintedPersonalization()?.personalization.accent).toBe('#7c3aed')
+    await until(() => preferenceCalls.length === 1)
+    expect(preferenceCalls).toEqual([{ theme: 'light' }])
   } finally {
-    store.setTheme('system')
+    store.editPreferences({ theme: 'system' })
+    await until(() => preferenceCalls.length === 2)
     store.paintPersonalization(null)
     view.close()
   }

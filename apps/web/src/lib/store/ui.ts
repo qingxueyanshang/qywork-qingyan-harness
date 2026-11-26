@@ -6,7 +6,7 @@
  * 记录在 localStorage 中，应用重启后同样恢复（`panels`）。浮层计数等一次操作过程中的状态不记录。
  */
 
-import { type SharedPanelTab, sharedPanelTabId } from '@qywork/core'
+import { type FollowUpMode, type SharedPanelTab, sharedPanelTabId } from '@qywork/core'
 import { createEffect, createSignal, onCleanup } from 'solid-js'
 import { createStore, unwrap } from 'solid-js/store'
 import { readSession, sessionSignal, writeSession } from '../session.ts'
@@ -1067,38 +1067,33 @@ if (isDesktopShell()) {
 const FOLLOWUP_KEY = 'qywork.followUpMode'
 
 /**
- * 会话运行期间发送消息的默认方式。
+ * 跟进处理方式：会话运行期间发送消息的默认方式（`FollowUpMode`）。
  *
- * `queue` 表示等当前一轮执行完毕后作为下一轮发起；`steer` 表示注入当前一轮，
- * 模型在下一次请求中即可看到。界面上对应「加入队列」与「调整方向」。
- *
- * 真源在客户端，服务端既不存储也不读取。它属于输入习惯，与主题、面板宽度同层；
- * 服务端另存一份会形成第二本账，且可能与用户当前的按键不一致：意图随每条
- * `message.send` 的 `steer` 字段显式携带。
- *
- * 按设备保存：手机上没有 `Ctrl+Enter`，两端的习惯无需一致。
+ * 权威是电脑上的界面偏好，读取、推送与修改都经 `appearance/preferences.ts`；本处的值是它的投影。
+ * 本机记录只用于连接之前的首次渲染与电脑上尚无记录时的初值。单条消息的意图随 `message.send` 的
+ * `steer` 字段显式携带，服务端不读取本值。
  */
-export type FollowUpMode = 'queue' | 'steer'
-
 function readFollowUpMode(): FollowUpMode {
   try {
     return localStorage.getItem(FOLLOWUP_KEY) === 'steer' ? 'steer' : 'queue'
   } catch {
-    // 隐私模式下 localStorage 会直接抛出异常。无法保存默认方式时不应导致应用无法启动。
+    // 隐私模式下 localStorage 会直接抛出异常。无法读取本机记录时不应导致应用无法启动。
     return 'queue'
   }
 }
 
-export const [followUpMode, setFollowUpModeSignal] = createSignal<FollowUpMode>(readFollowUpMode())
+const [followUpMode, setFollowUpModeSignal] = createSignal<FollowUpMode>(readFollowUpMode())
 
-/** 修改默认方式的唯一入口，同步落盘。 */
-export function setFollowUpMode(next: FollowUpMode): void {
+export { followUpMode }
+
+/** 应用一个值并写入本机记录。只由 `appearance/preferences.ts` 调用。 */
+export function applyFollowUpMode(next: FollowUpMode): void {
   if (next === followUpMode()) return
   setFollowUpModeSignal(next)
   try {
     localStorage.setItem(FOLLOWUP_KEY, next)
   } catch {
-    // 同上：本次选择已生效，保存失败只影响下次启动。
+    // 同上：本次选择已生效，写入失败只影响下次启动时的首次渲染。
   }
 }
 

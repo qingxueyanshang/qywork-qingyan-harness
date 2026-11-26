@@ -36,12 +36,7 @@ export {
   stopBackgroundCommand,
   type TeamRoleRow,
 } from './actions.ts'
-export {
-  FONT_SCALE_RANGE,
-  fontScale,
-  initFontScale,
-  setFontScale,
-} from './appearance/font-scale.ts'
+export { fontScale, initFontScale } from './appearance/font-scale.ts'
 export {
   currentPersonalization,
   editPersonalization,
@@ -72,6 +67,11 @@ export {
   stopPetEntry,
 } from './appearance/pet.ts'
 export { observePetWindow } from './appearance/pet-window.ts'
+export {
+  editPreferences,
+  observePreferences,
+  preferencesError,
+} from './appearance/preferences.ts'
 export {
   browserPresentation,
   browserReady,
@@ -239,8 +239,6 @@ export {
   type PaintedPersonalization,
   paintedPersonalization,
   paintPersonalization,
-  setTheme,
-  type ThemePref,
   theme,
 } from './theme.ts'
 export {
@@ -251,7 +249,6 @@ export {
   closePanel,
   closeSettings,
   composerSeed,
-  type FollowUpMode,
   foldOpen,
   followUpMode,
   holdOverlay,
@@ -280,7 +277,6 @@ export {
   setAccountOpen,
   setComposerSeed,
   setFoldOpen,
-  setFollowUpMode,
   setOpenFile,
   setPanelMaximized,
   setPanelTabUrl,

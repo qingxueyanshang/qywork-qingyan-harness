@@ -54,6 +54,7 @@ import {
   observePersonalization,
   observePet,
   observePetWindow,
+  observePreferences,
   openFileInPanel,
   openLinkInPanel,
   PANEL_MIN,
@@ -262,6 +263,7 @@ export function App() {
     const stopUpdates = observeAppUpdate()
     onCleanup(stopUpdates)
     onCleanup(observePersonalization())
+    onCleanup(observePreferences())
     onCleanup(observeModelCatalog())
     onCleanup(observeClientErrors())
     // 宠物只显示在桌面外壳的宠物窗口中；其他端不推导，避免每次会话转为空闲时都读取一次轮次。

@@ -26,6 +26,12 @@ afterAll(async () => {
   await GlobalRegistrator.unregister()
 })
 
+/** 应用主题。主题的读取与提交由 `appearance/preferences.ts` 负责，本文件只验证应用到界面的结果。 */
+async function paintTheme(pref: 'light' | 'dark'): Promise<void> {
+  const { applyTheme } = await import('../../lib/store/theme.ts')
+  applyTheme(pref)
+}
+
 const sample: Personalization = {
   background: { kind: 'gradient', from: '#101018', to: '#302050', direction: 'diagonal-down' },
   fog: { color: '#ffffff', density: 0.5, speed: 0.5 },
@@ -63,7 +69,7 @@ describe('color', () => {
 describe('外观权威', () => {
   test('应用个性化：按当前明暗写入半透明底色与强调色', async () => {
     const store = await import('../../lib/store/index.ts')
-    store.setTheme('dark')
+    await paintTheme('dark')
     store.paintPersonalization({ personalization: sample, imageUrl: null })
     const root = document.documentElement
     expect(root.getAttribute('data-theme')).toBe('dark')
@@ -80,7 +86,7 @@ describe('外观权威', () => {
 
   test('切换主题时按新明暗重新计算底色，个性化本身不变', async () => {
     const store = await import('../../lib/store/index.ts')
-    store.setTheme('light')
+    await paintTheme('light')
     const root = document.documentElement
     expect(root.getAttribute('data-theme')).toBe('light')
     expect(root.style.getPropertyValue('--frame-bg')).toBe('rgba(247, 247, 248, 0.25)')
@@ -219,15 +225,15 @@ describe('PersonalBackdrop', () => {
     const dispose = render(() => <PersonalBackdrop />, host)
     try {
       const dim = host.querySelector<HTMLElement>('.personal-dim')!
-      store.setTheme('light')
+      await paintTheme('light')
       expect(getComputedStyle(dim).backgroundColor).toBe('#ffffff')
-      store.setTheme('dark')
+      await paintTheme('dark')
       expect(getComputedStyle(dim).backgroundColor).toBe('#0c0c0d')
     } finally {
       dispose()
       host.remove()
       style.remove()
-      store.setTheme('light')
+      await paintTheme('light')
       store.paintPersonalization(null)
     }
   })
@@ -338,7 +344,7 @@ describe('骨架底色', () => {
       .join('\n')
     document.head.append(style)
     const root = document.documentElement
-    store.setTheme('light')
+    await paintTheme('light')
     store.paintPersonalization({ personalization: { ...sample, opacity: 0.85 }, imageUrl: null })
     const FRAME = root.style.getPropertyValue('--frame-bg')
     const CONTENT = root.style.getPropertyValue('--content-bg')

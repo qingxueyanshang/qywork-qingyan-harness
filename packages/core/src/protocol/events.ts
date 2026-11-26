@@ -9,6 +9,7 @@
  * 4. 每个事件都能独立表明所属的 run / step，不依赖前序事件的隐含状态。
  */
 
+import type { UiPreferences } from '../domain/appearance/preferences.ts'
 import type { ConversationId, MessageId, RunId, StepId } from '../domain/ids.ts'
 import type {
   Attachment,
@@ -89,6 +90,7 @@ export type AgentEvent =
   | DesktopStateEvent
   | DesktopTargetEvent
   | PersonalizationChangedEvent
+  | PreferencesChangedEvent
   | PetsChangedEvent
   | ConfigChangedEvent
   | SupportChangedEvent
@@ -668,6 +670,15 @@ export interface CanvasExportEvent {
  */
 export interface PersonalizationChangedEvent {
   type: 'personalization.changed'
+}
+
+/**
+ * 界面偏好已保存。工作区级事件，所有客户端都能收到。
+ * 携带保存后的完整内容：内容很小且不含密钥，各屏幕直接应用，不再读取一次（经远程隧道时一次往返约 0.5–2 秒）。
+ */
+export interface PreferencesChangedEvent {
+  type: 'preferences.changed'
+  preferences: UiPreferences
 }
 
 /** 宠物库中的一只宠物已保存或删除。理由同 `PersonalizationChangedEvent`。 */
