@@ -71,6 +71,8 @@ export interface ChatGeneration {
   system: string
   /** 用户消息。`video(input)` 是该参考视频的内容块（`videoBlocks`），由调用方按发送方式准备。 */
   content(video: (input: MediaInput) => ContentBlock[]): ContentBlock[]
+  /** 参考视频的说明中附带的路径；art 为该视频相对页面的路径，页面按它引用视频。 */
+  videoPath?(input: MediaInput): string
   /** 回复全文转为产物；`truncated` 为真表示输出达到上限，回复不完整。 */
   reply(text: string, truncated: boolean): ChatReply
 }
@@ -128,6 +130,7 @@ async function videoBlocks(
   call: MediaCall,
   input: MediaInput,
   n: number,
+  where: string | undefined,
   office: OfficePort | undefined,
   signal: AbortSignal,
 ): Promise<ContentBlock[] | string> {
@@ -139,6 +142,7 @@ async function videoBlocks(
     audio: false,
   }
   const facts = [
+    ...(where ? [where] : []),
     meta.seconds === null ? '时长未知' : `时长 ${Number(meta.seconds.toFixed(1))} 秒`,
     meta.size ? `${meta.size.width}×${meta.size.height}` : '尺寸未知',
   ].join('，')
@@ -249,6 +253,7 @@ export async function runChatGeneration(
       call,
       input,
       videos.size + 1,
+      generation.videoPath?.(input),
       deps.office,
       signal,
     )

@@ -7,7 +7,7 @@
 
 import { artPageSize, type CanvasPixels } from '@qywork/core'
 import { createResource, createSignal, onCleanup, onMount, Show } from 'solid-js'
-import { type ArtHandle, connectArt, inlineArtImages } from './art.ts'
+import { type ArtHandle, connectArt, loadArtPage } from './art.ts'
 import { Bitmap } from './Bitmap.tsx'
 
 /** 实时页面的句柄与视口。 */
@@ -30,7 +30,7 @@ export function ArtView(props: {
     async (url) => {
       const res = await fetch(url, { cache: 'no-store' })
       if (!res.ok) throw new Error(`页面读取失败：${res.status}`)
-      return inlineArtImages(await res.text(), url)
+      return loadArtPage(await res.text(), url)
     },
   )
   return (
@@ -47,7 +47,7 @@ export function ArtView(props: {
       keyed
     >
       {(page) => {
-        const size = artPageSize(page)
+        const size = artPageSize(page.html)
         const [error, setError] = createSignal<string | null>(null)
         let frame!: HTMLIFrameElement
         onMount(() => {

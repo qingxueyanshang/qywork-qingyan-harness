@@ -832,11 +832,12 @@ describe('画布运行：Art', () => {
    * 原始失败形状：设计稿页面无法读取工作区图片，模型每次生成后用脚本把图片 base64 内嵌进 HTML，
    * 再次运行时整页发回模型（一次 $1.415）。改为向模型提供参考图相对页面的路径，页面按路径引用。
    */
-  test('参考图附带相对页面的路径；页面引用的工作区图片自动连线，不存在的写入回执', async () => {
+  test('参考图附带相对页面的路径；页面引用的工作区图片与视频自动连线，不存在的写入回执', async () => {
     const { ws, ids } = await setup([
       { op: 'add_file', ref: '$a', path: 'a.png', name: '横幅' },
       { op: 'add_generate', ref: '$g', output: 'art', prompt: '首页用 @[$a] 做横幅' },
     ])
+    await writeFile(join(ws.root, 'clip.mp4'), MP4)
     const svc = new CanvasService({ publish: () => {} })
     const fake = fakePort()
     const run = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -853,20 +854,23 @@ describe('画布运行：Art', () => {
           bytes: page(
             720,
             1280,
-            '<img src="../a.png"><div style="background:url(../b.png)"></div><img src="../缺失.jpg">',
+            '<img src="../a.png"><div style="background:url(../b.png)"></div><img src="../缺失.jpg">' +
+              '<video src="../clip.mp4" autoplay muted></video>',
           ),
           mime: 'text/html',
         },
       ],
     })
     const done = await run.done
-    expect(done).toMatchObject({ ok: true, warning: '页面引用的图片不存在：../缺失.jpg' })
+    expect(done).toMatchObject({ ok: true, warning: '页面引用的文件不存在：../缺失.jpg' })
     const doc = await onDisk(ws.root)
-    const b = doc.nodes.find((n) => n.type === 'file' && n.path === 'b.png')
-    expect(b).toBeDefined()
+    const placed = (path: string) => doc.nodes.find((n) => n.type === 'file' && n.path === path)
+    expect(placed('b.png')).toBeDefined()
+    expect(placed('clip.mp4')).toBeDefined()
     expect(doc.edges.filter((e) => e.to === ids.$g).map((e) => [e.from, e.role])).toEqual([
       [ids.$a!, 'reference'],
-      [b!.id, 'reference'],
+      [placed('b.png')!.id, 'reference'],
+      [placed('clip.mp4')!.id, 'video'],
     ])
   })
 })

@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`text.ts` 的 `generateText`（经 `media.ts` 的 `makeMediaPort` 分派）与 `run.ts` 中两类共用的请求、计费、失败，
- * 以及参考视频的发送方式（`videoBlocks`：原生发送或经 Office worker 抽帧）。
+ * 以及参考视频的发送方式（`videoBlocks`：原生发送或经 Office worker 抽帧；art 另附视频相对页面的路径）。
  * 重发与重发日志由 `art.test.ts` 覆盖，两类经同一个 `runChatGeneration`。
  *
  * 对端是本机模拟的对话接口（OpenAI 兼容协议），按脚本返回 SSE 正文，并记录收到的请求体。
@@ -230,6 +230,26 @@ describe('文本生成：参考视频', () => {
     expect(at.every((i) => i >= 0)).toBe(true)
     expect([...at].sort((a, b) => a - b)).toEqual(at)
     expect(await readdir(join(root, '.tmp', 'media-frames', 'office'))).toEqual([])
+  })
+
+  test('Art 的参考视频另附相对页面的路径，系统提示词写明页面中播放视频的写法', async () => {
+    answer = '<!doctype html><html><body><video src="../clip.mp4"></video></body></html>'
+    const { root, path, bytes } = await clip()
+    const result = await makeMediaPort(withModel('qwen3.8-flash')).generate(
+      {
+        type: 'art',
+        prompt: '把视频1放在页面中央',
+        inputs: [{ role: 'video', bytes, mime: 'video/mp4', path }],
+        params: {},
+        outputDir: join(root, 'generated'),
+        workspaceRoot: root,
+      },
+      new AbortController().signal,
+    )
+    if (!result.ok) throw new Error(result.message)
+    const messages = bodies[0]!.messages as { role: string }[]
+    expect(JSON.stringify(messages[0])).toContain('<video> 的 src 直接写这个路径')
+    expect(JSON.stringify(messages.at(-1))).toContain('视频1（../clip.mp4，时长 5 秒，640×360）：')
   })
 
   test('模型不接受原生视频且没有 Office 端口时不发出请求，写明原因', async () => {

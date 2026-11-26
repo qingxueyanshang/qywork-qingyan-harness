@@ -47,6 +47,9 @@ export function artSystemPrompt(size: { w: number; h: number }): string {
       '参考视频以视频本身或按画面变化抽取的若干帧给出，帧前写明该帧在视频中的时刻。',
     '参考图后括号中的路径是该图相对页面的路径。页面中要显示参考图时，<img> 的 src 或 CSS 的 url() 直接写这个路径，' +
       '画布显示页面时载入该图片；不要把图片编码进页面，也不要用占位图形代替已提供的参考图。',
+    '参考视频后括号中的第一项是该视频相对页面的路径。页面中要播放参考视频时，<video> 的 src 直接写这个路径，' +
+      '画布显示页面时载入该视频；自动播放的视频带 muted 与 playsinline 属性（运行环境中只有静音的视频能自动播放）。' +
+      '录制时视频的播放进度随页面时钟推进。',
     '给出当前页面时，在它的基础上按要求修改，输出修改后的完整文档。',
   ].join('\n')
 }
@@ -67,6 +70,9 @@ export function generateArt(
   deps: ChatDeps,
 ): Promise<MediaCallResult> {
   const size = artSizeOf(call.params)
+  /** 输入文件相对页面（产物所在目录）的路径；不知道产物目录时为空。 */
+  const relativeToPage = (input: MediaInput) =>
+    call.outputDir ? relative(call.outputDir, input.path).replaceAll('\\', '/') : ''
   const content = (video: (input: MediaInput) => ContentBlock[]): ContentBlock[] => {
     const blocks: ContentBlock[] = []
     let images = 0
@@ -81,7 +87,7 @@ export function generateArt(
         continue
       }
       images += 1
-      const rel = call.outputDir ? relative(call.outputDir, input.path).replaceAll('\\', '/') : ''
+      const rel = relativeToPage(input)
       blocks.push({
         type: 'text',
         text: rel ? `${imageMention(images)}（${rel}）：` : `${imageMention(images)}：`,
@@ -98,6 +104,7 @@ export function generateArt(
     {
       system: artSystemPrompt(size),
       content,
+      videoPath: relativeToPage,
       reply(text, truncated) {
         const html = extractHtml(text)
         if (!html) {

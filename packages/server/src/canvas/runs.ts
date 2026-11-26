@@ -11,7 +11,7 @@ import {
   activeMediaParams,
   addVersions,
   applyCanvasOps,
-  artImageRefs,
+  artMediaRefs,
   type CanvasBatchRunResult,
   type CanvasCancelOutcome,
   type CanvasDoc,
@@ -28,6 +28,7 @@ import {
   type GenerateOutput,
   inputsOf,
   isChatOutput,
+  isInlineVideo,
   log,
   type MediaOutput,
   mediaOperationFor,
@@ -139,7 +140,7 @@ function settleImages(
 
 /**
  * 引用任务记录的占位版本改为指向产物。视频见 `settleVideo`；其余类别的首个产物替换占位版本、其余产物成为同一卡片的版本
- * （`settleImages`），设计稿页面引用的工作区图片连到该卡（`linkArtImages`）。
+ * （`settleImages`），设计稿页面引用的工作区图片与视频连到该卡（`linkArtMedia`）。
  */
 function settleOutput(
   doc: CanvasDoc,
@@ -148,13 +149,11 @@ function settleOutput(
   files: GeneratedFile[],
   sizes: Map<string, CanvasPixels>,
   warning: string | undefined,
-  artImages: readonly string[],
+  artMedia: readonly string[],
 ): CanvasResult {
   if (output === 'video') return settleVideo(doc, card.nodeId, card.versionId, files, sizes)
   const settled = settleImages(doc, card.nodeId, card.versionId, files, sizes, warning)
-  return settled.ok && output === 'art'
-    ? linkArtImages(settled.doc, card.nodeId, artImages)
-    : settled
+  return settled.ok && output === 'art' ? linkArtMedia(settled.doc, card.nodeId, artMedia) : settled
 }
 
 /** 占位版本记录实际使用的接口与模型：使用默认模型发起时占位版本未记录它们。占位版本已不在时原样返回副本。 */
@@ -650,11 +649,11 @@ export class CanvasRuns {
     const output = node.output === 'video' ? videoOf(files).path : files[0]?.path
     if (output) facts.output = output
     const sizes = await this.sizesOf(root, files)
-    const images = node.output === 'art' ? await this.artImagesOf(root, files[0]?.path) : null
+    const media = node.output === 'art' ? await this.artMediaOf(root, files[0]?.path) : null
     const warning =
       [
         landed.warning,
-        images?.missing.length ? `页面引用的图片不存在：${images.missing.join('、')}` : '',
+        media?.missing.length ? `页面引用的文件不存在：${media.missing.join('、')}` : '',
       ]
         .filter(Boolean)
         .join('；') || undefined
@@ -671,7 +670,7 @@ export class CanvasRuns {
           files,
           sizes,
           landed.warning,
-          images?.found ?? [],
+          media?.found ?? [],
         ),
       warning,
     )
@@ -1277,17 +1276,17 @@ export class CanvasRuns {
   }
 
   /**
-   * 设计稿页面按相对路径引用的工作区图片：`found` 为存在的图片（工作区路径），`missing` 为页面中写的、
+   * 设计稿页面按相对路径引用的工作区图片与视频：`found` 为存在的文件（工作区路径），`missing` 为页面中写的、
    * 不存在或越出工作区的路径。页面无法读取时两者都为空。
    */
-  private async artImagesOf(
+  private async artMediaOf(
     root: string,
     page: string | undefined,
   ): Promise<{ found: string[]; missing: string[] }> {
     const html = page ? await readFile(join(root, page), 'utf8').catch(() => '') : ''
     const found: string[] = []
     const missing: string[] = []
-    for (const ref of artImageRefs(html)) {
+    for (const ref of artMediaRefs(html)) {
       const path = page ? resolveArtRef(page, ref) : null
       if (path && (await this.isFile(root, path))) found.push(path)
       else missing.push(ref)
@@ -1310,11 +1309,11 @@ export class CanvasRuns {
 }
 
 /**
- * 设计稿页面引用的工作区图片连到该 art 卡：未放置到画布上的先放置，已连接的不重复连接。
- * 连线使图片来源在画布上可见，重新生成时这些图片也作为参考图交给模型。
+ * 设计稿页面引用的工作区图片与视频连到该 art 卡：未放置到画布上的先放置，已连接的不重复连接；图片为参考图，视频为参考视频。
+ * 连线使文件来源在画布上可见，重新生成时这些文件也交给模型。
  * 不成立时（例如该卡已不存在）保持原文档：版本已写入，补连线不应使回写失败。
  */
-function linkArtImages(doc: CanvasDoc, nodeId: string, paths: readonly string[]): CanvasResult {
+function linkArtMedia(doc: CanvasDoc, nodeId: string, paths: readonly string[]): CanvasResult {
   const connected = new Set(inputsOf(doc, nodeId).map((e) => e.from))
   const ops: CanvasOp[] = []
   for (const [i, path] of paths.entries()) {
@@ -1322,7 +1321,7 @@ function linkArtImages(doc: CanvasDoc, nodeId: string, paths: readonly string[])
     if (placed && connected.has(placed.id)) continue
     const from = placed ? placed.id : `$img${i}`
     if (!placed) ops.push({ op: 'add_file', ref: from, path })
-    ops.push({ op: 'connect', from, to: nodeId, role: 'reference' })
+    ops.push({ op: 'connect', from, to: nodeId, role: isInlineVideo(path) ? 'video' : 'reference' })
   }
   if (!ops.length) return { ok: true, doc, refs: {} }
   const linked = applyCanvasOps(doc, ops)

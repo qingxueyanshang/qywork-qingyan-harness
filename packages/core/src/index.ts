@@ -59,11 +59,11 @@ export {
 // Art 页面：尺寸参数与 viewport 读写。服务端生成、尺寸读取与界面渲染共用
 export {
   ART_DEFAULT_SIZE,
-  ART_IMAGE_REF_RE,
+  ART_MEDIA_REF_RE,
   ART_POSTER_MS,
   ART_SIZE_PARAM,
-  artImageRefs,
   artImportMap,
+  artMediaRefs,
   artPageSize,
   artSizeOf,
   artViewportOf,

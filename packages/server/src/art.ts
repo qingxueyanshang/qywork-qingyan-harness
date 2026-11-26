@@ -12,9 +12,9 @@
 import { readFile } from 'node:fs/promises'
 import { join, relative, resolve } from 'node:path'
 import {
-  ART_IMAGE_REF_RE,
-  artImageRefs,
+  ART_MEDIA_REF_RE,
   artImportMap,
+  artMediaRefs,
   insertAfterHead,
   resolveArtRef,
 } from '@qywork/core'
@@ -61,21 +61,29 @@ export const ART_LIBRARY: Readonly<Record<string, string>> = {
 
 /**
  * 引导页：收到父窗口发来的 `qywork-art-load` 后，以其 HTML 替换整个文档。只接受父窗口的消息，只执行一次。
+ * `media` 中每项的 `token` 在写入前替换为其 `blob` 的地址（界面 `loadArtPage` 提供的视频）。Blob 地址在沙箱内生成，
+ * 与页面同源：截图库以 `crossOrigin = 'anonymous'` 重新载入视频后绘制到画布，跨源的地址无法读取画面。
+ * `document.open` 不替换全局对象，写入前生成的地址在写入的页面中仍然有效。
  * 加载后向父窗口报告 `qywork-art-host`，父窗口据此发送页面。
  */
 const HOST_PAGE = `<!doctype html><meta charset="utf-8"><script>
 addEventListener('message', function load(e) {
   if (e.source !== parent || !e.data || e.data.type !== 'qywork-art-load') return
   removeEventListener('message', load)
+  var html = e.data.html
+  var media = e.data.media || []
+  for (var i = 0; i < media.length; i++) {
+    html = html.split(media[i].token).join(URL.createObjectURL(media[i].blob))
+  }
   document.open()
-  document.write(e.data.html)
+  document.write(html)
   document.close()
 })
 parent.postMessage({ type: 'qywork-art-host' }, '*')
 </script>`
 
-/** 图片扩展名对应的媒体类型，与 `ART_IMAGE_REF_RE` 接受的扩展名一致。 */
-const IMAGE_MIME: Readonly<Record<string, string>> = {
+/** 图片与视频扩展名对应的媒体类型，与 `ART_MEDIA_REF_RE` 接受的扩展名一致。 */
+const MEDIA_MIME: Readonly<Record<string, string>> = {
   png: 'image/png',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
@@ -83,13 +91,17 @@ const IMAGE_MIME: Readonly<Record<string, string>> = {
   webp: 'image/webp',
   avif: 'image/avif',
   svg: 'image/svg+xml',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
 }
 
 /**
- * 内部渲染（`browser/render.ts`）使用的页面：注入 importmap（库地址为 `lib`），并把按相对路径引用的工作区图片
- * 替换为 data URL。引导页以 sidecar 的源加载，相对路径会按 `/art/host` 解析。
+ * 内部渲染（`browser/render.ts`）使用的页面：注入 importmap（库地址为 `lib`），并把按相对路径引用的工作区图片与视频
+ * 替换为 data URL。引导页以 sidecar 的源加载，相对路径会按 `/art/host` 解析。视频在此用 data URL：内部渲染由 CDP 截屏，
+ * 不经截图库，没有按帧重新载入。
  * 不要改为写入带令牌的文件地址：页面脚本可以读取它并调用接口。
- * `pagePath` 为页面文件的绝对路径；不存在或越出工作区的图片保持原样。
+ * `pagePath` 为页面文件的绝对路径；不存在或越出工作区的文件保持原样。
  */
 export async function prepareArtForRender(
   html: string,
@@ -99,14 +111,14 @@ export async function prepareArtForRender(
 ): Promise<string> {
   const page = relative(workspaceRoot, pagePath).replaceAll('\\', '/')
   const found = new Map<string, string>()
-  for (const rel of artImageRefs(html)) {
+  for (const rel of artMediaRefs(html)) {
     const path = resolveArtRef(page, rel)
-    const mime = IMAGE_MIME[rel.split('.').pop()?.toLowerCase() ?? '']
+    const mime = MEDIA_MIME[rel.split('.').pop()?.toLowerCase() ?? '']
     if (!path || !mime) continue
     const bytes = await readFile(join(workspaceRoot, path)).catch(() => null)
     if (bytes) found.set(rel, `data:${mime};base64,${bytes.toString('base64')}`)
   }
-  const inlined = html.replace(ART_IMAGE_REF_RE, (whole, lead: string, rel: string) => {
+  const inlined = html.replace(ART_MEDIA_REF_RE, (whole, lead: string, rel: string) => {
     const data = found.get(rel)
     return data ? `${lead}${data}` : whole
   })

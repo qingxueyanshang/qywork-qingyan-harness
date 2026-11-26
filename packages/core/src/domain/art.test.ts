@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   ART_DEFAULT_SIZE,
-  artImageRefs,
+  artMediaRefs,
   artSizeOf,
   artViewportOf,
   insertAfterHead,
@@ -64,13 +64,21 @@ describe('Art：尺寸参数', () => {
   })
 })
 
-describe('Art：页面引用的图片', () => {
+describe('Art：页面引用的图片与视频', () => {
   test('提取 src 与 url() 中的相对路径，按首次出现去重；网络地址、data URL 与根路径不计入', () => {
     const html =
       `<img src="../角色/小满.png"><img src='a.JPG'>` +
       `<div style="background: url( ../角色/小满.png )"></div><i style="background:url('b.webp')"></i>` +
-      '<img src="https://x.test/c.png"><img src="//cdn/d.png"><img src="/e.png"><img src="data:image/png;base64,AA">'
-    expect(artImageRefs(html)).toEqual(['../角色/小满.png', 'a.JPG', 'b.webp'])
+      '<img src="https://x.test/c.png"><img src="//cdn/d.png"><img src="/e.png"><img src="data:image/png;base64,AA">' +
+      '<video src="../镜头/走位.mp4" autoplay muted></video><video><source src="c.webm"></video>' +
+      '<video src="https://x.test/f.mp4"></video><a href="g.mp4">'
+    expect(artMediaRefs(html)).toEqual([
+      '../角色/小满.png',
+      'a.JPG',
+      'b.webp',
+      '../镜头/走位.mp4',
+      'c.webm',
+    ])
   })
 
   test('相对页面所在目录解析为工作区路径；越出工作区根时为 null', () => {

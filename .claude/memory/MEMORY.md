@@ -47,4 +47,5 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [按请求计算缓存差额](cache-lag-by-request.md) — 上一次总输入减本次命中；固定差额等于系统提示词大小时是上游把它放在对话之后，客户端调整位置无效
 - [闪烁以实际绘制帧定案](flicker-probe-by-painted-frames.md) — DOM 逐帧检测找候选，CDP 截帧定案；内置浏览器在外壳中截屏；区域显示后创建的组件不挂起；模板克隆的图片挂起期间不加载
 - [Linux 端到端经 WSL](linux-e2e-via-wsl.md) — Mac/Linux 引擎只在非 Windows 上编译；在 WSL 中编译 Linux 外壳、Xvfb 下运行，从 Windows 经 localhost 转发驱动；root 须 --no-sandbox，WSL 的 Bun 是 1.3
+- [Art 页面中视频的真实浏览器验证](art-video-probe.md) — `.tmp/probe/art-video` 以真实引导页与 `loadArtPage` / `connectArt` 在无头 Edge 中截取；测试视频每秒一色，按中心像素判断进度
 - [远程访问下画布状态的时序实测](remote-canvas-timing-probe.md) — `.tmp/probe/canvas-run` 的模拟视频接口、远程监听器代理（延迟、慢读取）与窄屏 WebKit 脚本；不用 page.route 加延迟

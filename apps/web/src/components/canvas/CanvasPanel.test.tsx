@@ -5456,16 +5456,25 @@ describe('画布：纯函数与标签页', () => {
     expect(promptOfEditor(root)).toBe('@[n1] 走出\n下雨')
   })
 
-  test('设计稿页面按相对路径引用的工作区图片内嵌为 data URL；不存在的与网络地址保持原样', async () => {
-    const { inlineArtImages } = await import('./art.ts')
+  /**
+   * 原始失败形状：页面引用的视频无法在沙箱中播放。视频不内嵌为 data URL（截图库每帧按 src 重新载入），
+   * 换成占位地址并随页面交给引导页，由引导页在沙箱中生成 Blob 地址。
+   */
+  test('设计稿页面引用的图片内嵌为 data URL、视频换成占位地址随页面提供；不存在的与网络地址保持原样', async () => {
+    const { loadArtPage } = await import('./art.ts')
     const original = globalThis.fetch
     const asked: string[] = []
+    const files: Record<string, [Uint8Array<ArrayBuffer>, string]> = {
+      '角色/小满.png': [new Uint8Array([1, 2, 3]), 'image/png'],
+      '镜头/走位.mp4': [new Uint8Array([4, 5]), 'video/mp4'],
+    }
     globalThis.fetch = ((url: string) => {
       const path = new URL(String(url), 'http://localhost/').searchParams.get('path') ?? ''
       asked.push(path)
+      const file = files[path]
       return Promise.resolve(
-        path === '角色/小满.png'
-          ? new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } })
+        file
+          ? new Response(file[0], { headers: { 'content-type': file[1] } })
           : new Response('', { status: 404 }),
       )
     }) as unknown as typeof fetch
@@ -5473,12 +5482,16 @@ describe('画布：纯函数与标签页', () => {
       const page = 'http://localhost/api/files/raw?path=%E4%BD%9C%E5%93%81%2Fp.html'
       const html =
         '<img src="../角色/小满.png"><div style="background:url(\'../缺失.png\')"></div>' +
-        '<img src="https://x.test/a.png">'
-      const out = await inlineArtImages(html, page)
-      expect(out).toContain('<img src="data:image/png;base64,AQID">')
-      expect(out).toContain("url('../缺失.png')")
-      expect(out).toContain('src="https://x.test/a.png"')
-      expect(asked).toEqual(['角色/小满.png', '缺失.png'])
+        '<img src="https://x.test/a.png"><video src="../镜头/走位.mp4" autoplay muted></video>'
+      const out = await loadArtPage(html, page)
+      expect(out.html).toContain('<img src="data:image/png;base64,AQID">')
+      expect(out.html).toContain("url('../缺失.png')")
+      expect(out.html).toContain('src="https://x.test/a.png"')
+      expect(asked).toEqual(['角色/小满.png', '缺失.png', '镜头/走位.mp4'])
+      expect(out.media).toHaveLength(1)
+      const video = out.media[0]!
+      expect(out.html).toContain(`<video src="${video.token}" autoplay muted>`)
+      expect(new Uint8Array(await video.blob.arrayBuffer())).toEqual(new Uint8Array([4, 5]))
     } finally {
       globalThis.fetch = original
     }

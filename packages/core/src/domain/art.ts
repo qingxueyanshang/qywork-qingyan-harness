@@ -107,16 +107,17 @@ export function insertAfterHead(html: string, content: string): string {
 }
 
 /**
- * 页面中按相对路径引用图片的两种写法：`src="…"` 与 CSS 的 `url(…)`。第 1 组是写法前缀，第 2 组是路径。
- * 画布显示时按它把工作区图片载入页面（界面 `inlineArtImages`），生成后据此核对并补充连线（服务端），两处共用。
+ * 页面中按相对路径引用图片与视频的两种写法：`src="…"`（`<img>`、`<video>`、`<source>`）与 CSS 的 `url(…)`。
+ * 第 1 组是写法前缀，第 2 组是路径；视频扩展名为浏览器能播放的 mp4 / webm / mov。
+ * 画布显示时按它把工作区文件载入页面（界面 `loadArtPage`），生成后据此核对并补充连线（服务端），内部渲染同样按它载入。
  */
-export const ART_IMAGE_REF_RE =
-  /(\bsrc\s*=\s*["']|url\(\s*["']?)([^"'()\s]+?\.(?:png|jpe?g|gif|webp|avif|svg))(?=["')\s])/gi
+export const ART_MEDIA_REF_RE =
+  /(\bsrc\s*=\s*["']|url\(\s*["']?)([^"'()\s]+?\.(?:png|jpe?g|gif|webp|avif|svg|mp4|webm|mov))(?=["')\s])/gi
 
-/** 页面中按相对路径引用的图片，按首次出现去重；网络地址、data URL 与根路径不计入。 */
-export function artImageRefs(html: string): string[] {
+/** 页面中按相对路径引用的图片与视频，按首次出现去重；网络地址、data URL 与根路径不计入。类别按扩展名判定（`isInlineVideo`）。 */
+export function artMediaRefs(html: string): string[] {
   const refs = new Set<string>()
-  for (const m of html.matchAll(ART_IMAGE_REF_RE)) {
+  for (const m of html.matchAll(ART_MEDIA_REF_RE)) {
     const rel = m[2]!
     if (/^[a-z]+:|^\/\//i.test(rel) || rel.startsWith('/')) continue
     refs.add(rel)

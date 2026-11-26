@@ -1,6 +1,6 @@
 /**
- * Art 页面在画布中的运行。iframe 加载 sidecar 的引导页（`/art/host`），界面读取页面 HTML、在最前面注入运行时
- * 与 importmap 后经 `postMessage` 交给引导页写入。实时页面、封面、截图与录制都经由 `connectArt` 返回的句柄。
+ * Art 页面在画布中的运行。iframe 加载 sidecar 的引导页（`/art/host`），界面读取页面 HTML、载入其引用的工作区文件（`loadArtPage`）、
+ * 在最前面注入运行时与 importmap 后经 `postMessage` 交给引导页写入。实时页面、封面、截图与录制都经由 `connectArt` 返回的句柄。
  *
  * - iframe 必须带 `sandbox="allow-scripts"`：页面是模型写出的代码，不能访问界面的存储与 DOM，也不能使窗口跳转。
  * - 隐藏的页面（封面）用 `visibility: hidden` 放在视口内：放在视口外或被 `clip-path` 裁掉时，
@@ -9,13 +9,14 @@
  */
 
 import {
-  ART_IMAGE_REF_RE,
+  ART_MEDIA_REF_RE,
   ART_POSTER_MS,
-  artImageRefs,
   artImportMap,
+  artMediaRefs,
   artPageSize,
   type CanvasPixels,
   insertAfterHead,
+  isInlineVideo,
   resolveArtRef,
 } from '@qywork/core'
 import { client } from '../../lib/store/index.ts'
@@ -32,7 +33,7 @@ interface RuntimeOptions {
  * 不要引用本模块中的任何名称。
  *
  * - WebGL 上下文强制 `preserveDrawingBuffer`：截图在页面绘制之后的另一个任务中读取画布。
- * - 接管 `requestAnimationFrame`、`performance.now`、`Date.now` 与 CSS 动画：实时模式下随真实时间推进，
+ * - 接管 `requestAnimationFrame`、`performance.now`、`Date.now`、CSS 动画与视频的进度：实时模式下随真实时间推进，
  *   手动模式下停在进入时的时刻，`frame` 消息给出相对该时刻的毫秒数，推进后截取一帧。
  * - 截图用 modern-screenshot 把整个视口栅格化：WebGL 画面与页面上的 DOM 叠加内容都在其中。
  */
@@ -106,22 +107,61 @@ function artRuntime(opts: RuntimeOptions): void {
       a.currentTime = t - (born.get(a) ?? t)
     }
   }
-  const step = (t: number) => {
+  /**
+   * 视频在手动模式下随页面时钟定位：首次见到时记录当前的页面时刻、视频进度与是否在播放（含尚未开始的自动播放）并暂停，
+   * 之后按页面时刻推算进度，循环播放的取余，其余不超过时长。定位完成后才执行动画帧回调：页面在回调中把视频绘制到画布时取得新的画面。
+   * 截图库按视频的进度重新载入并定位克隆的视频后绘制。退出手动模式时，进入手动模式前在播放的视频恢复播放。
+   */
+  let tracks = new WeakMap<HTMLVideoElement, { at: number; time: number; playing: boolean }>()
+  const settled = (v: HTMLVideoElement) =>
+    new Promise<void>((resolve) => {
+      if (!v.seeking) return resolve()
+      v.addEventListener('seeked', () => resolve(), { once: true })
+      setTimeout(resolve, 2000)
+    })
+  const seekVideos = async (t: number) => {
+    const waits: Promise<void>[] = []
+    for (const v of document.querySelectorAll('video')) {
+      let track = tracks.get(v)
+      if (!track) {
+        track = { at: t, time: v.currentTime, playing: !v.paused || v.autoplay }
+        tracks.set(v, track)
+        v.pause()
+      }
+      if (!track.playing) continue
+      let time = track.time + (t - track.at) / 1000
+      const d = v.duration
+      if (Number.isFinite(d) && d > 0) time = v.loop ? time % d : Math.min(time, d)
+      v.currentTime = time
+      waits.push(settled(v))
+    }
+    await Promise.all(waits)
+  }
+  // 从手动模式开始的页面（封面）：文档中的视频在页面时刻 0 记录。不要改为在第一次推进时记录：之后的进度会少算这段时间。
+  if (opts.manual) addEventListener('DOMContentLoaded', () => void seekVideos(0))
+  const step = async (t: number) => {
+    await seekVideos(t)
     flush(t)
     seek(t)
   }
-  const setManual = (on: boolean) => {
+  const setManual = async (on: boolean) => {
     if (on === manual) return
     if (on) {
       clock = now()
       manual = true
+      base = clock
       seek(clock)
-    } else {
-      offset = realNow() - clock
-      manual = false
-      for (const a of document.getAnimations()) a.play()
+      await seekVideos(clock)
+      return
     }
+    offset = realNow() - clock
+    manual = false
     base = clock
+    for (const a of document.getAnimations()) a.play()
+    for (const v of document.querySelectorAll('video')) {
+      if (tracks.get(v)?.playing) v.play().catch(() => {})
+    }
+    tracks = new WeakMap()
   }
 
   /** 视口的底色：根元素透明时取 body 的背景色（CSS 的背景传播），都透明时为白色，与页面实际显示一致。 */
@@ -160,19 +200,26 @@ function artRuntime(opts: RuntimeOptions): void {
     }
   }
 
-  addEventListener('message', async (e: MessageEvent<Message>) => {
-    if (e.source !== parent || e.data?.type !== 'qywork-art') return
-    const m = e.data
-    if (m.op === 'manual') setManual(!!m.on)
-    if (m.op === 'step' && manual && m.at !== undefined) step(base + m.at)
+  // 消息按到达顺序逐条处理：推进须等待视频定位完成，后一条消息不能在前一条完成之前执行。
+  let pending = Promise.resolve()
+  const handle = async (m: Message) => {
+    if (m.op === 'manual') await setManual(!!m.on)
+    if (m.op === 'step' && manual && m.at !== undefined) await step(base + m.at)
     if (m.op !== 'frame') return
     try {
-      if (manual && m.at !== undefined) step(base + m.at)
+      if (manual && m.at !== undefined) await step(base + m.at)
       const bitmap = await capture()
       post({ op: 'frame', id: m.id, bitmap }, [bitmap])
     } catch (err) {
       post({ op: 'frame', id: m.id, error: text(err) })
     }
+  }
+  addEventListener('message', (e: MessageEvent<Message>) => {
+    if (e.source !== parent || e.data?.type !== 'qywork-art') return
+    const m = e.data
+    pending = pending
+      .then(() => handle(m))
+      .catch((err: unknown) => post({ op: 'error', message: text(err) }))
   })
   // 不要改为等待下一个动画帧：不可见的跨源 iframe（封面）中动画帧暂停，加载完成不会被报告。
   addEventListener('load', () => setTimeout(() => post({ op: 'ready' })))
@@ -199,41 +246,65 @@ function pagePathOf(url: string): string | null {
   }
 }
 
+/** 交给引导页写入的页面：HTML，以及其中视频的占位地址与文件（引导页把 `token` 换成该文件的 Blob 地址）。 */
+export interface ArtPage {
+  html: string
+  media: { token: string; blob: Blob }[]
+}
+
 /**
- * 页面中按相对路径引用的工作区图片换成 data URL。页面在不透明源的沙箱 iframe 中运行，无法读取工作区文件。
+ * 页面中按相对路径引用的工作区文件载入页面：图片换成 data URL；视频换成占位地址，文件随页面交给引导页，
+ * 由引导页在沙箱中生成 Blob 地址（`server/src/art.ts` 的 `HOST_PAGE`）。页面在不透明源的沙箱 iframe 中运行，无法读取工作区文件。
+ * 视频不要改用 data URL：截图库每次截取都按 `src` 重新载入视频（modern-screenshot 的 `cloneVideo`），录制时每帧重新解码整段视频。
  * 不要改为写入 `client.fileUrl` 的地址：地址中带访问令牌，页面脚本可以读取它并调用接口。
  * 网络地址、data URL 与读取失败的引用保持原样；保存的页面文件不改动，直接用浏览器打开时同样按相对路径显示。
  */
-export async function inlineArtImages(html: string, url: string): Promise<string> {
+export async function loadArtPage(html: string, url: string): Promise<ArtPage> {
   const page = pagePathOf(url)
-  if (!page) return html
+  if (!page) return { html, media: [] }
   const found = new Map<string, string | null>()
-  for (const rel of artImageRefs(html)) {
+  const media: ArtPage['media'] = []
+  for (const rel of artMediaRefs(html)) {
     const path = resolveArtRef(page, rel)
-    found.set(rel, path ? await dataUrlOf(path) : null)
+    const blob = path ? await blobOf(path) : null
+    if (!blob) {
+      found.set(rel, null)
+    } else if (isInlineVideo(rel)) {
+      // 占位地址等长且互不为前缀：引导页按字符串整体替换。
+      const token = `qywork-media:${crypto.randomUUID()}`
+      media.push({ token, blob })
+      found.set(rel, token)
+    } else {
+      found.set(rel, await dataUrlOf(blob))
+    }
   }
-  return html.replace(ART_IMAGE_REF_RE, (whole, lead: string, rel: string) => {
-    const data = found.get(rel)
-    return data ? `${lead}${data}` : whole
-  })
+  return {
+    html: html.replace(ART_MEDIA_REF_RE, (whole, lead: string, rel: string) => {
+      const value = found.get(rel)
+      return value ? `${lead}${value}` : whole
+    }),
+    media,
+  }
 }
 
-async function dataUrlOf(path: string): Promise<string | null> {
+async function blobOf(path: string): Promise<Blob | null> {
   try {
     const res = await client.raw(`/api/files/raw?path=${encodeURIComponent(path)}`, {
       cache: 'no-store',
     })
-    if (!res.ok) return null
-    const blob = await res.blob()
-    return await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(String(reader.result))
-      reader.onerror = () => reject(reader.error)
-      reader.readAsDataURL(blob)
-    })
+    return res.ok ? await res.blob() : null
   } catch {
     return null
   }
+}
+
+function dataUrlOf(blob: Blob): Promise<string | null> {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => resolve(null)
+    reader.readAsDataURL(blob)
+  })
 }
 
 /** 与一个 art 页面通信的句柄。 */
@@ -254,12 +325,12 @@ export interface ArtHandle {
 const LOAD_MS = 15_000
 
 /**
- * 把 `html` 放入 `frame` 运行。`frame` 必须已带 `sandbox="allow-scripts"` 并已挂载；此处设置地址并处理消息。
+ * 把页面放入 `frame` 运行。`frame` 必须已带 `sandbox="allow-scripts"` 并已挂载；此处设置地址并处理消息。
  * 页面脚本的错误经 `onError` 报告。
  */
 export function connectArt(
   frame: HTMLIFrameElement,
-  html: string,
+  page: ArtPage,
   opts: { manual: boolean; onError?: (message: string) => void },
 ): ArtHandle {
   const waiters = new Map<number, { resolve(b: ImageBitmap): void; reject(e: Error): void }>()
@@ -284,8 +355,8 @@ export function connectArt(
       error?: string
     }
     if (d.type === 'qywork-art-host') {
-      const page = prepareArt(html, { lib: libUrl(), manual: opts.manual })
-      frame.contentWindow?.postMessage({ type: 'qywork-art-load', html: page }, '*')
+      const html = prepareArt(page.html, { lib: libUrl(), manual: opts.manual })
+      frame.contentWindow?.postMessage({ type: 'qywork-art-load', html, media: page.media }, '*')
       return
     }
     if (d.type !== 'qywork-art') return
@@ -352,7 +423,7 @@ async function renderPoster(url: string): Promise<Blob> {
   const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`页面读取失败：${res.status}`)
   const html = await res.text()
-  const page = await inlineArtImages(html, url)
+  const page = await loadArtPage(html, url)
   const size = artPageSize(html)
   const frame = document.createElement('iframe')
   frame.setAttribute('sandbox', 'allow-scripts')

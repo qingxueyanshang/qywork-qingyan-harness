@@ -14,7 +14,7 @@ import { isOutsideRelative, mediaDurationOfFile } from '@qywork/agent'
 import {
   type AgentEvent,
   applyCanvasOps,
-  artImageRefs,
+  artMediaRefs,
   type CanvasClip,
   type CanvasDoc,
   type CanvasGenerateNode,
@@ -389,7 +389,7 @@ export class CanvasDocs {
     return agent ? agentView(view, this.deps.paramSpecsOf) : view
   }
 
-  /** `CanvasView.revisions`：卡片显示的文件与 Art 页面引用的图片，各自的修改时间；页面的版本连接页面与各图片的版本。 */
+  /** `CanvasView.revisions`：卡片显示的文件与 Art 页面引用的图片与视频，各自的修改时间；页面的版本连接页面与各文件的版本。 */
   private async revisionsOf(
     workspaceRoot: string,
     doc: CanvasDoc,
@@ -402,26 +402,26 @@ export class CanvasDocs {
           : n.clips.map((c) => c.path),
     )
     // 并行读取的结果按卡片顺序收集，不在完成时写入：完成先后不定，同一份画布两次读取的键序会不同。
-    const images = new Map(
+    const media = new Map(
       await Promise.all(
         shown
           .filter((p) => canvasFileKind(p) === 'art')
           .map(async (page) => {
             const html = await readFile(join(workspaceRoot, page), 'utf8').catch(() => '')
-            const refs = artImageRefs(html).flatMap((ref) => resolveArtRef(page, ref) ?? [])
+            const refs = artMediaRefs(html).flatMap((ref) => resolveArtRef(page, ref) ?? [])
             return [page, refs] as const
           }),
       ),
     )
     const revisions: Record<string, string> = Object.fromEntries(
       await Promise.all(
-        [...new Set([...shown, ...[...images.values()].flat()])].map(async (p) => {
+        [...new Set([...shown, ...[...media.values()].flat()])].map(async (p) => {
           const s = await stat(join(workspaceRoot, p)).catch(() => null)
           return [p, s?.isFile() ? String(s.mtimeMs) : ''] as const
         }),
       ),
     )
-    for (const [page, refs] of images)
+    for (const [page, refs] of media)
       revisions[page] = [revisions[page], ...refs.map((p) => revisions[p])].join('|')
     return revisions
   }
