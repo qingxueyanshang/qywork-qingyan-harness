@@ -1,13 +1,15 @@
 /**
  * 本版说明：云端为当前版本发布的版本公告（服务端 `/api/cloud/release-notes`）。
  *
- * 更新后首次启动时显示一次：本机记录的版本与当前版本不同（包括没有记录）且取得公告时弹出，关闭后记录当前版本。
+ * 更新后首次启动时显示一次：本机记录的版本与当前版本不同（包括没有记录）且取得公告时弹出，关闭后记录当前版本，
+ * 该版本公告是最新一条时同时记为已读（`announcements.ts` 的 `markReleaseNotesSeen`）。
  * 不要改为「只在记录存在且不同时弹出」：从不含本功能的版本升级时同样没有记录，改后这次升级不会显示。
  * 读取失败或该版本没有公告时不弹出、不记录，下次启动再读取。
  */
 
 import type { ReleaseNotes } from '@qywork/core'
 import { createSignal } from 'solid-js'
+import { markReleaseNotesSeen } from './announcements.ts'
 import { client } from './client.ts'
 
 const SEEN_KEY = 'qywork.releaseNotes.seen'
@@ -19,6 +21,7 @@ export const releaseNotesShown = shown
 export function closeReleaseNotes(): void {
   const current = shown()
   if (!current) return
+  markReleaseNotesSeen(current.version)
   try {
     localStorage.setItem(SEEN_KEY, current.version)
   } catch {

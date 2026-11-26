@@ -1,6 +1,6 @@
 /**
- * 公告：`lib/store/announcements.ts`（读取、未读判定与已读记录）、`lib/store/cloud.ts` 的 `markAnnouncementSeen`
- * 与 `AnnouncementsDialog.tsx`（列表渲染、关闭）。服务端接口以替身代替，已读位置在替身的账号状态中。
+ * 公告：`lib/store/announcements.ts`（读取、未读判定与已读记录）、`lib/store/cloud.ts` 的 `markAnnouncementSeen`、
+ * `lib/store/release-notes.ts` 关闭时的已读记录与 `AnnouncementsDialog.tsx`（列表渲染、关闭）。服务端接口以替身代替，已读位置在替身的账号状态中。
  */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -9,6 +9,7 @@ import type { Announcement, CloudState } from '@qywork/core'
 let store: typeof import('../lib/store/index.ts')
 let feed: typeof import('../lib/store/announcements.ts')
 let cloudStore: typeof import('../lib/store/cloud.ts')
+let notesStore: typeof import('../lib/store/release-notes.ts')
 let originalApi: typeof store.client.api
 let calls: string[]
 /** 替身的返回：公告列表，或抛出的错误。 */
@@ -42,12 +43,18 @@ beforeAll(async () => {
   store = await import('../lib/store/index.ts')
   feed = await import('../lib/store/announcements.ts')
   cloudStore = await import('../lib/store/cloud.ts')
+  notesStore = await import('../lib/store/release-notes.ts')
   originalApi = store.client.api
   store.client.api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
     calls.push(path)
     if (path === '/api/cloud/state') {
       if (stateReply instanceof Error) throw stateReply
       return structuredClone(stateReply ?? account) as T
+    }
+    if (path.startsWith('/api/cloud/release-notes?version=')) {
+      const version = new URLSearchParams(path.split('?')[1]).get('version')
+      const release = reply instanceof Error ? undefined : reply.find((a) => a.version === version)
+      return (release ? { ...release, version } : null) as T
     }
     if (path === '/api/cloud/announcements/seen') {
       account = {
@@ -173,6 +180,35 @@ test('已读位置未取得时打开公告窗口同样写入已读位置', async
   expect(account.announcementSeen).toBe('2')
   await cloudStore.refreshCloudState()
   expect(feed.announcementsUnread()).toBe(false)
+})
+
+/** 原始失败形状：更新后弹出本版说明，关闭后账号入口与铃铛仍显示该版本公告未读。 */
+test('本版说明关闭后，该版本公告是最新一条时记为已读；最新一条是其他公告时不写入', async () => {
+  reply = [RELEASE, notice('0', '2026-11-03T08:00:00.000Z')]
+  await feed.loadAnnouncements()
+  expect(feed.announcementsUnread()).toBe(true)
+  localStorage.clear()
+  await notesStore.showReleaseNotesOnce('0.3.11')
+  expect(notesStore.releaseNotesShown()?.title).toBe('qywork 0.3.11 更新')
+  notesStore.closeReleaseNotes()
+  expect(feed.announcementsUnread()).toBe(false)
+  await Bun.sleep(0)
+  expect(account.announcementSeen).toBe('1')
+  await cloudStore.refreshCloudState()
+  expect(feed.announcementsUnread()).toBe(false)
+
+  // 本版公告之后另有通知：另一端已读该通知时，关闭本版说明不使已读位置回退。
+  reply = [notice('2', '2026-11-05T08:00:00.000Z'), RELEASE]
+  await feed.loadAnnouncements()
+  account = { ...account, announcementSeen: '2' }
+  await cloudStore.refreshCloudState()
+  localStorage.clear()
+  await notesStore.showReleaseNotesOnce('0.3.11')
+  calls = []
+  notesStore.closeReleaseNotes()
+  await Bun.sleep(0)
+  expect(calls).not.toContain('/api/cloud/announcements/seen')
+  expect(account.announcementSeen).toBe('2')
 })
 
 test('读取失败时保留上一次的列表；没有公告时不视为未读', async () => {
