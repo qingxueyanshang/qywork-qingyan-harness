@@ -32,6 +32,15 @@ function matchesType(expected: string, value: unknown): boolean {
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
+/** 不是合法 JSON 时返回 undefined。 */
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * 按定义规范化一次按需工具调用的参数，返回规范化后的参数；不修改传入的对象。
  *
@@ -40,13 +49,25 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
  *   类型声明含 null 的参数保留 null。
  * - 字符串参数收到对象或数组：定义为 JSON 文本的参数（如 `params_json`、`json`）在 strict 下必为字符串，
  *   以文本阅读定义时模型常直接传入对象，取其 JSON 文本。
+ * - 数组或对象参数收到 JSON 文本：桩定义不声明参数类型，经 Anthropic 协议调用时数组参数可能以其 JSON 文本到达
+ *   （`"[\"a.png\"]"`），模型按报错重新调用得到的仍是同一形式。解析结果是定义的类型时取解析结果。
  * 不要扩大为按参数名或取值的其他转换：其余不符合之处由 `schemaProblems` 报告，模型按报错中的定义改正。
  */
 export function normalizeArgs(schema: unknown, value: unknown): unknown {
   if (!isRecord(schema)) return value
   const types = Array.isArray(schema.type) ? schema.type : [schema.type]
-  if (types.includes('string') && !types.includes('object') && !types.includes('array')) {
+  const structured = types.includes('object') || types.includes('array')
+  if (types.includes('string') && !structured) {
     if (isRecord(value) || Array.isArray(value)) return JSON.stringify(value)
+  }
+  if (typeof value === 'string' && structured && !types.includes('string')) {
+    const parsed = parseJson(value)
+    if (
+      (Array.isArray(parsed) && types.includes('array')) ||
+      (isRecord(parsed) && types.includes('object'))
+    ) {
+      return normalizeArgs(schema, parsed)
+    }
   }
   if (Array.isArray(value)) return value.map((item) => normalizeArgs(schema.items, item))
   if (!isRecord(value)) return value

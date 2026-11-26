@@ -190,6 +190,37 @@ describe('执行前按完整定义核对参数', () => {
     expect(received).toEqual([{ json: '{"a":1}' }])
   })
 
+  /** 原始失败形状：经 Anthropic 协议调用按需工具时数组参数以 JSON 文本到达，按「应为数组，收到字符串」连续被拒绝。 */
+  test('数组参数以 JSON 文本到达时按定义还原后执行', async () => {
+    const registry = new ToolRegistry()
+    const received: Record<string, unknown>[] = []
+    registry.register(
+      deferExternal({
+        ...fakeTool('mcp__demo__images'),
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: { type: 'string' },
+            images: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['prompt'],
+          additionalProperties: false,
+        },
+        fn: async (args) => {
+          received.push(args)
+          return { status: 'success', message: 'ok' }
+        },
+      }),
+    )
+    const out = await registry.execute(
+      'mcp__demo__images',
+      { prompt: '换成蓝色背景', images: '["ref/idphoto_original.jpg"]' },
+      ctx(),
+    )
+    expect(out.status).toBe('success')
+    expect(received).toEqual([{ prompt: '换成蓝色背景', images: ['ref/idphoto_original.jpg'] }])
+  })
+
   test('缺少必填参数时报错同样附完整定义', async () => {
     const { registry } = setup()
     const out = await registry.execute('mcp__demo__a', {}, ctx())

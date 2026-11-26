@@ -108,6 +108,35 @@ test('字符串参数收到对象或数组时取其 JSON 文本，其余不转�
   expect(normalizeArgs(schema, { other: { a: 1 } })).toEqual({ other: { a: 1 } })
 })
 
+/**
+ * 原始失败形状（2026-11-26 用户会话诊断）：Claude 调用按需的 generate_image 时 `images` 以 JSON 文本到达，
+ * 连续三次按「应为数组，收到字符串」被拒绝后以无进展停止。
+ */
+test('数组或对象参数收到 JSON 文本时取解析结果，解析结果不是定义的类型时不转换', () => {
+  const schema = {
+    type: 'object',
+    properties: {
+      images: { type: 'array', items: { type: 'string' } },
+      box: { type: 'object', properties: { w: { type: 'integer' } } },
+      note: { type: ['string', 'array'] },
+    },
+  }
+  expect(
+    normalizeArgs(schema, {
+      images: '["ref/a.jpg", "ref/b.jpg"]',
+      box: '{"w": 2}',
+      note: '["x"]',
+    }),
+  ).toEqual({ images: ['ref/a.jpg', 'ref/b.jpg'], box: { w: 2 }, note: '["x"]' })
+  expect(normalizeArgs(schema, { images: 'ref/a.jpg', box: '[1]' })).toEqual({
+    images: 'ref/a.jpg',
+    box: '[1]',
+  })
+  expect(schemaProblems(schema, normalizeArgs(schema, { images: 'ref/a.jpg' }))).toEqual([
+    '参数.images 应为数组，收到字符串',
+  ])
+})
+
 test('数组元素按 items 核对并写明下标', () => {
   expect(schemaProblems(SCHEMA, { name: 'x', tags: ['a', 2] })).toEqual([
     '参数.tags[1] 应为字符串，收到整数',
