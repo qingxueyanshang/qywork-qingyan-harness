@@ -12,7 +12,7 @@ export function CompactionCard(props: { item: TranscriptItem }) {
   const label = () => {
     const phase = c()?.phase
     if (phase === 'started') return '正在压缩上下文'
-    if (c()?.reasonCode === 'aborted') return '压缩已停止'
+    if (c()?.reasonCode === 'aborted') return '压缩已中断'
     if (phase === 'skipped') return compactionSkipLabel(c()?.reasonCode)
     if (phase === 'failed') return compactionFailureLabel(c()?.reasonCode)
     // 必须区分三种结果：只收纳（未调用模型）、压缩完成、已收纳但摘要未完成。

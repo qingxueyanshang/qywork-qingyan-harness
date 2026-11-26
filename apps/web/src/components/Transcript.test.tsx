@@ -166,7 +166,13 @@ test('主会话派发任务结束后刷新或切回，显示子任务进度且�
                 { id: 'review', kind: 'checkpoint', label: '审批赛车游戏', needs: ['build'] },
               ],
             },
-            action: { kind: 'run', objectLabel: '工作流', target: '赛车游戏' },
+            action: {
+              kind: 'run',
+              head: '任务派发',
+              verb: '运行',
+              object: '赛车游戏',
+              target: '赛车游戏',
+            },
             outcome: {
               status: 'success',
               executed: true,
@@ -878,7 +884,13 @@ test('主会话与子会话状态行按真实参数进度显示，退避与重�
         callIndex: 0,
         waveIndex: 0,
         args: { path: 'page.html' },
-        action: { kind: 'write', objectLabel: '文件', target: 'page.html' },
+        action: {
+          kind: 'write',
+          head: '文件读写',
+          verb: '创建',
+          object: 'page.html',
+          target: 'page.html',
+        },
       },
     } as never)
     expect(notes()[0]).toBe('正在执行…')
@@ -924,7 +936,13 @@ test.each(['running', 'success', 'failure'] as const)(
               kind: 'tool',
               text: '',
               toolName: 'write_file',
-              action: { kind: 'write', objectLabel: '文件', target: 'page.html' },
+              action: {
+                kind: 'write',
+                head: '文件读写',
+                verb: '创建',
+                object: 'page.html',
+                target: 'page.html',
+              },
               args: { path: 'page.html', mode: 'create', on_conflict: 'rename', content: 'new' },
               status,
               ...(status === 'success'
@@ -934,6 +952,7 @@ test.each(['running', 'success', 'failure'] as const)(
                       executed: true,
                       message: '创建 page-2.html',
                       data: { path: 'page-2.html' },
+                      subject: 'page-2.html',
                       fileChanges: [
                         { path: 'page-2.html', changeType: 'created', additions: 1, deletions: 0 },
                       ],
@@ -950,9 +969,9 @@ test.each(['running', 'success', 'failure'] as const)(
     const dispose = render(() => <Transcript />, host)
     try {
       expect(host.querySelector('.fold-target')?.getAttribute('data-tip')).toBe(
-        status === 'success' ? 'page-2.html' : 'page.html',
+        status === 'success' ? '创建 page-2.html' : '创建 page.html',
       )
-      expect(host.querySelector('.fold-label')?.textContent).toContain('创建文件')
+      expect(host.querySelector('.fold-label')?.textContent).toBe('文件读写')
     } finally {
       dispose()
       host.remove()
@@ -989,7 +1008,13 @@ test('分段读取的文件行在路径后显示行号范围', async () => {
             kind: 'tool',
             text: '',
             toolName: 'read_file',
-            action: { kind: 'read', objectLabel: '文件', target: 'scripts/check.py' },
+            action: {
+              kind: 'read',
+              head: '文件读写',
+              verb: '读取',
+              object: 'scripts/check.py',
+              target: 'scripts/check.py',
+            },
             args: { path: 'scripts/check.py', offset: 395, limit: 54 },
             status: 'success',
             outcome: {
@@ -997,6 +1022,7 @@ test('分段读取的文件行在路径后显示行号范围', async () => {
               executed: true,
               message: '读取 scripts/check.py（54 行，已截断）',
               data: { content: '', startLine: 395, endLine: 448, totalLines: 700 },
+              subject: 'scripts/check.py:395-448',
             },
           },
         ],
@@ -1008,9 +1034,85 @@ test('分段读取的文件行在路径后显示行号范围', async () => {
   const dispose = render(() => <Transcript />, host)
   try {
     expect(host.querySelector('.fold-target')?.getAttribute('data-tip')).toBe(
-      'scripts/check.py:395-448',
+      '读取 scripts/check.py:395-448',
     )
   } finally {
+    dispose()
+    host.remove()
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+  }
+})
+
+test('在面板中打开文件的工具行显示「文件读写 · 打开 page.html」，行内没有按钮，双击标题行打开或收起面板', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { delegateEvents, render } = await import('solid-js/web')
+  delegateEvents(['dblclick', 'mousedown'])
+  const { Transcript } = await import('./Transcript.tsx')
+  const workspaceBefore = store.workspace()
+  store.setState({
+    activeConversation: CV,
+    busyConversations: [],
+    views: {
+      [CV]: {
+        history: { loading: null, nextCursor: null, earlierTurns: [], error: null },
+        changes: null,
+        runUserMessageId: null,
+        runStartedAt: null,
+        runId: null,
+        liveSeq: 0,
+        runSeq: 0,
+        usage: null,
+        generatingToolCall: false,
+        request: null,
+        error: null,
+        transcript: [
+          {
+            id: 'open-page',
+            kind: 'tool',
+            text: '',
+            toolName: 'open_in_panel',
+            action: {
+              kind: 'call',
+              head: '文件读写',
+              verb: '打开',
+              object: 'page.html',
+              target: 'page.html',
+            },
+            args: { path: 'page.html' },
+            status: 'success',
+            outcome: {
+              status: 'success',
+              executed: true,
+              message: '已请求界面在右侧面板打开 page.html',
+              data: { path: 'page.html' },
+            },
+          },
+        ],
+      },
+    },
+  })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <Transcript />, host)
+  try {
+    expect(host.querySelector('.fold-label')?.textContent).toBe('文件读写')
+    expect(host.querySelector('.fold-target')?.getAttribute('data-tip')).toBe('打开 page.html')
+    expect([...host.querySelectorAll('button')].some((b) => b.textContent?.trim() === '打开')).toBe(
+      false,
+    )
+    const dblclick = () =>
+      host
+        .querySelector('.fold-label')
+        ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    store.closePanel()
+    dblclick()
+    expect(store.sidePanel()).toBe('files')
+    expect(store.openFile()).toBe('page.html')
+    dblclick()
+    expect(store.sidePanel()).toBe(null)
+  } finally {
+    store.closePanel()
     dispose()
     host.remove()
     await resetStore()
@@ -1043,7 +1145,13 @@ describe('工具图片回放', () => {
               kind: 'tool',
               text: '',
               toolName: 'read_file',
-              action: { kind: 'read', objectLabel: '文件', target: 'art/result.png' },
+              action: {
+                kind: 'read',
+                head: '文件读写',
+                verb: '读取',
+                object: 'art/result.png',
+                target: 'art/result.png',
+              },
               args: { path: 'art/result.png' },
               status: 'success',
               outcome: {
@@ -1098,7 +1206,13 @@ describe('工具图片回放', () => {
               kind: 'tool',
               text: '',
               toolName: 'generate_image',
-              action: { kind: 'run', objectLabel: '图片', target: 'art/result.png' },
+              action: {
+                kind: 'run',
+                head: '媒体生成',
+                verb: '运行',
+                object: 'art/result.png',
+                target: 'art/result.png',
+              },
               args: { path: 'art/result.png' },
               status: 'success',
               outcome: {
@@ -1147,7 +1261,13 @@ describe('编排画布', () => {
                 kind: 'tool',
                 text: '',
                 toolName: 'workflow',
-                action: { kind: 'run', objectLabel: '工作流', target: '四个候选' },
+                action: {
+                  kind: 'run',
+                  head: '任务派发',
+                  verb: '运行',
+                  object: '四个候选',
+                  target: '四个候选',
+                },
                 args: {
                   goal: '四个候选',
                   nodes: [
@@ -1630,7 +1750,13 @@ describe('编排画布', () => {
                 kind: 'tool',
                 text: '',
                 toolName: 'workflow',
-                action: { kind: 'run', objectLabel: '工作流', target: '四个候选' },
+                action: {
+                  kind: 'run',
+                  head: '任务派发',
+                  verb: '运行',
+                  object: '四个候选',
+                  target: '四个候选',
+                },
                 args: {
                   goal: '四个候选',
                   nodes: [{ id: 'a', kind: 'temp', name: 'glm', task: '做' }],
@@ -1648,7 +1774,13 @@ describe('编排画布', () => {
                 kind: 'tool',
                 text: '',
                 toolName: 'subagent',
-                action: { kind: 'run', objectLabel: '子 agent', target: 'qwen-racer' },
+                action: {
+                  kind: 'run',
+                  head: '任务派发',
+                  verb: '运行',
+                  object: 'qwen-racer',
+                  target: 'qwen-racer',
+                },
                 args: { kind: 'role', role: 'qwen-racer', task: '继续优化' },
                 status: 'failure',
                 outcome: { status: 'failure', executed: true, message: 'qwen-racer 失败：超时' },
@@ -1924,7 +2056,13 @@ describe('子会话与主会话共用流式外壳', () => {
               kind: 'tool',
               text: '',
               toolName: 'write_todos',
-              action: { kind: 'write', objectLabel: '待办' },
+              action: {
+                kind: 'write',
+                head: '待办管理',
+                verb: '创建',
+                object: '待办清单',
+                target: null,
+              },
               args: {
                 todos: [{ id: 'todo_1', content: '实现赛车', status: 'in_progress' }],
               },
@@ -2334,7 +2472,13 @@ describe('定稿的正文不随会话流的增长重建', () => {
               kind: 'tool',
               text: '',
               toolName: 'run_command',
-              action: { kind: 'run', objectLabel: '命令', target: 'echo ok' },
+              action: {
+                kind: 'run',
+                head: '命令执行',
+                verb: '运行',
+                object: 'echo ok',
+                target: 'echo ok',
+              },
               args: { command: 'echo ok' },
               status: 'success',
               outcome: {
@@ -2474,7 +2618,7 @@ describe('定稿的正文不随会话流的增长重建', () => {
           runId: 'run_now',
           stepId: id,
           toolName: 'read_file',
-          action: { kind: 'read', objectLabel: '文件', target: 'a.ts' },
+          action: { kind: 'read', head: '文件读写', verb: '读取', object: 'a.ts', target: 'a.ts' },
           args: {},
         },
       } as never)
@@ -2658,9 +2802,9 @@ describe('定稿的正文不随会话流的增长重建', () => {
 
   /**
    * 原始失败形状：失败分支只显示错误行与参数表，参数表跳过超过 400 字的值，
-   * 长命令在展开后不显示，只能通过悬停标题行查看。
+   * 长命令在展开后不显示，只能通过悬停标题行查看；错误块排在最前且没有标题。
    */
-  test('失败的命令展开后先显示错误正文，再显示命令原文与错误输出', async () => {
+  test('失败的命令展开后依次为输入、输出、错误三段，各段都有标题', async () => {
     const command = `cat > wx.py <<'EOF'\n${'print("x")\n'.repeat(60)}EOF\npython wx.py`
     expect(command.length).toBeGreaterThan(400)
     const store = await import('../lib/store/index.ts')
@@ -2683,7 +2827,13 @@ describe('定稿的正文不随会话流的增长重建', () => {
               kind: 'tool',
               text: '',
               toolName: 'run_command',
-              action: { kind: 'run', objectLabel: '命令', target: command },
+              action: {
+                kind: 'run',
+                head: '命令执行',
+                verb: '运行',
+                object: command,
+                target: command,
+              },
               args: { command, timeout_ms: 120000 },
               status: 'failure',
               outcome: {
@@ -2711,13 +2861,73 @@ describe('定稿的正文不随会话流的增长重建', () => {
       details.dispatchEvent(new Event('toggle'))
 
       const body = host.querySelector('.fold-body')!
-      const blocks = [...body.children].map((el) => el.className)
-      expect(blocks[0]).toBe('fold-out err')
+      const titles = [...body.querySelectorAll('.fold-section > .fold-tag')].map(
+        (el) => el.textContent,
+      )
+      expect(titles).toEqual(['输入', '输出', '错误'])
       expect(body.querySelector('.fold-out.err')?.textContent).toBe('命令退出码 1')
       expect(body.querySelector('.fold-code')?.textContent).toBe(command)
       // 失败时错误流排在标准输出之前；错误行已显示 message，结果不再重复它。
       const outputs = [...body.querySelectorAll('.fold-out:not(.err)')].map((el) => el.textContent)
       expect(outputs).toEqual(["TypeError: 'URL' object is not subscriptable"])
+    } finally {
+      dispose()
+    }
+  })
+
+  /** 原始失败形状：运行中只显示实时输出，不显示正在执行的命令。 */
+  test('运行中的命令展开后同时显示输入与实时输出', async () => {
+    const store = await import('../lib/store/index.ts')
+    store.setState({
+      activeConversation: CV,
+      busyConversations: [],
+      views: {
+        [CV]: {
+          history: { loading: null, nextCursor: null, earlierTurns: [], error: null },
+          changes: null,
+          runUserMessageId: null,
+          runStartedAt: null,
+          runId: null,
+          liveSeq: 0,
+          runSeq: 0,
+          error: null,
+          transcript: [
+            {
+              id: 'tool-running',
+              kind: 'tool',
+              text: '',
+              toolName: 'run_command',
+              action: {
+                kind: 'run',
+                head: '命令执行',
+                verb: '运行',
+                object: 'npm run build',
+                target: 'npm run build',
+              },
+              args: { command: 'npm run build' },
+              status: 'running',
+              stdout: 'building…',
+            },
+          ],
+        },
+      },
+    } as never)
+
+    const { render } = await import('solid-js/web')
+    const { Transcript } = await import('./Transcript.tsx')
+    const host = document.createElement('div')
+    const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+    try {
+      const details = host.querySelector('details') as HTMLDetailsElement
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+      const body = host.querySelector('.fold-body')!
+      const titles = [...body.querySelectorAll('.fold-section > .fold-tag')].map(
+        (el) => el.textContent,
+      )
+      expect(titles).toEqual(['输入', '输出'])
+      expect(body.querySelector('.fold-code')?.textContent).toBe('npm run build')
+      expect(body.querySelector('.fold-live')?.textContent).toBe('building…')
     } finally {
       dispose()
     }
@@ -2983,7 +3193,7 @@ describe('检查点节点', () => {
     kind: 'tool',
     text: '',
     toolName: 'workflow',
-    action: { kind: 'run', objectLabel: '工作流', target: '并行' },
+    action: { kind: 'run', head: '任务派发', verb: '运行', object: '并行', target: '并行' },
     args: { goal: '并行', nodes: wireNodes },
     status: 'success',
     nodes: states,
@@ -3057,7 +3267,13 @@ describe('行的 DOM 不随投影重建', () => {
       text: '',
       toolName: 'read_file',
       status,
-      action: { kind: 'read', objectLabel: `${id}.ts` },
+      action: {
+        kind: 'read',
+        head: '文件读写',
+        verb: '读取',
+        object: `${id}.ts`,
+        target: `${id}.ts`,
+      },
     })
     const a = tool('a', 'success')
     const b = tool('b', 'running')
@@ -3102,7 +3318,7 @@ describe('行的 DOM 不随投影重建', () => {
       text: '',
       toolName: 'workflow',
       status: 'running',
-      action: { kind: 'run', objectLabel: '工作流', target: '并行' },
+      action: { kind: 'run', head: '任务派发', verb: '运行', object: '并行', target: '并行' },
       args,
       nodes,
     })
@@ -3169,7 +3385,13 @@ describe('展开态归属于 step id', () => {
     text: '',
     toolName: 'read_file',
     status: 'success',
-    action: { kind: 'read', objectLabel: `${id}.ts` },
+    action: {
+      kind: 'read',
+      head: '文件读写',
+      verb: '读取',
+      object: `${id}.ts`,
+      target: `${id}.ts`,
+    },
     outcome: { status: 'success', executed: true, message: '', data: { content: `${id} 的内容` } },
   })
   const mount = async (first: ReturnType<typeof tool>) => {

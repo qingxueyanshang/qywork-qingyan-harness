@@ -468,7 +468,7 @@ export interface ToolStartedEvent {
   waveIndex: number
   args: Record<string, unknown>
   /**
-   * 动作语义，前端据此选择图标与措辞；后端不下发 UI 文案。
+   * 工具行的标题来源：开头、动词与对象由注册表在调用时写入，前端只显示，不按工具名推断。
    *
    * 必填。名称不在注册表中的调用不会进入此处：`agent/loop/tool-wave.ts` 在编排批次之前
    * 已将其全部拦截（这类调用不是工具，而是 provider 违反了下发的工具表）。
@@ -478,10 +478,15 @@ export interface ToolStartedEvent {
 }
 
 export interface ActionDescriptor {
+  /** 由 `verb` 查 `VERB_KINDS` 得出，决定展开内容的分支与上下文压缩的「涉及的文件」。 */
   kind: ActionKind
-  /** 被操作对象的类别名，如 'file' / 'command' / 'branch'。 */
-  objectLabel: string
-  /** 可稳定归属的单一目标，如文件路径。没有时为 null。 */
+  /** 工具类目的开头（`TOOL_CATEGORY_HEADS`）。随调用写入：插件卸载、MCP 服务删除后历史记录仍能显示。 */
+  head: string
+  /** 动词，取自 `VERB_KINDS`。 */
+  verb: string
+  /** 显示的对象：动词直接作用的对象。没有时为 null；执行后确定的名称见结果的 `subject`。 */
+  object: string | null
+  /** 可稳定归属的单一目标，如文件路径，用于权限范围与并行冲突判定。可以是不透明的编号，不要直接显示。 */
   target: string | null
 }
 

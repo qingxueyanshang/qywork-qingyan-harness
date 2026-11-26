@@ -78,20 +78,32 @@ const step = (input: Parameters<typeof appendStep>[1]) =>
 
 /** 动作语义与真实运行一致：由后端解析后随 step 落库，前端不反向推测。 */
 const ACTIONS = {
-  grep: { kind: 'query' as const, objectLabel: '内容', target: 'author_id' },
+  grep: {
+    kind: 'query' as const,
+    head: '文件读写',
+    verb: '搜索',
+    object: 'author_id',
+    target: 'author_id',
+  },
   read_file: {
     kind: 'read' as const,
-    objectLabel: '文件',
+    head: '文件读写',
+    verb: '读取',
+    object: 'services/core-api/qybox_core/routes/tools.py',
     target: 'services/core-api/qybox_core/routes/tools.py',
   },
   edit_file: {
     kind: 'edit' as const,
-    objectLabel: '文件',
+    head: '文件读写',
+    verb: '修改',
+    object: 'services/core-api/qybox_core/routes/tools.py',
     target: 'services/core-api/qybox_core/routes/tools.py',
   },
   run_command: {
     kind: 'run' as const,
-    objectLabel: '命令',
+    head: '命令执行',
+    verb: '运行',
+    object: 'uv run --extra dev python -m pytest tests/market -q',
     target: 'uv run --extra dev python -m pytest tests/market -q',
   },
 }
@@ -235,7 +247,7 @@ step({
   payload: {
     kind: 'tool_result',
     args: { task: '把夹具里遗留的空作者记录清一遍，顺带确认没有别的用例依赖它' },
-    action: { kind: 'run', objectLabel: '子 agent', target: '' },
+    action: { kind: 'run', head: '任务派发', verb: '运行', object: '', target: '' },
     outcome: {
       status: 'success',
       executed: true,
@@ -258,7 +270,7 @@ step({
   payload: {
     kind: 'tool_result',
     args: { agent: 'perf', task: '跑一遍压测看归属改动有没有拖慢发布接口' },
-    action: { kind: 'run', objectLabel: '子 agent', target: 'perf' },
+    action: { kind: 'run', head: '任务派发', verb: '运行', object: 'perf', target: 'perf' },
     outcome: {
       status: 'failure',
       executed: true,
@@ -278,7 +290,13 @@ step({
   payload: {
     kind: 'tool_result',
     args: { agent: 'cli:claude', task: '把 README 里那段安装说明按新的目录结构改一遍' },
-    action: { kind: 'run', objectLabel: '子 agent', target: 'cli:claude' },
+    action: {
+      kind: 'run',
+      head: '任务派发',
+      verb: '运行',
+      object: 'cli:claude',
+      target: 'cli:claude',
+    },
     outcome: {
       status: 'success',
       executed: true,
@@ -310,7 +328,7 @@ step({
         { id: 'review', agent: 'reviewer', task: '合并两份结论并复核', needs: ['api', 'web'] },
       ],
     },
-    action: { kind: 'run', objectLabel: '编排', target: '' },
+    action: { kind: 'run', head: '任务派发', verb: '运行', object: '', target: '' },
     outcome: {
       status: 'success',
       executed: true,

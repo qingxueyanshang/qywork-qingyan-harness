@@ -35,6 +35,7 @@ import {
   type ToolOutcome,
   type ToolSpec,
 } from '@qywork/agent'
+import type { ToolVerb } from '@qywork/core'
 import {
   BROWSER_DIALOG_NAMES,
   type BrowserActionKind,
@@ -165,6 +166,31 @@ const ACT_FIELDS: Record<BrowserActionKind, readonly string[]> = {
 }
 
 const ACT_KINDS = Object.keys(ACT_FIELDS) as BrowserActionKind[]
+
+/** 工具行的动词。对话框的接受与取消都显示为「操作」。 */
+const ACT_VERBS: Record<BrowserActionKind, ToolVerb> = {
+  click: '点击',
+  dblclick: '双击',
+  rightclick: '右击',
+  hover: '悬停',
+  fill: '填写',
+  type: '输入',
+  select: '选择',
+  scroll: '滚动',
+  press: '按键',
+  drag: '拖动',
+  dialog: '操作',
+}
+
+/** 回执中的元素文字是这些动作的直接对象；输入与选择的对象是文字本身，不取元素。 */
+const ELEMENT_SUBJECT: ReadonlySet<string> = new Set([
+  'click',
+  'dblclick',
+  'rightclick',
+  'hover',
+  'fill',
+  'drag',
+])
 
 /** 动作的可选参数全集，逐个按 `ACT_FIELDS` 核对适用范围。 */
 const ACT_OPTIONAL = [
@@ -722,7 +748,6 @@ const POINT_SCHEMA = {
 const BASE = {
   category: 'browser',
   facet: '页面',
-  objectLabel: '浏览器控制',
   permissionEffect: 'browser',
   requires: [BrowserPort],
 } as const
@@ -755,8 +780,16 @@ export const browserTabsTool: ToolSpec = {
     required: ['action'],
     additionalProperties: false,
   },
-  // list 只读取清单；create / bind / close 改变本会话持有的页面。
-  actionKind: (args) => (args.action === 'list' ? 'read' : 'call'),
+  verb: (args) =>
+    args.action === 'list'
+      ? '列出'
+      : args.action === 'bind'
+        ? '接管'
+        : args.action === 'close'
+          ? '关闭'
+          : '打开',
+  object: (args) =>
+    args.action === 'create' && typeof args.url === 'string' ? args.url : '标签页',
   summary: '列出、新建、接管或关闭浏览器标签页',
   // list 与 create 没有目标页面，授权预览回退为「browser」而不是留空。
   targetExtractor: (args) => tabTarget(args) ?? 'browser',
@@ -844,7 +877,22 @@ export const browserNavigateTool: ToolSpec = {
     required: ['tabId', 'action'],
     additionalProperties: false,
   },
-  actionKind: 'call',
+  verb: (args) =>
+    args.action === 'back'
+      ? '返回'
+      : args.action === 'forward'
+        ? '前进'
+        : args.action === 'reload'
+          ? '刷新'
+          : '打开',
+  object: (args) =>
+    args.action === 'goto' && typeof args.url === 'string'
+      ? args.url
+      : args.action === 'back'
+        ? '上一页'
+        : args.action === 'forward'
+          ? '下一页'
+          : '网页',
   summary: '在标签页里跳转、后退、前进或重新加载',
   targetExtractor: tabTarget,
 
@@ -906,7 +954,8 @@ export const browserObserveTool: ToolSpec = {
     required: ['tabId'],
     additionalProperties: false,
   },
-  actionKind: 'read',
+  verb: '查看',
+  object: () => '网页',
   summary: '读取页面的地址、标题与可操作元素',
   targetExtractor: tabTarget,
 
@@ -1046,7 +1095,16 @@ export const browserActTool: ToolSpec = {
     required: ['tabId', 'action'],
     additionalProperties: false,
   },
-  actionKind: 'call',
+  verb: (args) => ACT_VERBS[args.action as BrowserActionKind] ?? '操作',
+  // 输入与选择的对象是文字本身；其余动作的对象是元素，执行后由回执中的元素文字确定（`subject`）。
+  object: (args) =>
+    (args.action === 'type' || args.action === 'select') && typeof args.text === 'string'
+      ? `「${args.text}」`
+      : args.action === 'dialog'
+        ? '对话框'
+        : args.action === 'scroll' || args.action === 'press'
+          ? '网页'
+          : '元素',
   summary: '在观察到的元素上点击、悬停、输入、选择、滚动、按键或拖动',
   targetExtractor: tabTarget,
 
@@ -1133,7 +1191,8 @@ export const browserWaitTool: ToolSpec = {
     required: ['tabId'],
     additionalProperties: false,
   },
-  actionKind: 'read',
+  verb: '等待',
+  object: (args) => (typeof args.selector === 'string' && args.selector ? args.selector : '网页'),
   summary: '等待一个 CSS 选择器达到指定状态，或等待指定时长',
   targetExtractor: tabTarget,
 
@@ -1214,7 +1273,14 @@ export const browserUploadTool: ToolSpec = {
     required: ['tabId', 'paths'],
     additionalProperties: false,
   },
-  actionKind: 'call',
+  verb: '上传',
+  object: (args) =>
+    Array.isArray(args.paths)
+      ? args.paths
+          .filter((p): p is string => typeof p === 'string')
+          .map((p) => p.split(/[\\/]/).pop() ?? p)
+          .join('、') || '文件'
+      : '文件',
   summary: '将工作区文件上传到页面的文件输入框',
   targetExtractor: tabTarget,
 
@@ -1260,7 +1326,8 @@ export const browserDownloadTool: ToolSpec = {
     required: ['tabId', 'ref', 'path'],
     additionalProperties: false,
   },
-  actionKind: 'call',
+  verb: '下载',
+  object: (args) => (typeof args.path === 'string' ? args.path : '文件'),
   summary: '触发下载并保存到工作区路径',
   targetExtractor: tabTarget,
 
@@ -1297,4 +1364,27 @@ export const browserTools: ToolSpec[] = [
   browserWaitTool,
   browserUploadTool,
   browserDownloadTool,
-]
+].map(withSubject)
+
+/**
+ * 补上执行后确定的对象（`subject`）：点击、悬停、填写、拖动取回执中的元素文字，其余取该页执行后的标题。
+ * 调用时记录的目标是标签页编号，不能直接显示。无法取得标题时不写，工具行显示调用时记录的对象。
+ */
+function withSubject(spec: ToolSpec): ToolSpec {
+  return {
+    ...spec,
+    fn: async (args, ctx) => {
+      const out = await spec.fn(args, ctx)
+      const element = out.data?.element
+      if (typeof element === 'string' && element && ELEMENT_SUBJECT.has(String(args.action))) {
+        return { ...out, subject: element }
+      }
+      const tab = out.data?.tab as { tabId?: unknown } | undefined
+      const tabId = typeof args.tabId === 'string' ? args.tabId : tab?.tabId
+      const browser = ctx.port(BrowserPort)
+      if (typeof tabId !== 'string' || !browser) return out
+      const title = (await browser.tabs().catch(() => [])).find((t) => t.tabId === tabId)?.title
+      return title?.trim() ? { ...out, subject: title.trim() } : out
+    },
+  }
+}

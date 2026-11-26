@@ -16,7 +16,7 @@ import { definePort } from './key.ts'
  * 因此定义在 agent 包。
  *
  * 可选：`qy exec` 等一次性执行没有会话，因此无法读取上一份清单。工具必须能降级，
- * 见 `write_todos` 的 `actionKind`：无法读取时称「创建」，会把一次修订描述得比实际范围小；
+ * 见 `write_todos` 的 `verb`：无法读取时称「创建」，会把一次修订描述得比实际范围小；
  * 反之称「修改」会在没有清单时声称修改了一份不存在的清单。未提供时循环沿用普通问答的结束语义。
  */
 export interface TodoPort {

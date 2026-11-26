@@ -2801,3 +2801,33 @@ describe('read_file 读取大文本', () => {
     expect((await r.execute('edit_file', edit, c)).status).toBe('success')
   })
 })
+
+/** 工具行显示的对象（`subject`）由读文件、写文件在执行后写入，界面不按工具名推断。 */
+describe('执行后确定的对象', () => {
+  test('分段读取写入行号范围，读取整个文件不写', async () => {
+    const root = await workspace()
+    await writeFile(
+      join(root, 'long.txt'),
+      Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join('\n'),
+      'utf8',
+    )
+    const r = registry()
+    const part = await r.execute('read_file', { path: 'long.txt', offset: 10, limit: 5 }, ctx(root))
+    expect(part.subject).toBe('long.txt:10-14')
+    const whole = await r.execute('read_file', { path: 'long.txt' }, ctx(root))
+    expect(whole.subject).toBeUndefined()
+  })
+
+  test('新建时与已有文件重名、改名写入，写入实际路径', async () => {
+    const root = await workspace()
+    const r = registry()
+    const out = await r.execute(
+      'write_file',
+      { path: 'a.txt', mode: 'create', on_conflict: 'rename', content: 'x' },
+      ctx(root),
+    )
+    expect(out.status).toBe('success')
+    expect(out.subject).toBeDefined()
+    expect(out.subject).not.toBe('a.txt')
+  })
+})

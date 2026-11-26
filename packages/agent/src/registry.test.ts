@@ -23,9 +23,8 @@ const spec = (name: string): ToolSpec => ({
   name,
   description: 'd',
   parameters: { type: 'object' },
-  actionKind: 'read',
-  objectLabel: 'x',
-  category: 'session',
+  verb: '读取',
+  category: 'context',
   facet: '测试',
   summary: '测试夹具',
   permissionEffect: 'read',
@@ -61,7 +60,7 @@ describe('执行入口 fail-closed', () => {
     r.register({
       ...spec('read_file'),
       parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
-      actionKind: () => {
+      verb: () => {
         throw new Error('缺少必填参数时不应进入动作解析')
       },
       fn: async () => {
@@ -192,34 +191,53 @@ describe('规范化', () => {
 })
 
 /**
- * 动作语义的解析。
+ * 动作语义的解析：动词由工具声明，动作由动词查表得出，开头由类目得出。
  *
- * 不要为注册表中未找到的工具返回默认值
- * `{ kind: 'read', objectLabel: 工具名 }`：这会使一个可能执行写入、删除或命令的未知
+ * 不要为注册表中未找到的工具返回默认值（如「读取 工具名」）：这会使一个可能执行写入、删除或命令的未知
  * 工具在卡片上显示「读取 xxx」，即编造一个具体且错误的动词。
  */
 describe('动作语义按参数解析，不按工具名推测', () => {
-  test('常量 kind 原样返回', () => {
-    expect(resolveAction(spec('read_thing'), {}).kind).toBe('read')
+  test('常量动词得出动作与开头，对象缺省取目标', () => {
+    const a = resolveAction(
+      { ...spec('read_thing'), targetExtractor: (x) => String(x.path) },
+      { path: 'a.ts' },
+    )
+    expect(a).toEqual({
+      kind: 'read',
+      head: '会话读取',
+      verb: '读取',
+      object: 'a.ts',
+      target: 'a.ts',
+    })
   })
 
-  test('函数 kind 能取得 args', () => {
+  test('函数动词能取得 args，动作随动词变化', () => {
     const s: ToolSpec = {
       ...spec('facade'),
-      actionKind: (a) => (a.mode === 'rm' ? 'delete' : 'read'),
+      verb: (a) => (a.mode === 'rm' ? '删除' : '读取'),
     }
     expect(resolveAction(s, { mode: 'rm' }).kind).toBe('delete')
     expect(resolveAction(s, { mode: 'cat' }).kind).toBe('read')
   })
 
-  /** 部分动作仅凭参数无法区分创建与编辑，区别在于 ctx.state 中的既有状态。 */
-  test('函数 kind 能取得 ctx', () => {
+  /** 部分动作仅凭参数无法区分创建与更新，区别在于 ctx 中的既有状态；权限预检没有 ctx，同样须返回。 */
+  test('函数动词能取得 ctx', () => {
     const s: ToolSpec = {
       ...spec('stateful'),
-      actionKind: (_a, c) => (c?.state.get('has') ? 'edit' : 'write'),
+      verb: (_a, c) => (c?.state.get('has') ? '更新' : '创建'),
     }
     const c = { state: new Map([['has', true]]) } as unknown as ToolContext
-    expect(resolveAction(s, {}).kind).toBe('write')
+    expect(resolveAction(s, {}).verb).toBe('创建')
+    expect(resolveAction(s, {}, c).verb).toBe('更新')
     expect(resolveAction(s, {}, c).kind).toBe('edit')
+  })
+
+  test('声明了对象时显示对象而不是目标：目标可以是不透明编号', () => {
+    const s: ToolSpec = {
+      ...spec('tabbed'),
+      targetExtractor: () => 'tab_7',
+      object: () => '网页',
+    }
+    expect(resolveAction(s, {})).toMatchObject({ object: '网页', target: 'tab_7' })
   })
 })

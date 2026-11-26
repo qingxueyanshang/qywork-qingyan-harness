@@ -1144,6 +1144,17 @@ export interface ToolOutcomeWire {
   presentation?: { images?: 'inline' }
   /** 文件类工具产出的变更摘要，供实时预览与 diff 面板消费。 */
   fileChanges?: FileChange[]
+  /**
+   * 成功或失败之外需要在界面显示的结果：`background` 任务已转入后台继续运行，结束时以回执送达；
+   * `partial` 一次调用中有的操作被跳过；`unknown` 请求已发出、结果不明（执行期间被中断，或生成请求发出后断开）。
+   * 工具行据此显示状态词，不按工具名或回执正文推断。
+   */
+  resultState?: 'background' | 'partial' | 'unknown'
+  /**
+   * 执行后才确定的对象名称：实际写入的路径、读取的行号范围、页面标题、元素文字、窗口标题。
+   * 工具行显示它，没有时显示调用时记录的 `action.object`。
+   */
+  subject?: string
   /** 本次调用落盘的中间资源引用。只含定位事实，不携带正文。 */
   resources?: IntermediateResourceRef[]
   errorKind?: string

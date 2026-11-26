@@ -11,7 +11,14 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openBatchBudget, Ports, provide, type ToolContext, ToolRegistry } from '@qywork/agent'
+import {
+  openBatchBudget,
+  Ports,
+  provide,
+  resolveAction,
+  type ToolContext,
+  ToolRegistry,
+} from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   addVersions,
@@ -206,12 +213,12 @@ describe('canvas 工具', () => {
   })
 
   test('画布工具分别声明动作，编辑、运行、取回与取消均需要写权限', () => {
-    expect(readCanvasTool.actionKind).toBe('read')
+    expect(resolveAction(readCanvasTool, { path: 'a.canvas.json' }).kind).toBe('read')
     expect(readCanvasTool.permissionEffect).toBe('read')
-    expect(editCanvasTool.actionKind).toBe('edit')
-    expect(createCanvasTool.actionKind).toBe('write')
-    expect(runCanvasTool.actionKind).toBe('run')
-    expect(cancelCanvasTool.actionKind).toBe('edit')
+    expect(resolveAction(editCanvasTool, {}).kind).toBe('edit')
+    expect(resolveAction(createCanvasTool, {}).kind).toBe('write')
+    expect(resolveAction(runCanvasTool, {}).kind).toBe('run')
+    expect(resolveAction(cancelCanvasTool, {}).kind).toBe('edit')
     const writers = [
       createCanvasTool,
       editCanvasTool,
@@ -1143,7 +1150,7 @@ describe('capture_canvas_frame', () => {
     expect(has(new Ports([canvas, noDecoder]))).toBe(false)
     expect(has(new Ports([canvas]))).toBe(false)
     expect(has(new Ports([office]))).toBe(false)
-    expect(captureCanvasFrameTool.actionKind).toBe('write')
+    expect(resolveAction(captureCanvasFrameTool, {}).kind).toBe('write')
     expect(captureCanvasFrameTool.permissionEffect).toBe('write')
   })
 

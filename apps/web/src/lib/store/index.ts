@@ -120,6 +120,7 @@ export {
   panelTargetOf,
   setFileRevealRequest,
   setFileSelectRequest,
+  togglePanelTarget,
 } from './files.ts'
 // 共享页签与最近查看的文件：清单的权威在电脑上，打开与关闭经此通知服务端
 export {

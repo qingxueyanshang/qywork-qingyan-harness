@@ -59,10 +59,16 @@ export const petTool: ToolSpec = {
     required: ['action'],
     additionalProperties: false,
   },
-  actionKind: (args) =>
-    args.action === 'save' ? 'edit' : args.action === 'apply' ? 'call' : 'read',
-  objectLabel: '宠物',
-  category: 'session',
+  verb: (args) =>
+    args.action === 'save'
+      ? '保存'
+      : args.action === 'apply'
+        ? '切换'
+        : args.action === 'list'
+          ? '列出'
+          : '读取',
+  object: (args) => (typeof args.id === 'string' && args.id.trim() ? args.id.trim() : '宠物'),
+  category: 'appearance',
   facet: '外观',
   summary: '读取、创建与切换宠物',
   targetExtractor: (a) => text(a.id),

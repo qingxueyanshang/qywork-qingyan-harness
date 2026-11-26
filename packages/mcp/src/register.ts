@@ -60,15 +60,14 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
     // 理由相同：适配器不得将其重排为 strict 结构。
     strict: false,
 
-    // 恒为 call。MCP 工具是外部 server 提供的能力，不是本机执行的动作；
-    // 该维度表达执行了什么动作，与下方的权限维度相互独立，不互相推导。
-    actionKind: 'call',
-    // 对象名是「MCP」这一类别，而不是具体工具：卡片由动词、对象、目标三层组成，
-    // 对象与目标填同一字符串会使目标层失去作用（标题与目标完全相同）。
-    objectLabel: 'MCP',
-    // 一律归入「MCP」：该类别的作用是不与内置分类混排；
+    // 恒为「调用」。MCP 工具是外部 server 提供的能力，不是本机执行的动作；
+    // 动作与下方的权限维度相互独立，不互相推导。
+    verb: '调用',
+    // 显示「server／工具」，不显示 target：target 是带 `mcp:` 前缀的权限范围。
+    object: () => `${server}／${def.name}`,
+    // 一律归入「MCP 调用」：该类别的作用是不与内置分类混排；
     // 第三方 server 提供什么、属于哪个领域，本地无法判断，推测填入的类别可能错误。
-    category: 'mcp',
+    category: 'mcp_call',
     facet: `MCP ${server}`,
     summary: def.description?.trim() || def.name,
     // target 同时承载权限 scope（scope = `<effect>:<target>`）。

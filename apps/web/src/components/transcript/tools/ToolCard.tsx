@@ -8,7 +8,7 @@ import { OpenInPanelCard } from './OpenInPanelCard.tsx'
  * 有专用卡片的工具，按工具名查表；表中没有的工具使用 `GenericToolCard`。
  *
  * 派发任务的两个工具渲染为图，不使用折叠条目：它们各自是一条子会话的入口，
- * 产出的正文已在该子会话（或该 CLI 进程的输出流）中。`open_in_panel` 在通用卡片旁加「打开」按钮。
+ * 产出的正文已在该子会话（或该 CLI 进程的输出流）中。`open_in_panel` 使用通用卡片，双击标题行打开或收起面板。
  *
  * 本表只决定卡片的种类。是否独立成行、不并入工具组由 `lib/render-items.ts` 的 `STANDALONE` 决定：
  * 工具组的成员同样经本组件渲染，新增专用卡片不要求该工具独立成行。

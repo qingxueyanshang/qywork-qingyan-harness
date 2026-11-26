@@ -10,10 +10,10 @@
  *   工具组之前与之后的思考单独成条。末尾的思考尤其不得并入工具折叠：它是回答正文之前的思考，
  *   折叠后用户无法找到。
  * - 少于 2 个工具时不生成工具组卡片：为单个工具添加折叠只会多一次点击。
- * - 派发任务的两个工具与 `open_in_panel` 不进入工具组（见 `STANDALONE`）。
+ * - 派发任务的两个工具不进入工具组（见 `STANDALONE`）。
  */
 
-import { type ActionKind, foldWorkflow, type NodeState, workflowGroupId } from '@qywork/core'
+import { foldWorkflow, type NodeState, workflowGroupId } from '@qywork/core'
 import { resultImages } from './step-view.ts'
 import type { TranscriptItem } from './store/index.ts'
 
@@ -30,14 +30,12 @@ export type RenderItem =
  * 不参与分组的工具：卡片上有需要直接看到或点击的内容，并入工具组的折叠后不可见。
  *
  * - `workflow` 的图与 `subagent` 的产出：每个都是一整条子会话的入口，是本轮中最需要首先看到的内容。
- *   实测实例：一张四节点的图被并入「修改 2 个待办，运行 1 个编排，查询 1 个文件」所在的工具组，图的节点全部不可见。
- * - `open_in_panel` 的「打开」按钮：窄屏上工具成功后不自动打开面板，该按钮是打开的入口。
+ *   实测实例：一张四节点的图被并入一个工具组，图的节点全部不可见。
  *
  * 本表只决定是否并入工具组，用哪种卡片渲染由 `ToolCard.tsx` 的 `TOOL_CARDS` 决定，两者互不推导：
- * 工具组的成员同样经 `ToolCard` 渲染，有专用卡片的工具可以位于工具组中。两表现有内容相同，是因为
- * 这三个工具同时需要独立成行与专用卡片。
+ * 工具组的成员同样经 `ToolCard` 渲染，有专用卡片的工具（如 `open_in_panel`）可以位于工具组中。
  */
-const STANDALONE = new Set(['subagent', 'workflow', 'open_in_panel'])
+const STANDALONE = new Set(['subagent', 'workflow'])
 
 /** 只有生产者明确要求内联展示、且结果中确有合法图片时，图片工具才独立成条。 */
 function carriesPresentedImages(item: TranscriptItem): boolean {
@@ -196,96 +194,34 @@ export function delegationStatus(transcript: TranscriptItem[]): string | null {
 }
 
 /**
- * 分组标题的动作文案：按动作类型首次出现的顺序分类，每类为「动词 N 个对象」。
- * 同类动作的对象不一致时退化为「N 个动作」：强行选用一个名词会误导用户。
- * 失败计数由分组标题组件单独显示，避免整段摘要显示为失败颜色。
+ * 分组标题：按开头首次出现的顺序，每个开头写「开头 N 次」，以逗号连接。
+ * 有问题的调用另由分组标题组件按状态计数，组内文件改动的合计行数显示在行尾。
  *
- * 运行中同样显示摘要。不要添加「只要有一个工具在运行，整组标题就改为
- * 『正在<该工具的动词>…』」这类前置分支，原因有二：
- *
- * - 一个工具组通常包含多种动作（读取三个文件后再执行一条命令），以其中一项的动词
- *   作为整组标题，无法描述整组动作。
- * - 该句与卡片自身的「运行命令 · npm test」只差「正在」二字，
- *   而本轮当前所处的阶段已由读数条显示。
- *
- * 是否在运行由分组标题右侧的加载图标表示（`Fold` 的 `running`），文字只描述执行了哪些动作，
+ * 运行中同样显示摘要。不要添加「只要有一个工具在运行，整组标题就改为『正在…』」这类前置分支：
+ * 一个工具组通常包含多类动作，以其中一项作为整组标题无法描述整组；本轮当前所处的阶段已由读数条显示。
  * 计数随工具陆续启动而增长。
  */
 export function groupTitle(members: TranscriptItem[]): string {
-  const tools = members.filter((m) => m.kind === 'tool')
-
-  const order: ActionKind[] = []
-  const byKind = new Map<ActionKind, TranscriptItem[]>()
-  for (const s of tools) {
-    const k = s.action?.kind
-    if (!k || !VERBS[k]) continue
-    const bucket = byKind.get(k)
-    if (bucket) bucket.push(s)
-    else {
-      byKind.set(k, [s])
-      order.push(k)
-    }
+  const counts = new Map<string, number>()
+  for (const m of members) {
+    const head = m.kind === 'tool' ? m.action?.head : undefined
+    if (head) counts.set(head, (counts.get(head) ?? 0) + 1)
   }
-
-  const parts = order.map((k) => {
-    const list = byKind.get(k)!
-    const objects = new Set(list.map((s) => s.action?.objectLabel ?? ''))
-    const noun = objects.size === 1 ? (list[0]!.action?.objectLabel ?? '动作') : '动作'
-    return `${VERBS[k]} ${list.length} ${UNITS[k]}${noun}`
-  })
-
-  return parts.join('，')
+  return [...counts].map(([head, n]) => `${head} ${n} 次`).join('，')
 }
 
 /**
- * 动作动词。每个 kind 恰好对应一个词。
+ * 单行工具的第二段：动词加对象。对象取执行后确定的名称（`outcome.subject`），没有时取调用时记录的对象；
+ * 两者都没有时只显示动词。
  *
- * 不设「其他 / 未知」类别，也无需设置：动作由工具在注册时声明，注册表是唯一权威，
- * 本表覆盖全部七个合法值。未命中的情况如何被逐一排除，见 `actionLabel`。
+ * `action` 随每个 step 写入数据库：未注册的调用不会成为 step（`agent/loop/tool-wave.ts` 在编排批次之前拦截），
+ * 历史记录的开头、动词与对象由迁移 81 写入。缺少 `action` 时返回空字符串，使缺陷在界面上可见。
  */
-const VERBS: Record<ActionKind, string> = {
-  query: '查询',
-  read: '读取',
-  write: '创建',
-  // 「创建、修改、删除」是一组用词；「编辑」描述界面操作，不描述数据变更。
-  edit: '修改',
-  delete: '删除',
-  run: '运行',
-  call: '调用',
-}
-
-/** 量词按动词区分：对象是实体的用「个」（读取 2 个文件），对象是动作的用「次」（调用 3 次浏览器控制）。 */
-const UNITS: Record<ActionKind, string> = {
-  query: '个',
-  read: '个',
-  write: '个',
-  edit: '个',
-  delete: '个',
-  run: '次',
-  call: '次',
-}
-
-export function verb(kind: ActionKind): string {
-  return VERBS[kind]
-}
-
-/**
- * 单条工具卡片的完整文案：动词加对象。
- *
- * 此处不设后备文案，因为无法生成文案的情况不存在。为缺少动作的行补充标题只会
- * 掩盖上游错误。已逐条核实：
- *
- * - 未注册的调用不会成为 step：`agent/loop/tool-wave.ts` 在编排批次之前就将其拦截在执行链之外。
- * - `action` 自版本控制的第一个提交起一直随 step 写入数据库，不存在缺少该字段的历史行。
- * - 已停用的 kind 由 `store` 的迁移 16 一次性转换为合法枚举值。
- *
- * 三条路径均已排除，剩余的空字符串只用于满足类型：一旦出现即为缺陷，
- * 须在界面上可见，而不是被编造的中文文案掩盖。
- */
-export function actionLabel(item: TranscriptItem): string {
+export function actionDetail(item: TranscriptItem): string {
   const a = item.action
-  if (!a || !VERBS[a.kind] || !a.objectLabel) return ''
-  return `${VERBS[a.kind]}${a.objectLabel}`
+  if (!a) return ''
+  const object = item.outcome?.subject ?? a.object
+  return object ? `${a.verb} ${object}` : a.verb
 }
 
 /**

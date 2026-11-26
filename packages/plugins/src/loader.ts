@@ -209,20 +209,19 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
       // 否则模型按改写后的形状传参，插件按原形状校验，两者不一致。
       parameters: t.parameters,
       strict: false,
-      // 恒为 call，不采用清单中的声明：插件工具是第三方代码通过 RPC 提供的能力，
+      // 恒为「调用」，不采用清单中的声明：插件工具是第三方代码通过 RPC 提供的能力，
       // 「这是一次外置调用」是宿主确知的事实，不应由插件自称为读、写或运行。
-      actionKind: 'call',
-      // 对象名恒为「插件」，不采用清单中的声明，理由同 `actionKind`：卡片的对象层表示
-      // 能力类别，具体是哪个插件的哪个工具由下方的 target 表示。
-      objectLabel: '插件',
+      verb: '调用',
+      // 显示「插件／工具」，不显示 target：target 是带 `plugin:` 前缀的权限范围。
+      object: () => `${manifest.id}／${t.name}`,
       // target 同时承载权限 scope（scope = `<effect>:<target>`），因此带
       // `plugin:` 前缀并使用未规范化的 id，与 MCP 的 `mcp:<server>/<tool>` 格式对齐，
       // 使两类外置工具的 scope 不会成为同一个字符串。
       targetExtractor: () => `plugin:${manifest.id}/${t.name}`,
       permissionEffect: t.permissionEffect,
-      // 插件工具归入「插件」类目，理由与 MCP 相同：不允许插件在清单中自行声明类目，
-      // 否则插件能把自身放入「文件与草稿」，与内置工具混列在同一栏。
-      category: 'plugins',
+      // 插件工具归入「插件调用」类目，理由与 MCP 相同：不允许插件在清单中自行声明类目，
+      // 否则插件能把自身放入「文件读写」，与内置工具混列在同一栏。
+      category: 'plugin_call',
       facet: plugin.manifest.id,
       summary: t.description,
       // 跨进程调用。ctx 不离开宿主进程：它包含 sink 句柄、AbortSignal 等

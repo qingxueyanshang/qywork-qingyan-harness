@@ -1,7 +1,8 @@
 /** 文件打开入口与文件树定位。定位请求只传递一次操作，选中状态仍由文件树持有。 */
+import { sharedPanelTabId } from '@qywork/core'
 import { createSignal } from 'solid-js'
 import { openCanvasTab, openWorkbenchTab } from './panel-share.ts'
-import { openPanel, setOpenFile, workspace } from './ui.ts'
+import { closePanel, openPanel, setOpenFile, sidePanel, viewingFile, workspace } from './ui.ts'
 
 /** 画布文件的后缀。文件树据此用画布页签打开文件。 */
 export const CANVAS_SUFFIX = '.canvas.json'
@@ -34,7 +35,7 @@ export const [fileSelectRequest, setFileSelectRequest] = createSignal<{
 
 /**
  * `open_in_panel` 成功结果中的打开目标：插件工作台（`workbench`，可带 `title`）或工作区文件（`path`）；
- * 都没有时为 `null`。工具成功后的自动打开与工具卡的「打开」按钮共用。
+ * 都没有时为 `null`。工具成功后的自动打开与工具行的双击共用。
  */
 export function panelTargetOf(data: Record<string, unknown> | undefined): (() => void) | null {
   if (typeof data?.workbench === 'string') {
@@ -47,6 +48,23 @@ export function panelTargetOf(data: Record<string, unknown> | undefined): (() =>
     return () => openFileInPanel(path)
   }
   return null
+}
+
+/**
+ * `open_in_panel` 的工具行双击：面板正在显示该目标时收起面板，否则打开该目标。
+ * 目标是文件时按 `viewingFile` 判定，画布页、文件预览页与文件页中打开的同一文件都算作正在显示。
+ */
+export function togglePanelTarget(data: Record<string, unknown> | undefined): void {
+  const open = panelTargetOf(data)
+  if (!open) return
+  const page = sidePanel()
+  const showing =
+    typeof data?.workbench === 'string'
+      ? typeof page === 'object' &&
+        page?.tab === sharedPanelTabId({ kind: 'plugin', workbench: data.workbench })
+      : viewingFile() === data?.path
+  if (showing) closePanel()
+  else open()
 }
 
 /**

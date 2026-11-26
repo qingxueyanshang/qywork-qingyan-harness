@@ -1,6 +1,6 @@
-/** 覆盖 `desktop-target.ts`。 */
+/** 覆盖 `desktop/subject.ts`。 */
 import { expect, test } from 'bun:test'
-import { desktopWindowLabel } from './desktop-target.ts'
+import { desktopWindowLabel } from './subject.ts'
 
 test('观察结果带有窗口标题时显示标题', () => {
   expect(desktopWindowLabel({ windowId: 'dw_3', app: 'Weixin.exe', title: '微信' })).toBe('微信')

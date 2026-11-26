@@ -364,415 +364,466 @@ function regionArg(v: unknown): ImageRegion | null | string {
   return out
 }
 
-export const readFileTool: ToolSpec = {
-  name: 'read_file',
-  description:
-    '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 作为图片返回，' +
-    '长边超过 1568 的图片缩小后发送，回执写明原图与发送尺寸；缩小后细线、描边、残影、小字无法看清，' +
-    '要判断这类细节（含用户截图中圈出的位置）时用 region 按比例截取局部，从原图截取并放大发送；' +
-    'MP4/MOV/WebM/MKV 在当前模型支持视频输入时作为视频返回，否则按时间抽取若干帧作为图片返回，' +
-    '回执写明已查看的时间点与未查看的区间，start/end（秒）指定续读区间；' +
-    'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配；没有文字层时返回失败）。' +
-    '修改任何已存在的文件前必须先用本工具读取一次：' +
-    'write_file 和 edit_file 会校验已读取的内容是否仍是磁盘上的最新版本。' +
-    '默认读取整个文件；文件无法整份读取时先返回开头部分与续读位置。' +
-    '指定 offset 或 limit 时，超出上下文剩余空间则返回可容纳的部分与续读位置。读取指定范围时用 offset/limit。',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '工作区相对路径' },
-      offset: { type: 'integer', description: '起始行号（1 起），默认 1' },
-      limit: { type: 'integer', description: '最多读取行数，默认读取到文件末尾' },
-      start: { type: 'number', description: '视频抽帧区间的起点（秒），默认从开头。只对视频有效' },
-      end: { type: 'number', description: '视频抽帧区间的终点（秒），默认到结尾。只对视频有效' },
-      region: {
-        type: 'object',
-        properties: {
-          left: { type: 'number' },
-          top: { type: 'number' },
-          width: { type: 'number' },
-          height: { type: 'number' },
-        },
-        required: ['left', 'top', 'width', 'height'],
-        additionalProperties: false,
-        description:
-          '只对图片有效。按图片宽高的比例（0 到 1）指定局部，从原图截取后放大到长边 1568（至多 4 倍）发送',
-      },
+/**
+ * 工具行显示的对象（结果的 `subject`），执行后才能确定。
+ * 不要改为由界面按工具名推断：界面只显示记录，开头、动词与对象都由工具写入。
+ */
+function withSubject(
+  spec: ToolSpec,
+  subject: (args: Record<string, unknown>, out: ToolOutcome) => string | undefined,
+): ToolSpec {
+  return {
+    ...spec,
+    fn: async (args, ctx) => {
+      const out = await spec.fn(args, ctx)
+      const shown = subject(args, out)
+      return shown ? { ...out, subject: shown } : out
     },
-    required: ['path'],
-    additionalProperties: false,
-  },
-  actionKind: 'read',
-  objectLabel: '文件',
-  category: 'files',
-  facet: '读写',
-  summary: '读取文件（默认读取全文，可分段读取）',
-  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
-  permissionEffect: 'read',
-  // 读操作互不干扰，可以并行；资源键使同一文件的读写不会进入同一批。
-  parallelSafe: true,
-  resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
-  async fn(args, ctx) {
-    const cloud = cloudTarget(ctx, args.path)
-    if (cloud) return 'status' in cloud ? cloud : readCloudFile(ctx, cloud, args)
-    const abs = await resolveInWorkspace(rootsOf(ctx), String(args.path), { mustExist: true })
-    const info = await stat(abs)
-    if (info.isDirectory()) {
-      return { status: 'failure', message: `${args.path} 是目录，请用 list_dir` }
-    }
+  }
+}
 
-    /*
-     * 图片与 PDF 在二进制检测之前分派：它们开头的字节中有 NUL，放在按行读取之后会先被判定为
-     * 二进制而拒绝。这两类各有上限。
-     */
-    // PDF 提取缓存的键：文件修改后即为另一份内容，缓存不会命中。
-    const fingerprint = `${Math.trunc(info.mtimeMs)}:${info.size}`
-    const region = regionArg(args.region)
-    if (typeof region === 'string') {
-      return { status: 'failure', executed: false, message: region, errorKind: 'invalid_args' }
-    }
-    if (region && !isInlineImage(abs)) {
-      return {
-        status: 'failure',
-        executed: false,
-        message: `region 只对图片有效，${displayPath(ctx.workspaceRoot, abs)} 不是图片`,
-        errorKind: 'invalid_args',
+/**
+ * 分段读取时在路径后写明实际交付的行号范围（`src/a.ts:395-448`）：同一文件分段读取时，不带范围的各行
+ * 显示同一路径，与重复读取无法区分。读取整个文件、或起始行超出文件末尾（结果为 0 行）时不写。
+ */
+function readRangeSubject(args: Record<string, unknown>, out: ToolOutcome): string | undefined {
+  const d = out.data as { startLine?: unknown; endLine?: unknown; totalLines?: unknown } | undefined
+  if (typeof args.path !== 'string') return undefined
+  if (
+    typeof d?.startLine !== 'number' ||
+    typeof d.endLine !== 'number' ||
+    typeof d.totalLines !== 'number'
+  ) {
+    return undefined
+  }
+  if (d.endLine < d.startLine || (d.startLine <= 1 && d.endLine >= d.totalLines)) return undefined
+  return `${args.path}:${d.startLine}-${d.endLine}`
+}
+
+/** 冲突时改名写入（`on_conflict: rename`）的实际路径；与参数中的路径相同时不写。 */
+function writtenPathSubject(args: Record<string, unknown>, out: ToolOutcome): string | undefined {
+  const actual = out.status === 'success' ? out.fileChanges?.[0]?.path : undefined
+  return actual && actual !== args.path ? actual : undefined
+}
+
+export const readFileTool: ToolSpec = withSubject(
+  {
+    name: 'read_file',
+    description:
+      '读取工作区内一个文件。文本返回带行号的正文；PNG/JPG/GIF/WebP 作为图片返回，' +
+      '长边超过 1568 的图片缩小后发送，回执写明原图与发送尺寸；缩小后细线、描边、残影、小字无法看清，' +
+      '要判断这类细节（含用户截图中圈出的位置）时用 region 按比例截取局部，从原图截取并放大发送；' +
+      'MP4/MOV/WebM/MKV 在当前模型支持视频输入时作为视频返回，否则按时间抽取若干帧作为图片返回，' +
+      '回执写明已查看的时间点与未查看的区间，start/end（秒）指定续读区间；' +
+      'PDF 提取正文后作为文本返回（不保留版式，中文可能出现同形异码，不适用于逐字匹配；没有文字层时返回失败）。' +
+      '修改任何已存在的文件前必须先用本工具读取一次：' +
+      'write_file 和 edit_file 会校验已读取的内容是否仍是磁盘上的最新版本。' +
+      '默认读取整个文件；文件无法整份读取时先返回开头部分与续读位置。' +
+      '指定 offset 或 limit 时，超出上下文剩余空间则返回可容纳的部分与续读位置。读取指定范围时用 offset/limit。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '工作区相对路径' },
+        offset: { type: 'integer', description: '起始行号（1 起），默认 1' },
+        limit: { type: 'integer', description: '最多读取行数，默认读取到文件末尾' },
+        start: {
+          type: 'number',
+          description: '视频抽帧区间的起点（秒），默认从开头。只对视频有效',
+        },
+        end: { type: 'number', description: '视频抽帧区间的终点（秒），默认到结尾。只对视频有效' },
+        region: {
+          type: 'object',
+          properties: {
+            left: { type: 'number' },
+            top: { type: 'number' },
+            width: { type: 'number' },
+            height: { type: 'number' },
+          },
+          required: ['left', 'top', 'width', 'height'],
+          additionalProperties: false,
+          description:
+            '只对图片有效。按图片宽高的比例（0 到 1）指定局部，从原图截取后放大到长边 1568（至多 4 倍）发送',
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    verb: '读取',
+    category: 'files',
+    facet: '读写',
+    summary: '读取文件（默认读取全文，可分段读取）',
+    targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+    permissionEffect: 'read',
+    // 读操作互不干扰，可以并行；资源键使同一文件的读写不会进入同一批。
+    parallelSafe: true,
+    resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+    async fn(args, ctx) {
+      const cloud = cloudTarget(ctx, args.path)
+      if (cloud) return 'status' in cloud ? cloud : readCloudFile(ctx, cloud, args)
+      const abs = await resolveInWorkspace(rootsOf(ctx), String(args.path), { mustExist: true })
+      const info = await stat(abs)
+      if (info.isDirectory()) {
+        return { status: 'failure', message: `${args.path} 是目录，请用 list_dir` }
       }
-    }
-    if (isInlineImage(abs)) {
+
       /*
-       * 当前模型不接受图片：在读取字节之前即拒绝，并完整说明原因。
-       *
-       * 判据只接受 `false`（约定见 `ai` 的 `ModelSpec.vision`）。此处拒绝的操作
-       * 重试必然失败，因此消息中必须给出下一步操作：只说明
-       * 「读取失败」时，模型只能原样再读取一次，而每次都会失败。
+       * 图片与 PDF 在二进制检测之前分派：它们开头的字节中有 NUL，放在按行读取之后会先被判定为
+       * 二进制而拒绝。这两类各有上限。
        */
-      if (ctx.vision === false) {
+      // PDF 提取缓存的键：文件修改后即为另一份内容，缓存不会命中。
+      const fingerprint = `${Math.trunc(info.mtimeMs)}:${info.size}`
+      const region = regionArg(args.region)
+      if (typeof region === 'string') {
+        return { status: 'failure', executed: false, message: region, errorKind: 'invalid_args' }
+      }
+      if (region && !isInlineImage(abs)) {
         return {
           status: 'failure',
-          message:
-            `当前模型不接受图片输入，${displayPath(ctx.workspaceRoot, abs)} 无法读取内容。` +
-            `不要再读取该文件：更换支持图片的模型，或请用户描述图片内容。`,
+          executed: false,
+          message: `region 只对图片有效，${displayPath(ctx.workspaceRoot, abs)} 不是图片`,
+          errorKind: 'invalid_args',
         }
       }
-      if (ctx.imagesRejected) {
-        return {
-          status: 'failure',
-          message: `接口拒绝图片输入，${displayPath(ctx.workspaceRoot, abs)} 未读取。`,
+      if (isInlineImage(abs)) {
+        /*
+         * 当前模型不接受图片：在读取字节之前即拒绝，并完整说明原因。
+         *
+         * 判据只接受 `false`（约定见 `ai` 的 `ModelSpec.vision`）。此处拒绝的操作
+         * 重试必然失败，因此消息中必须给出下一步操作：只说明
+         * 「读取失败」时，模型只能原样再读取一次，而每次都会失败。
+         */
+        if (ctx.vision === false) {
+          return {
+            status: 'failure',
+            message:
+              `当前模型不接受图片输入，${displayPath(ctx.workspaceRoot, abs)} 无法读取内容。` +
+              `不要再读取该文件：更换支持图片的模型，或请用户描述图片内容。`,
+          }
         }
-      }
-      if (info.size > MAX_IMAGE_BYTES) {
-        return {
-          status: 'failure',
-          message: `图片过大（${Math.round(info.size / 1024 / 1024)} MB），上限 10 MB`,
+        if (ctx.imagesRejected) {
+          return {
+            status: 'failure',
+            message: `接口拒绝图片输入，${displayPath(ctx.workspaceRoot, abs)} 未读取。`,
+          }
         }
-      }
-      /*
-       * 记录一次读取，且只在图像确实返回时记录。图片不经过下方文本分支的 `readHashes(...).set`，
-       * 此处不记录时，模型读取图片后对同一路径执行 `write_file` 会被拒绝为「尚未读取」，
-       * 按提示重新读取后仍被拒绝，该提示即为错误陈述。
-       *
-       * 按 utf8 解码后再计算哈希，不按原始字节计算。判据是与校验方计算的值是否相同：
-       * `write_file` 一侧按 utf8 读取（`readFile(abs, 'utf8')`）。
-       * 对二进制而言该解码有损，但它是确定性的，两侧计算结果一致即可。
-       */
-      readHashes(ctx).set(abs, hash(await readFile(abs, 'utf8')))
-      /*
-       * 超出上限时才缩放，在上限内原样通过，不要读取图像后无条件重编码：
-       * 一张 1440×900 的网页截图重编码后体积增大到 2.4 倍（实测，见 `image.ts`）。
-       */
-      const raw = new Uint8Array(await readFile(abs))
-      const shown = displayPath(ctx.workspaceRoot, abs)
-      if (region) {
-        let zoom: ZoomedImage
-        try {
-          zoom = await zoomImage(raw, region)
-        } catch {
-          return { status: 'failure', message: `${shown} 无法解码，不能截取局部` }
+        if (info.size > MAX_IMAGE_BYTES) {
+          return {
+            status: 'failure',
+            message: `图片过大（${Math.round(info.size / 1024 / 1024)} MB），上限 10 MB`,
+          }
         }
-        const { box, source, size } = zoom
-        chargeImage(ctx, size)
+        /*
+         * 记录一次读取，且只在图像确实返回时记录。图片不经过下方文本分支的 `readHashes(...).set`，
+         * 此处不记录时，模型读取图片后对同一路径执行 `write_file` 会被拒绝为「尚未读取」，
+         * 按提示重新读取后仍被拒绝，该提示即为错误陈述。
+         *
+         * 按 utf8 解码后再计算哈希，不按原始字节计算。判据是与校验方计算的值是否相同：
+         * `write_file` 一侧按 utf8 读取（`readFile(abs, 'utf8')`）。
+         * 对二进制而言该解码有损，但它是确定性的，两侧计算结果一致即可。
+         */
+        readHashes(ctx).set(abs, hash(await readFile(abs, 'utf8')))
+        /*
+         * 超出上限时才缩放，在上限内原样通过，不要读取图像后无条件重编码：
+         * 一张 1440×900 的网页截图重编码后体积增大到 2.4 倍（实测，见 `image.ts`）。
+         */
+        const raw = new Uint8Array(await readFile(abs))
+        const shown = displayPath(ctx.workspaceRoot, abs)
+        if (region) {
+          let zoom: ZoomedImage
+          try {
+            zoom = await zoomImage(raw, region)
+          } catch {
+            return { status: 'failure', message: `${shown} 无法解码，不能截取局部` }
+          }
+          const { box, source, size } = zoom
+          chargeImage(ctx, size)
+          return {
+            status: 'success',
+            message:
+              `读取 ${shown} 的局部（原图 ${source.width}×${source.height}，` +
+              `截取 x ${box.x}–${box.x + box.width}、y ${box.y}–${box.y + box.height}，` +
+              `${zoom.scale > 1.01 ? `放大 ${zoom.scale.toFixed(1)} 倍` : zoom.scale < 0.99 ? `缩小到 ${zoom.scale.toFixed(2)} 倍` : '原尺寸'}发送为 ${size.width}×${size.height}）`,
+            data: {
+              images: [{ data: Buffer.from(zoom.bytes).toString('base64'), mime: zoom.mime }],
+            },
+          }
+        }
+        const fit = await shrinkImage(raw, mimeOf(abs))
+        const shrunk = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }
+        chargeImage(ctx, imageSizeOf(fit.bytes))
         return {
           status: 'success',
-          message:
-            `读取 ${shown} 的局部（原图 ${source.width}×${source.height}，` +
-            `截取 x ${box.x}–${box.x + box.width}、y ${box.y}–${box.y + box.height}，` +
-            `${zoom.scale > 1.01 ? `放大 ${zoom.scale.toFixed(1)} 倍` : zoom.scale < 0.99 ? `缩小到 ${zoom.scale.toFixed(2)} 倍` : '原尺寸'}发送为 ${size.width}×${size.height}）`,
-          data: { images: [{ data: Buffer.from(zoom.bytes).toString('base64'), mime: zoom.mime }] },
+          message: `读取 ${shown}（图片${downscaleNote(imageSizeOf(raw), imageSizeOf(fit.bytes))}）`,
+          /*
+           * 字节在读取时固定保存，不返回路径。
+           *
+           * 一次读取是一次观察，观察结果应保留在执行记录中，与本工具读取
+           * 文本、`run_command` 保留 stdout 相同。
+           *
+           * 返回路径时，记录中保存的是查看位置而不是观察到的内容，而该位置的内容
+           * 会变化：模型修改页面后重新截图覆盖同名文件（对比修改前后的
+           * 常规操作），历史中的原图像无法再取回。捕获必须发生在观察时，
+           * 事后无法补救。
+           *
+           * 附件不经过此处，由 `runtime` 的 `withAttachments` 在每次发送前按路径编码：
+           * 附件是用户自己的文件，无需复制。判据是这是一次观察还是一个引用。
+           */
+          data: { images: [shrunk] },
         }
       }
-      const fit = await shrinkImage(raw, mimeOf(abs))
-      const shrunk = { data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime }
-      chargeImage(ctx, imageSizeOf(fit.bytes))
-      return {
-        status: 'success',
-        message: `读取 ${shown}（图片${downscaleNote(imageSizeOf(raw), imageSizeOf(fit.bytes))}）`,
-        /*
-         * 字节在读取时固定保存，不返回路径。
-         *
-         * 一次读取是一次观察，观察结果应保留在执行记录中，与本工具读取
-         * 文本、`run_command` 保留 stdout 相同。
-         *
-         * 返回路径时，记录中保存的是查看位置而不是观察到的内容，而该位置的内容
-         * 会变化：模型修改页面后重新截图覆盖同名文件（对比修改前后的
-         * 常规操作），历史中的原图像无法再取回。捕获必须发生在观察时，
-         * 事后无法补救。
-         *
-         * 附件不经过此处，由 `runtime` 的 `withAttachments` 在每次发送前按路径编码：
-         * 附件是用户自己的文件，无需复制。判据是这是一次观察还是一个引用。
-         */
-        data: { images: [shrunk] },
+
+      if (isInlineVideo(abs)) return readVideo(ctx, abs, info.size, args)
+
+      let pdf: string | null = null
+      if (abs.toLowerCase().endsWith('.pdf')) {
+        if (info.size > MAX_PDF_BYTES) {
+          return {
+            status: 'failure',
+            message: `PDF 过大（${Math.round(info.size / 1024 / 1024)} MB），上限 20 MB`,
+          }
+        }
+        pdf = await pdfText(ctx, abs, fingerprint).catch(() => null)
+        if (pdf === null) {
+          return { status: 'failure', message: `${args.path} 解析失败，可能不是有效的 PDF` }
+        }
+        // 没有文字层（扫描件、纯图片页）时返回空正文会被理解为该 PDF 没有内容。
+        // 下一步只指向本轮实际可用的能力：office 未启用或模型不接受图片时，指向它必然导致一次失败的调用。
+        if (!pdf.trim()) {
+          return {
+            status: 'failure',
+            message:
+              ctx.port(OfficePort)?.enabled() === true && ctx.vision !== false
+                ? `${args.path} 没有文字层（扫描件或纯图片页），read_file 无法读取内容。用 view_office 按页查看。`
+                : `${args.path} 没有文字层（扫描件或纯图片页），read_file 无法读取内容，当前也没有查看 PDF 页面的工具。`,
+          }
+        }
       }
-    }
 
-    if (isInlineVideo(abs)) return readVideo(ctx, abs, info.size, args)
-
-    let pdf: string | null = null
-    if (abs.toLowerCase().endsWith('.pdf')) {
-      if (info.size > MAX_PDF_BYTES) {
+      // 无法解析为整数时在此处终止。`Math.max` 是下界钳位（`offset: 0` 取 1），无法拦截 NaN：
+      // `Math.max(1, NaN)` 仍为 NaN，继续执行会得到一次「成功读取 0 行」。
+      const rawOffset = intArg(args.offset, 1)
+      const rawLimit = intArg(args.limit, Number.MAX_SAFE_INTEGER)
+      if (rawOffset === null || rawLimit === null) {
+        const bad = rawOffset === null ? 'offset' : 'limit'
         return {
           status: 'failure',
-          message: `PDF 过大（${Math.round(info.size / 1024 / 1024)} MB），上限 20 MB`,
+          message: badIntMessage(bad, args[bad]),
+          errorKind: 'invalid_args',
         }
       }
-      pdf = await pdfText(ctx, abs, fingerprint).catch(() => null)
-      if (pdf === null) {
-        return { status: 'failure', message: `${args.path} 解析失败，可能不是有效的 PDF` }
-      }
-      // 没有文字层（扫描件、纯图片页）时返回空正文会被理解为该 PDF 没有内容。
-      // 下一步只指向本轮实际可用的能力：office 未启用或模型不接受图片时，指向它必然导致一次失败的调用。
-      if (!pdf.trim()) {
-        return {
-          status: 'failure',
-          message:
-            ctx.port(OfficePort)?.enabled() === true && ctx.vision !== false
-              ? `${args.path} 没有文字层（扫描件或纯图片页），read_file 无法读取内容。用 view_office 按页查看。`
-              : `${args.path} 没有文字层（扫描件或纯图片页），read_file 无法读取内容，当前也没有查看 PDF 页面的工具。`,
-        }
-      }
-    }
+      const offset = Math.max(1, rawOffset)
+      const limit = Math.max(1, rawLimit)
 
-    // 无法解析为整数时在此处终止。`Math.max` 是下界钳位（`offset: 0` 取 1），无法拦截 NaN：
-    // `Math.max(1, NaN)` 仍为 NaN，继续执行会得到一次「成功读取 0 行」。
-    const rawOffset = intArg(args.offset, 1)
-    const rawLimit = intArg(args.limit, Number.MAX_SAFE_INTEGER)
-    if (rawOffset === null || rawLimit === null) {
-      const bad = rawOffset === null ? 'offset' : 'limit'
-      return {
-        status: 'failure',
-        message: badIntMessage(bad, args[bad]),
-        errorKind: 'invalid_args',
-      }
-    }
-    const offset = Math.max(1, rawOffset)
-    const limit = Math.max(1, rawLimit)
-
-    // 只保留本轮额度能容纳的行：保留量取余量折算为字节后的上界，计量后不超额度的前缀必然在其范围内。
-    const keepBytes = Math.max(MIN_DELIVERY_BYTES, tokensToMaxBytes(deliveryCap(ctx)))
-    const scan = await scanLines(
-      pdf === null ? decodeFile(abs) : oneChunk(pdf),
-      offset,
-      limit,
-      keepBytes,
-    )
-    if (scan === 'binary') return notText(String(args.path), ctx.port(OfficePort) !== null)
-    const slice = scan.lines
-    const totalLines = scan.total
-    const shown = displayPath(ctx.workspaceRoot, abs)
-    const secrets = ctx.secrets ?? EMPTY_SECRETS
-
-    /*
-     * 全文的估算 token 数（`readTokens`，以本次保留的行为样本）。只写入没有整份返回的结果，
-     * 模型据此与上下文剩余空间比较，决定分段读取、检索或委派；字符构成不均时偏差随之增大，因此表述为「约」。
-     * 只在需要时计算一次，二分查找中的各次结果使用同一个值。
-     */
-    let fileTokens: number | null = null
-    const sizeNote = (): string => {
-      fileTokens ??= readTokens(slice, scan.bytes, totalLines, ctx.density)
-      return fileTokens > 0 ? `，全文${approxTokens(fileTokens)}` : ''
-    }
-
-    /*
-     * 由所请求范围的前 n 行组成的结果。
-     *
-     * 正文经过脱敏处理。该路径不接入凭证保护时，`read_file` 会把磁盘上的字节直接交给模型：
-     * 工作区中的 `.env`、误提交的私钥、`config/*.local.json` 中的 token，读取一次即进入上下文
-     * 并随下一次请求发送给 provider，且无法撤回。模型无法取得 `cat .env` 的输出，却能经由 `read_file`
-     * 取得时，拦截即失效。脱敏只作用于交给模型的文本，磁盘上的文件不做任何修改；
-     * `edit_file` 的读取校验使用原文哈希，不受影响。
-     */
-    const firstLines = (
-      n: number,
-      opening = false,
-    ): { message: string; data: Record<string, unknown> } => {
-      const numbered = slice
-        .slice(0, n)
-        .map((l, i) => `${offset + i}\t${l}`)
-        .join('\n')
-      const end = offset - 1 + n
-      const complete = n === slice.length && scan.complete
-      return {
-        message: complete
-          ? `读取 ${shown}（${n} 行${end < totalLines ? `，已截断；共 ${totalLines} 行${sizeNote()}` : ''}）`
-          : opening
-            ? `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${sizeNote()}）。` +
-              `文件较大，先返回开头部分；从 offset=${end + 1} 续读，或用 offset/limit 读取指定范围。`
-            : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${sizeNote()}）。` +
-              `超出上下文剩余空间，从 offset=${end + 1} 续读；已读取的段落在压缩时会被折叠，要点写在回复中。`,
-        data: {
-          content: redactSecrets(numbered, secrets),
-          startLine: offset,
-          endLine: end,
-          totalLines,
-          truncated: end < totalLines,
-          ...(complete ? {} : { nextOffset: end + 1 }),
-        },
-      }
-    }
-
-    // 哈希按磁盘原文计算：它表示磁盘上的当前内容；改用归一后的文本时，
-    // 无法检测到文件行尾被他人修改。只有交给模型的正文经过归一。
-    // 只在确实返回内容之后记录：失败的读取不能作为 edit 的前置证据。
-    const markRead = () => readHashes(ctx).set(abs, scan.digest)
-
-    /*
-     * 投递：所请求的范围能够整份容纳时整份返回；否则返回可容纳的最长行前缀与下一行的 offset，
-     * 不拒绝。拒绝的回合不产出正文，模型只能按建议再读取一次。
-     * 未指定 offset 与 limit 时前缀不超过 `firstPageCap`：这一段不记为触及上限，不触发收纳，留在上下文中；
-     * 指定其中任一项时按 `deliveryCap` 读满。
-     *
-     * 行数用二分法按实际结果计量，不要按平均行长估算：行长不均时估算出的行数会超出额度。
-     */
-    const whole = firstLines(slice.length)
-    if (scan.complete && chargeBatchBudget(ctx, outcomeTokens(whole, ctx.density)).ok) {
-      markRead()
-      return { status: 'success', ...whole }
-    }
-    const budget = deliveryCap(ctx)
-    const remaining =
-      args.offset === undefined && args.limit === undefined ? firstPageCap(ctx) : budget
-    const opening = remaining < budget
-    // 余量连一段都无法容纳时仍返回 `MIN_DELIVERY_BYTES` 以内的整行，不报告失败。
-    const fits = (n: number) => {
-      const part = firstLines(n, opening)
-      return (
-        outcomeTokens(part, ctx.density) <= remaining ||
-        Buffer.byteLength(String(part.data.content)) <= MIN_DELIVERY_BYTES
+      // 只保留本轮额度能容纳的行：保留量取余量折算为字节后的上界，计量后不超额度的前缀必然在其范围内。
+      const keepBytes = Math.max(MIN_DELIVERY_BYTES, tokensToMaxBytes(deliveryCap(ctx)))
+      const scan = await scanLines(
+        pdf === null ? decodeFile(abs) : oneChunk(pdf),
+        offset,
+        limit,
+        keepBytes,
       )
-    }
-    if (scan.complete && fits(slice.length)) {
-      recordBatchSpent(ctx, outcomeTokens(whole, ctx.density))
-      markRead()
-      return { status: 'success', ...whole }
-    }
-    let fit = 0
-    let over = slice.length
-    while (over - fit > 1) {
-      const mid = (fit + over) >> 1
-      if (fits(mid)) fit = mid
-      else over = mid
-    }
-    if (fit > 0) {
-      const part = firstLines(fit, opening)
-      if (opening) recordBatchSpent(ctx, outcomeTokens(part, ctx.density))
-      else recordCappedSpent(ctx, outcomeTokens(part, ctx.density))
-      markRead()
-      return { status: 'success', ...part }
-    }
+      if (scan === 'binary') return notText(String(args.path), ctx.port(OfficePort) !== null)
+      const slice = scan.lines
+      const totalLines = scan.total
+      const shown = displayPath(ctx.workspaceRoot, abs)
+      const secrets = ctx.secrets ?? EMPTY_SECRETS
 
-    // 第一行即超出额度：行偏移无法定位到行中间，因此把该行保存一次，按字节续读。
-    const line = redactSecrets(slice[0] ?? '', secrets)
-    const message = `读取 ${shown} 第 ${offset} 行（共 ${totalLines} 行）`
-    const nextLine = offset < totalLines ? offset + 1 : null
-    const more = nextLine === null ? {} : { nextOffset: nextLine }
-    const result = deliverReadable(ctx, {
-      toolName: 'read_file',
-      sourceType: 'file:line',
-      whole: {
-        message,
-        data: {
-          content: `${offset}\t${line}`,
-          startLine: offset,
-          endLine: offset,
-          totalLines,
-          truncated: true,
-          ...more,
+      /*
+       * 全文的估算 token 数（`readTokens`，以本次保留的行为样本）。只写入没有整份返回的结果，
+       * 模型据此与上下文剩余空间比较，决定分段读取、检索或委派；字符构成不均时偏差随之增大，因此表述为「约」。
+       * 只在需要时计算一次，二分查找中的各次结果使用同一个值。
+       */
+      let fileTokens: number | null = null
+      const sizeNote = (): string => {
+        fileTokens ??= readTokens(slice, scan.bytes, totalLines, ctx.density)
+        return fileTokens > 0 ? `，全文${approxTokens(fileTokens)}` : ''
+      }
+
+      /*
+       * 由所请求范围的前 n 行组成的结果。
+       *
+       * 正文经过脱敏处理。该路径不接入凭证保护时，`read_file` 会把磁盘上的字节直接交给模型：
+       * 工作区中的 `.env`、误提交的私钥、`config/*.local.json` 中的 token，读取一次即进入上下文
+       * 并随下一次请求发送给 provider，且无法撤回。模型无法取得 `cat .env` 的输出，却能经由 `read_file`
+       * 取得时，拦截即失效。脱敏只作用于交给模型的文本，磁盘上的文件不做任何修改；
+       * `edit_file` 的读取校验使用原文哈希，不受影响。
+       */
+      const firstLines = (
+        n: number,
+        opening = false,
+      ): { message: string; data: Record<string, unknown> } => {
+        const numbered = slice
+          .slice(0, n)
+          .map((l, i) => `${offset + i}\t${l}`)
+          .join('\n')
+        const end = offset - 1 + n
+        const complete = n === slice.length && scan.complete
+        return {
+          message: complete
+            ? `读取 ${shown}（${n} 行${end < totalLines ? `，已截断；共 ${totalLines} 行${sizeNote()}` : ''}）`
+            : opening
+              ? `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${sizeNote()}）。` +
+                `文件较大，先返回开头部分；从 offset=${end + 1} 续读，或用 offset/limit 读取指定范围。`
+              : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${sizeNote()}）。` +
+                `超出上下文剩余空间，从 offset=${end + 1} 续读；已读取的段落在压缩时会被折叠，要点写在回复中。`,
+          data: {
+            content: redactSecrets(numbered, secrets),
+            startLine: offset,
+            endLine: end,
+            totalLines,
+            truncated: end < totalLines,
+            ...(complete ? {} : { nextOffset: end + 1 }),
+          },
+        }
+      }
+
+      // 哈希按磁盘原文计算：它表示磁盘上的当前内容；改用归一后的文本时，
+      // 无法检测到文件行尾被他人修改。只有交给模型的正文经过归一。
+      // 只在确实返回内容之后记录：失败的读取不能作为 edit 的前置证据。
+      const markRead = () => readHashes(ctx).set(abs, scan.digest)
+
+      /*
+       * 投递：所请求的范围能够整份容纳时整份返回；否则返回可容纳的最长行前缀与下一行的 offset，
+       * 不拒绝。拒绝的回合不产出正文，模型只能按建议再读取一次。
+       * 未指定 offset 与 limit 时前缀不超过 `firstPageCap`：这一段不记为触及上限，不触发收纳，留在上下文中；
+       * 指定其中任一项时按 `deliveryCap` 读满。
+       *
+       * 行数用二分法按实际结果计量，不要按平均行长估算：行长不均时估算出的行数会超出额度。
+       */
+      const whole = firstLines(slice.length)
+      if (scan.complete && chargeBatchBudget(ctx, outcomeTokens(whole, ctx.density)).ok) {
+        markRead()
+        return { status: 'success', ...whole }
+      }
+      const budget = deliveryCap(ctx)
+      const remaining =
+        args.offset === undefined && args.limit === undefined ? firstPageCap(ctx) : budget
+      const opening = remaining < budget
+      // 余量连一段都无法容纳时仍返回 `MIN_DELIVERY_BYTES` 以内的整行，不报告失败。
+      const fits = (n: number) => {
+        const part = firstLines(n, opening)
+        return (
+          outcomeTokens(part, ctx.density) <= remaining ||
+          Buffer.byteLength(String(part.data.content)) <= MIN_DELIVERY_BYTES
+        )
+      }
+      if (scan.complete && fits(slice.length)) {
+        recordBatchSpent(ctx, outcomeTokens(whole, ctx.density))
+        markRead()
+        return { status: 'success', ...whole }
+      }
+      let fit = 0
+      let over = slice.length
+      while (over - fit > 1) {
+        const mid = (fit + over) >> 1
+        if (fits(mid)) fit = mid
+        else over = mid
+      }
+      if (fit > 0) {
+        const part = firstLines(fit, opening)
+        if (opening) recordBatchSpent(ctx, outcomeTokens(part, ctx.density))
+        else recordCappedSpent(ctx, outcomeTokens(part, ctx.density))
+        markRead()
+        return { status: 'success', ...part }
+      }
+
+      // 第一行即超出额度：行偏移无法定位到行中间，因此把该行保存一次，按字节续读。
+      const line = redactSecrets(slice[0] ?? '', secrets)
+      const message = `读取 ${shown} 第 ${offset} 行（共 ${totalLines} 行）`
+      const nextLine = offset < totalLines ? offset + 1 : null
+      const more = nextLine === null ? {} : { nextOffset: nextLine }
+      const result = deliverReadable(ctx, {
+        toolName: 'read_file',
+        sourceType: 'file:line',
+        whole: {
+          message,
+          data: {
+            content: `${offset}\t${line}`,
+            startLine: offset,
+            endLine: offset,
+            totalLines,
+            truncated: true,
+            ...more,
+          },
         },
-      },
-      body: line,
-      partial: (head, note) => ({
-        message: `${message}，该行只投递了开头部分${nextLine === null ? '' : `，下一行从 offset=${nextLine} 用 read_file 读取`}。${note}`,
-        data: {
-          content: `${offset}\t${head}`,
-          startLine: offset,
-          endLine: offset,
-          totalLines,
-          truncated: true,
-          ...more,
-        },
-      }),
-    })
-    if (result.status === 'success') markRead()
-    return result
+        body: line,
+        partial: (head, note) => ({
+          message: `${message}，该行只投递了开头部分${nextLine === null ? '' : `，下一行从 offset=${nextLine} 用 read_file 读取`}。${note}`,
+          data: {
+            content: `${offset}\t${head}`,
+            startLine: offset,
+            endLine: offset,
+            totalLines,
+            truncated: true,
+            ...more,
+          },
+        }),
+      })
+      if (result.status === 'success') markRead()
+      return result
+    },
   },
-}
+  readRangeSubject,
+)
 
 /** 没有配置任何 secret 时使用的空集合。按格式脱敏与它无关，照常生效。 */
 const EMPTY_SECRETS = { values: [] }
 
-export const writeFileTool: ToolSpec = {
-  name: 'write_file',
-  description:
-    '写入整个文件，必须用 mode 明确区分新建与覆盖修改。' +
-    'create 只新建，不覆盖已有文件；重名时自动追加 -2、-3 等后缀，写入未占用的名称，无需重新生成，后续操作使用回执中的实际 path。' +
-    '用户明确要求必须使用原文件名时传 on_conflict=error，重名即失败、不写入。' +
-    'overwrite 只修改已有文件，必须先 read_file 且内容未变；局部修改优先 edit_file。',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '工作区相对路径' },
-      mode: {
-        type: 'string',
-        enum: ['create', 'overwrite'],
-        description: 'create 新建独立文件；overwrite 覆盖修改已有文件，必须先读取。',
+export const writeFileTool: ToolSpec = withSubject(
+  {
+    name: 'write_file',
+    description:
+      '写入整个文件，必须用 mode 明确区分新建与覆盖修改。' +
+      'create 只新建，不覆盖已有文件；重名时自动追加 -2、-3 等后缀，写入未占用的名称，无需重新生成，后续操作使用回执中的实际 path。' +
+      '用户明确要求必须使用原文件名时传 on_conflict=error，重名即失败、不写入。' +
+      'overwrite 只修改已有文件，必须先 read_file 且内容未变；局部修改优先 edit_file。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '工作区相对路径' },
+        mode: {
+          type: 'string',
+          enum: ['create', 'overwrite'],
+          description: 'create 新建独立文件；overwrite 覆盖修改已有文件，必须先读取。',
+        },
+        on_conflict: {
+          type: 'string',
+          enum: ['error', 'rename'],
+          description:
+            '新建重名时的处理，默认 rename：自动追加 -2、-3 等后缀。error：重名即失败，用于用户明确要求必须使用原文件名的情况。覆盖修改不能使用 rename。',
+        },
+        content: { type: 'string', description: '文件完整内容' },
       },
-      on_conflict: {
-        type: 'string',
-        enum: ['error', 'rename'],
-        description:
-          '新建重名时的处理，默认 rename：自动追加 -2、-3 等后缀。error：重名即失败，用于用户明确要求必须使用原文件名的情况。覆盖修改不能使用 rename。',
-      },
-      content: { type: 'string', description: '文件完整内容' },
+      required: ['path', 'mode', 'content'],
+      additionalProperties: false,
     },
-    required: ['path', 'mode', 'content'],
-    additionalProperties: false,
-  },
-  actionKind: (args) => (args.mode === 'overwrite' ? 'edit' : 'write'),
-  objectLabel: '文件',
-  category: 'files',
-  facet: '读写',
-  summary: '写入整个文件',
-  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
-  permissionEffect: 'write',
-  async fn(args, ctx) {
-    const mode = args.mode
-    const conflict = args.on_conflict ?? (mode === 'create' ? 'rename' : 'error')
-    if (
-      (mode !== 'create' && mode !== 'overwrite') ||
-      (conflict !== 'error' && conflict !== 'rename') ||
-      (mode === 'overwrite' && conflict === 'rename')
-    ) {
-      return {
-        status: 'failure',
-        executed: false,
-        message:
-          'mode 必须为 create 或 overwrite；on_conflict 必须为 error 或 rename，rename 仅用于新建文件。',
-        errorKind: 'invalid_tool_arguments',
+    verb: (args) => (args.mode === 'overwrite' ? '覆盖' : '创建'),
+    category: 'files',
+    facet: '读写',
+    summary: '写入整个文件',
+    targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+    permissionEffect: 'write',
+    async fn(args, ctx) {
+      const mode = args.mode
+      const conflict = args.on_conflict ?? (mode === 'create' ? 'rename' : 'error')
+      if (
+        (mode !== 'create' && mode !== 'overwrite') ||
+        (conflict !== 'error' && conflict !== 'rename') ||
+        (mode === 'overwrite' && conflict === 'rename')
+      ) {
+        return {
+          status: 'failure',
+          executed: false,
+          message:
+            'mode 必须为 create 或 overwrite；on_conflict 必须为 error 或 rename，rename 仅用于新建文件。',
+          errorKind: 'invalid_tool_arguments',
+        }
       }
-    }
-    return writeWholeFile(ctx, String(args.path), String(args.content), mode, conflict)
+      return writeWholeFile(ctx, String(args.path), String(args.content), mode, conflict)
+    },
   },
-}
+  writtenPathSubject,
+)
 
 /**
  * 整份写入一个文件。`write_file` 与 `run_command` 的 `files` 都经由本函数写入：路径判定（根目录、受保护目录、凭证文件）、
@@ -929,8 +980,7 @@ export const editFileTool: ToolSpec = {
     required: ['path', 'edits'],
     additionalProperties: false,
   },
-  actionKind: 'edit',
-  objectLabel: '文件',
+  verb: '修改',
   category: 'files',
   facet: '读写',
   summary: '按精确字符串替换修改一个文件',
@@ -1061,8 +1111,7 @@ export const listDirTool: ToolSpec = {
     },
     additionalProperties: false,
   },
-  actionKind: 'query',
-  objectLabel: '目录',
+  verb: '列出',
   category: 'files',
   facet: '检索',
   summary: '列出一个目录下的条目',

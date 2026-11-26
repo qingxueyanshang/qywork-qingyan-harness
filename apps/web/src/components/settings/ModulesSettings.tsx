@@ -3,6 +3,8 @@ import {
   COMPACT_PERCENT_STEP,
   COMPACT_TIERS,
   type CompactTier,
+  TOOL_CATEGORY_HEADS,
+  type ToolCategory,
 } from '@qywork/core'
 import { createResource, createSignal, For, type JSX, Show } from 'solid-js'
 import { loaded, suspendUntil } from '../../lib/resource.ts'
@@ -32,11 +34,11 @@ import { Row } from './Row.tsx'
  *   后端已按类目排序，此处只分组，不重新排序。
  * - 不对应工具的模块（上下文压缩、执行循环、版本控制、权限模式、沙箱）同样列出，否则本页无法表明这些能力存在。
  *   每一条都对应界面上已有的能力，不列尚未实现的条目。
- * - 新增类目须同时修改三处：`registry.ts` 的联合类型、同文件的 `TOOL_CATEGORIES` 数组与本文件的 `MODULES`。
- *   遗漏本文件不会报错，分组标题会回退为英文类目 id。
+ * - 类目的分组名取自 core 的 `TOOL_CATEGORY_HEADS`，与会话中工具行的开头相同；不要在本文件另写类目名称。
+ *   `MODULES` 只决定分组的顺序、说明行、设置项与入口；未列入的类目照常显示，排在末尾。
  */
 
-/** 一个模块。`id` 与 `ToolCategory` 同名时接收该类目的工具行；`loop` / `vcs` 不是类目，只显示说明行。 */
+/** 一个模块。`id` 与 `ToolCategory` 同名时接收该类目的工具行；`permission` / `loop` / `vcs` 不是类目，只显示说明行。 */
 interface Module {
   id: string
   label: string
@@ -80,7 +82,7 @@ export function officeSwitchOn(cfg: { officeEnabled?: boolean } | null): boolean
   return cfg?.officeEnabled !== false
 }
 
-/** 「画布与生成」开关的读数：字段缺失视为开启，与会话注册这组工具的判据（`mediaEnabled !== false`）一致。 */
+/** 「画布读写」「媒体生成」开关的读数：字段缺失视为开启，与会话注册这组工具的判据（`mediaEnabled !== false`）一致。 */
 export function mediaSwitchOn(cfg: { mediaEnabled?: boolean } | null): boolean {
   return cfg?.mediaEnabled !== false
 }
@@ -149,7 +151,7 @@ function CompactPercentRow(props: { tier: CompactTier }) {
   )
 }
 
-/** 「上下文」组的自动压缩比例：标签行之后每档一行滑块。配置加载完成后才渲染滑块，理由同分组开关。 */
+/** 「会话读取」组的自动压缩比例：标签行之后每档一行滑块。配置加载完成后才渲染滑块，理由同分组开关。 */
 function CompactPercentRows() {
   return (
     <>
@@ -163,10 +165,19 @@ function CompactPercentRows() {
   )
 }
 
+/** 类目模块的 id 与分组名。分组名只来自 `TOOL_CATEGORY_HEADS`。 */
+function category(id: ToolCategory): Pick<Module, 'id' | 'label'> {
+  return { id, label: TOOL_CATEGORY_HEADS[id] }
+}
+
+const MEDIA_TOGGLE: NonNullable<Module['toggle']> = {
+  on: () => mediaSwitchOn(config()),
+  onPick: (on) => void patchConfig({ mediaEnabled: on }),
+}
+
 const MODULES: Module[] = [
   {
-    id: 'files',
-    label: '工作区文件',
+    ...category('files'),
     notes: [
       {
         label: 'read_before_write',
@@ -181,9 +192,8 @@ const MODULES: Module[] = [
    * 而 `mode` 说明命令是否放行；用户修改审批模式时需要在 shell 检测结果中查找。
    */
   {
-    id: 'code',
-    label: '终端',
-    // 终端分组可配置的只有 shell（安装 bash、查看检测结果），位于「通用 → 运行环境」。
+    ...category('code'),
+    // 命令执行分组可配置的只有 shell（安装 bash、查看检测结果），位于「通用 → 运行环境」。
     // 不要指向「权限」：该页管理可访问的路径，不管理命令的执行方式。
     consoles: [{ page: 'general', label: '去配置' }],
     notes: [
@@ -217,8 +227,7 @@ const MODULES: Module[] = [
     ],
   },
   {
-    id: 'web',
-    label: '网络',
+    ...category('web'),
     notes: [
       {
         label: 'ssrf_guard',
@@ -232,8 +241,7 @@ const MODULES: Module[] = [
   },
   // 分组标题为开关，理由同电脑控制。
   {
-    id: 'browser',
-    label: '浏览器控制',
+    ...category('browser'),
     toggle: {
       on: () => browserSwitchOn(config()),
       onPick: (on) => void patchConfig({ browserEnabled: on }),
@@ -247,8 +255,7 @@ const MODULES: Module[] = [
    * `dispatch` 是宿主回执的协议字段，用户无法据此作出判断（B7）。
    */
   {
-    id: 'desktop',
-    label: '电脑控制',
+    ...category('desktop'),
     toggle: {
       on: () => desktopSwitchOn(config()),
       onPick: (on) => void patchConfig({ desktopEnabled: on }),
@@ -259,8 +266,7 @@ const MODULES: Module[] = [
    * 标题旁显示环境状态，安装入口在「通用 → 运行环境」；render 行说明能力边界。
    */
   {
-    id: 'office',
-    label: 'Office 文档',
+    ...category('office'),
     environment: officeState,
     toggle: {
       on: () => officeSwitchOn(config()),
@@ -273,15 +279,9 @@ const MODULES: Module[] = [
       },
     ],
   },
-  // 分组标题为开关，理由同电脑控制。
-  {
-    id: 'media',
-    label: '画布与生成',
-    toggle: {
-      on: () => mediaSwitchOn(config()),
-      onPick: (on) => void patchConfig({ mediaEnabled: on }),
-    },
-  },
+  // 分组标题为开关，理由同电脑控制。画布与生成由同一个配置项启用，两组各显示一个开关，读写同一个字段。
+  { ...category('canvas'), toggle: MEDIA_TOGGLE },
+  { ...category('generate'), toggle: MEDIA_TOGGLE },
   /*
    * 记忆与技能是两个类目，不合并为「记忆与技能」。
    *
@@ -290,8 +290,7 @@ const MODULES: Module[] = [
    * `buildTailNotes` 的 `memory` / `skills` 两个分组（`runtime/src/prompt.ts`）。
    */
   {
-    id: 'memory',
-    label: '记忆',
+    ...category('memory'),
     consoles: [{ page: 'memory', label: '去配置' }],
     notes: [
       { label: 'memory', text: () => '记忆的名称与首行始终附在上下文末尾，正文按需读取。' },
@@ -299,16 +298,14 @@ const MODULES: Module[] = [
     ],
   },
   {
-    id: 'skills',
-    label: '技能',
+    ...category('skills'),
     consoles: [{ page: 'skills', label: '去配置' }],
     notes: [
       { label: 'skills', text: () => '技能名称与简短描述始终附在上下文末尾，正文按需读取。' },
     ],
   },
   {
-    id: 'planning',
-    label: '待办',
+    ...category('planning'),
     notes: [
       { label: 'MAX_ITEMS', text: () => '每次提交完整清单，而非单条增删；最多 40 条。' },
       { label: 'in_progress', text: () => '同一时间最多一条；超过一条时提交失败，不会自动修正。' },
@@ -325,8 +322,7 @@ const MODULES: Module[] = [
     ],
   },
   {
-    id: 'goal',
-    label: '目标',
+    ...category('goal'),
     notes: [
       /*
        * 不设轮数上限。不要在此写「默认 12 轮，最多 50 轮」之类的数字：代码中没有这样的配额
@@ -339,14 +335,14 @@ const MODULES: Module[] = [
       },
     ],
   },
+  category('collab'),
+  category('appearance'),
   {
-    id: 'session',
-    label: '上下文',
+    ...category('context'),
     settings: CompactPercentRows,
   },
   {
-    id: 'schedule',
-    label: '定时任务',
+    ...category('schedule'),
     consoles: [{ page: 'schedules', label: '去配置' }],
     notes: [
       {
@@ -356,9 +352,11 @@ const MODULES: Module[] = [
       },
     ],
   },
-  // 按需加载的边界已在「上下文」分组 load_tool 一行的用途中写明，此处不重复。
-  { id: 'mcp', label: 'MCP', consoles: [{ page: 'mcp', label: '去配置' }] },
-  { id: 'plugins', label: '插件', consoles: [{ page: 'plugins', label: '去配置' }] },
+  // 按需加载的边界已在「会话读取」分组 load_tool 一行的用途中写明，此处不重复。
+  { ...category('mcp'), consoles: [{ page: 'mcp', label: '去配置' }] },
+  { ...category('mcp_call'), consoles: [{ page: 'mcp', label: '去配置' }] },
+  { ...category('plugins'), consoles: [{ page: 'plugins', label: '去配置' }] },
+  { ...category('plugin_call'), consoles: [{ page: 'plugins', label: '去配置' }] },
   {
     id: 'loop',
     label: '执行循环',
@@ -440,7 +438,7 @@ export function ModulesSettings() {
         g = {
           mod: MODULES.find((m) => m.id === row.category) ?? {
             id: row.category,
-            label: row.category,
+            label: TOOL_CATEGORY_HEADS[row.category as ToolCategory] ?? row.category,
           },
           rows: [],
         }
@@ -456,7 +454,7 @@ export function ModulesSettings() {
      * 按 `MODULES` 中的顺序排列。
      *
      * 不要改为「有工具的在前、只有说明行的在后」：那样「权限」这类没有工具的模块会移到页面末尾，
-     * 与对应的「终端」相隔半屏。
+     * 与对应的「命令执行」相隔半屏。
      * 后端已知的类目在 `MODULES` 中都有一条，因此本次排序不改变它们的相对顺序；
      * 未登记的类目（后端新增而此处遗漏）排在末尾，便于发现。
      */

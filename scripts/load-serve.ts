@@ -82,7 +82,13 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
       payload: {
         kind: 'tool_result',
         args: { path: `src/mod-${i}.ts` },
-        action: { kind: 'edit', objectLabel: '文件', target: `src/mod-${i}.ts` },
+        action: {
+          kind: 'edit',
+          head: '文件读写',
+          verb: '修改',
+          object: `src/mod-${i}.ts`,
+          target: `src/mod-${i}.ts`,
+        },
         outcome: {
           status: 'success',
           executed: true,
@@ -139,7 +145,13 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
         payload: {
           kind: 'tool_result',
           args: { path: `src/page-${t}.ts` },
-          action: { kind: 'edit', objectLabel: '文件', target: `src/page-${t}.ts` },
+          action: {
+            kind: 'edit',
+            head: '文件读写',
+            verb: '修改',
+            object: `src/page-${t}.ts`,
+            target: `src/page-${t}.ts`,
+          },
           outcome: {
             status: 'success',
             executed: true,
@@ -231,7 +243,13 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
             task: `处理第 ${k + 1} 份`,
           })),
         },
-        action: { kind: 'run', objectLabel: '子任务', target: `${fanout} 个` },
+        action: {
+          kind: 'run',
+          head: '文件读写',
+          verb: '运行',
+          object: `${fanout} 个`,
+          target: `${fanout} 个`,
+        },
         outcome: { status: 'success', executed: true, message: `派出 ${fanout} 个子任务` },
         nodes,
       },
@@ -260,7 +278,13 @@ function seed(dbPath: string, workspaceRoot: string, count: number): void {
         payload: {
           kind: 'tool_result',
           args: { path: `src/child-${fanout}-${k}.ts` },
-          action: { kind: 'edit', objectLabel: '文件', target: `src/child-${fanout}-${k}.ts` },
+          action: {
+            kind: 'edit',
+            head: '文件读写',
+            verb: '修改',
+            object: `src/child-${fanout}-${k}.ts`,
+            target: `src/child-${fanout}-${k}.ts`,
+          },
           outcome: {
             status: 'success',
             executed: true,

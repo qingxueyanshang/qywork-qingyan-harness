@@ -108,7 +108,8 @@ export const desktopWaitTool: ToolSpec = {
     required: ['windowId', 'until'],
     additionalProperties: false,
   },
-  actionKind: 'read',
+  verb: '等待',
+  object: () => '窗口',
   summary: '等待桌面状态满足指定条件',
   targetExtractor: windowTarget,
 

@@ -307,9 +307,8 @@ export const createCanvasTool: ToolSpec = {
     required: ['path'],
     additionalProperties: false,
   },
-  actionKind: 'write',
-  objectLabel: '画布',
-  category: 'media',
+  verb: '创建',
+  category: 'canvas',
   facet: '生成',
   summary: '在指定路径创建画布',
   targetExtractor: (a) => text(a.path) ?? null,
@@ -361,9 +360,9 @@ export const readCanvasTool: ToolSpec = {
     required: [],
     additionalProperties: false,
   },
-  actionKind: 'read',
-  objectLabel: '画布',
-  category: 'media',
+  verb: (args) => (text(args.path) ? '读取' : '列出'),
+  object: (args) => text(args.path) ?? '画布',
+  category: 'canvas',
   facet: '生成',
   summary: '读取画布或列出工作区里的画布',
   targetExtractor: (a) => text(a.path) ?? null,
@@ -643,9 +642,8 @@ export const editCanvasTool: ToolSpec = {
     required: ['path'],
     additionalProperties: false,
   },
-  actionKind: 'edit',
-  objectLabel: '画布',
-  category: 'media',
+  verb: '修改',
+  category: 'canvas',
   facet: '生成',
   summary: '修改画布的节点、提示词、参数与连线',
   targetExtractor: (a) => text(a.path) ?? null,
@@ -694,7 +692,14 @@ export const editCanvasTool: ToolSpec = {
       const done = planned.length - result.skipped.length
       const message = editReceipt(planned, rejected, result, result.view, ctx.port(MediaPort))
       return done > 0
-        ? { status: 'success', message, data: { refs: result.refs } }
+        ? {
+            status: 'success',
+            message,
+            data: { refs: result.refs },
+            ...(result.skipped.length || rejected.length
+              ? { resultState: 'partial' as const }
+              : {}),
+          }
         : { status: 'failure', executed: false, message, errorKind: 'invalid_tool_arguments' }
     } catch (err) {
       return { status: 'failure', executed: true, message: (err as Error).message }
@@ -727,6 +732,7 @@ function generationReceipt(
       message: result.pending
         ? `${result.message}\n已保留恢复记录，使用 retrieve_canvas 取回原结果，不会重新提交生成。`
         : result.message,
+      ...(result.pending ? { resultState: 'unknown' as const } : {}),
       ...(result.diagnostic
         ? { data: { diagnostic: result.diagnostic }, errorKind: `media_${result.diagnostic.kind}` }
         : {}),
@@ -837,9 +843,14 @@ export const runCanvasTool: ToolSpec = {
     required: ['path', 'node'],
     additionalProperties: false,
   },
-  actionKind: 'run',
-  objectLabel: '画布',
-  category: 'media',
+  verb: '运行',
+  object: (args) => {
+    const names = Array.isArray(args.node)
+      ? args.node.filter((n): n is string => typeof n === 'string' && n.trim() !== '')
+      : []
+    return names.length ? names.join('、') : (text(args.path) ?? null)
+  },
+  category: 'canvas',
   facet: '生成',
   summary: '运行画布中的一个或多个生成节点',
   targetExtractor: (a) => text(a.path) ?? null,
@@ -891,9 +902,9 @@ export const retrieveCanvasTool: ToolSpec = {
     required: ['path', 'node'],
     additionalProperties: false,
   },
-  actionKind: 'write',
-  objectLabel: '画布',
-  category: 'media',
+  verb: '取回',
+  object: (args) => text(args.node) ?? text(args.path) ?? null,
+  category: 'canvas',
   facet: '生成',
   summary: '取回画布视频并更新节点',
   targetExtractor: (a) => text(a.path) ?? null,
@@ -959,9 +970,9 @@ export const cancelCanvasTool: ToolSpec = {
     required: ['path', 'node'],
     additionalProperties: false,
   },
-  actionKind: 'edit',
-  objectLabel: '画布',
-  category: 'media',
+  verb: '取消',
+  object: (args) => text(args.node) ?? text(args.path) ?? null,
+  category: 'canvas',
   facet: '生成',
   summary: '取消画布卡片正在进行的生成',
   targetExtractor: (a) => text(a.path) ?? null,
@@ -1031,9 +1042,16 @@ export const captureCanvasFrameTool: ToolSpec = {
     required: ['path', 'node', 'at'],
     additionalProperties: false,
   },
-  actionKind: 'write',
-  objectLabel: '画布',
-  category: 'media',
+  verb: '截取',
+  object: (args) => {
+    const node = typeof args.node === 'string' ? args.node.trim() : ''
+    return node
+      ? typeof args.at === 'number'
+        ? `${node} ${args.at} 秒`
+        : node
+      : (text(args.path) ?? null)
+  },
+  category: 'canvas',
   facet: '生成',
   summary: '从画布视频卡截取一帧',
   targetExtractor: (a) => text(a.path) ?? null,
@@ -1103,9 +1121,9 @@ export const exportTimelineTool: ToolSpec = {
     required: ['path', 'node'],
     additionalProperties: false,
   },
-  actionKind: 'write',
-  objectLabel: '画布',
-  category: 'media',
+  verb: '导出',
+  object: (args) => text(args.node) ?? text(args.path) ?? null,
+  category: 'canvas',
   facet: '生成',
   summary: '导出画布时间线的成片',
   targetExtractor: (a) => text(a.path) ?? null,

@@ -25,17 +25,23 @@
  */
 
 import type { ToolSpec } from '@qywork/agent'
+import type { DesktopActionKind } from '@qywork/core'
 import { desktopActTool } from './act.ts'
+import { ACTION_DEFS } from './actions.ts'
 import { desktopObserveTool } from './observe.ts'
 import { desktopActSequenceTool } from './sequence.ts'
+import { withWindowSubject } from './subject.ts'
 import { desktopWaitTool } from './wait.ts'
 import { desktopWindowsTool } from './windows.ts'
 
 /** 注册顺序在此处确定。五个工具声明同一个端口，整组注册或整组不注册。 */
 export const desktopTools: ToolSpec[] = [
   desktopWindowsTool,
-  desktopObserveTool,
-  desktopActTool,
-  desktopActSequenceTool,
-  desktopWaitTool,
+  withWindowSubject(desktopObserveTool),
+  withWindowSubject(
+    desktopActTool,
+    (args) => ACTION_DEFS[args.action as DesktopActionKind]?.target === 'window',
+  ),
+  withWindowSubject(desktopActSequenceTool),
+  withWindowSubject(desktopWaitTool),
 ]

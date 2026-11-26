@@ -3,7 +3,7 @@
 import { mkdir, stat } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
-import { conversationSummary, MEDIA_OUTPUTS } from '@qywork/core'
+import { conversationSummary, MEDIA_OUTPUTS, TOOL_CATEGORIES } from '@qywork/core'
 import { configDir } from '@qywork/runtime'
 import {
   archiveWorkspaceConversations,
@@ -80,10 +80,8 @@ function paramsOf(schema: Record<string, unknown>): { name: string; required: bo
 /**
  * 工具清单中的一行。`source` 由调用方给出：它表示工具的来源，规格本身不含这一信息。
  *
- * `actionKind` / `objectLabel` / `permissionEffect` 允许是函数：有的随参数变化
- * （多动作门面），有的随会话状态变化（`write_todos` 首次创建报「创建」、之后报「修改」）。
- * 不要无参调用它们：那会得到一个与实际不符的常量。因此如实报告「不固定」，
- * 而不是「随参数变化」：后者对随会话状态变化的工具不成立。
+ * `permissionEffect` 允许是函数（随参数变化）。不要无参调用它：那会得到一个与实际不符的常量，
+ * 因此如实报告「不固定」。
  */
 function toolRow(s: Omit<ToolSpec, 'fn'>, source: string) {
   const VARIES = '不固定'
@@ -91,9 +89,7 @@ function toolRow(s: Omit<ToolSpec, 'fn'>, source: string) {
     name: s.name,
     category: s.category,
     facet: s.facet,
-    objectLabel: typeof s.objectLabel === 'function' ? VARIES : s.objectLabel,
     summary: s.summary,
-    actionKind: typeof s.actionKind === 'function' ? VARIES : s.actionKind,
     permissionEffect: typeof s.permissionEffect === 'function' ? VARIES : s.permissionEffect,
     params: paramsOf(s.parameters),
     source,
@@ -265,7 +261,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
   }
 
   /*
-   * 本 agent 的能力清单：全部工具每行一条，附底层名、参数、动作与权限。
+   * 本 agent 的能力清单：全部工具每行一条，附底层名、参数与权限。
    *
    * 本接口是分类维度（`ToolCategory`）的消费者。缺少它时该维度即为 C1 第 1 款所述的
    * 未接通链路：注册时校验、schema 中声明，但没有任何读取方。
@@ -282,7 +278,7 @@ export const handleWorkspaceApi: ApiHandler = async (url, req, d) => {
    * 插件与 MCP 子进程且无人关闭。异常路径同样需要 release，因此使用 try/finally。
    */
   if (p === '/api/tools') {
-    const { ToolRegistry, TOOL_CATEGORIES } = await import('@qywork/agent')
+    const { ToolRegistry } = await import('@qywork/agent')
     const { registerToolCatalog } = await import('@qywork/tools')
     const { acquireExtensions, releaseExtensions, pluginToolPrefix, toolNamePrefix } = await import(
       '@qywork/runtime'

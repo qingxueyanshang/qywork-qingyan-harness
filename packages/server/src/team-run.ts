@@ -31,7 +31,7 @@ import {
   type QyConfig,
   Session,
 } from '@qywork/runtime'
-import { getConversation } from '@qywork/store'
+import { getConversation, settledToolEvents } from '@qywork/store'
 import type { Role } from '@qywork/team'
 import { BrowserPort, CanvasPort, CommandPort, DesktopPort } from '@qywork/tools'
 import { artRenderOf, canvasPort } from './canvas/port.ts'
@@ -367,6 +367,10 @@ export async function runBuiltinMember(
           usage.outputTokens += u.outputTokens
         }
         ctx.onEvent?.(ev, conversationId)
+      }
+      // 停止时被收尾改写为终态的工具行，理由同 `run-control.ts`。
+      if (runId) {
+        for (const ev of settledToolEvents(deps.store, runId)) ctx.onEvent?.(ev, conversationId)
       }
       // 两轮之间没有进行中的轮次：等待后台命令期间不显示已结束的一轮。
       if (runId) deps.runs.register(conversationId, null)

@@ -1500,7 +1500,13 @@ describe('事件按会话归属过滤', () => {
         stepId: 'st_delegate',
         toolName: 'subagent',
         args: { agent: 'glm-racer', task: '复验' },
-        action: { kind: 'run', objectLabel: '子 agent', target: 'glm-racer' },
+        action: {
+          kind: 'run',
+          head: '任务派发',
+          verb: '运行',
+          object: 'glm-racer',
+          target: 'glm-racer',
+        },
       },
     } as never)
     applyEvent({
@@ -2504,7 +2510,13 @@ describe('重新获取会话：账本中的内容必须出现在界面上', () =
     payload: {
       kind: 'tool_result',
       args: { command: 'nvidia-smi -L' },
-      action: { kind: 'run', objectLabel: '命令', target: 'nvidia-smi -L' },
+      action: {
+        kind: 'run',
+        head: '命令执行',
+        verb: '运行',
+        object: 'nvidia-smi -L',
+        target: 'nvidia-smi -L',
+      },
     },
     status: 'success',
     createdAt: 2,
@@ -2612,7 +2624,13 @@ describe('重新获取会话：账本中的内容必须出现在界面上', () =
           payload: {
             kind: 'tool_call',
             args: { task: '并行排查' },
-            action: { kind: 'run', objectLabel: '子 agent' },
+            action: {
+              kind: 'run',
+              head: '任务派发',
+              verb: '派发',
+              object: '子 agent',
+              target: null,
+            },
             nodes: { child: { phase: 'working', label: '子', subagentId: 'cv_child_replayed' } },
           },
           status: 'running',
@@ -2653,7 +2671,7 @@ describe('重新获取会话：账本中的内容必须出现在界面上', () =
                 },
               ],
             },
-            action: { kind: 'run', objectLabel: '工作流' },
+            action: { kind: 'run', head: '任务派发', verb: '运行', object: '工作流', target: null },
             nodes: {
               'build-glm': { phase: 'working', label: 'glm', subagentId: 'cv_glm' },
               'build-qwen': { phase: 'queued', label: 'qwen' },
@@ -2696,7 +2714,7 @@ describe('重新获取会话：账本中的内容必须出现在界面上', () =
             { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
           ],
         },
-        action: { kind: 'run', objectLabel: '工作流' },
+        action: { kind: 'run', head: '任务派发', verb: '运行', object: '工作流', target: null },
         nodes: {
           a: { phase: 'done', label: 'a', subagentId: 'cv_a', durationMs: 3, output: '稿' },
         },
@@ -2717,7 +2735,7 @@ describe('重新获取会话：账本中的内容必须出现在界面上', () =
           payload: {
             kind: 'tool_result',
             args: { workflowId: 'st_wf', checkpointId: 'cp', decision: 'approve', note: '好' },
-            action: { kind: 'run', objectLabel: '工作流' },
+            action: { kind: 'run', head: '任务派发', verb: '运行', object: '工作流', target: null },
             outcome: {
               status: 'success',
               executed: true,
@@ -2762,7 +2780,7 @@ describe('重新获取会话：账本中的内容必须出现在界面上', () =
           payload: {
             kind: 'tool_result',
             args: { goal: '目标', nodes: [{ id: 'a', task: '做' }] },
-            action: { kind: 'run', objectLabel: '工作流' },
+            action: { kind: 'run', head: '任务派发', verb: '运行', object: '工作流', target: null },
             nodes: { a: { phase: 'done', label: 'a', subagentId: 'cv_a', durationMs: 5 } },
             outcome: { status: 'success', executed: true, message: '完成' },
           },
@@ -2799,7 +2817,7 @@ describe('重新获取会话：账本中的内容必须出现在界面上', () =
                 { id: 'cp', kind: 'checkpoint', label: '审查', needs: ['a'] },
               ],
             },
-            action: { kind: 'run', objectLabel: '工作流' },
+            action: { kind: 'run', head: '任务派发', verb: '运行', object: '工作流', target: null },
             nodes: {
               a: { phase: 'interrupted', label: 'a', subagentId: 'cv_a', error: '调用中断' },
             },
@@ -3900,7 +3918,13 @@ describe('工具卡按 stepId 认领实时输出', () => {
         callIndex: 0,
         waveIndex: 0,
         args: { command: 'npm test' },
-        action: { kind: 'run', objectLabel: '命令', target: 'npm test' },
+        action: {
+          kind: 'run',
+          head: '命令执行',
+          verb: '运行',
+          object: 'npm test',
+          target: 'npm test',
+        },
       },
     }) as never
 
@@ -3964,7 +3988,7 @@ describe('工具卡按 stepId 认领实时输出', () => {
           callIndex: 0,
           waveIndex: 0,
           args: { path },
-          action: { kind: 'read', objectLabel: '文件', target: path },
+          action: { kind: 'read', head: '文件读写', verb: '读取', object: path, target: path },
         },
       } as never)
       applyEvent({
@@ -3988,7 +4012,10 @@ describe('工具卡按 stepId 认领实时输出', () => {
     open('cv_other', 'st_o', 'success', '作品/别处.png')
     open('cv_now', 'st_f', 'failure', '作品/失败.png')
     expect(openFile()).toBe(null)
-    // 窄屏上面板覆盖全屏，不自动打开，由工具卡的「打开」按钮打开。
+    open('cv_now', 'st_s', 'success', '作品/签收/封面.png')
+    expect(openFile()).toBe('作品/签收/封面.png')
+    expect(sidePanel()).toBe('files')
+    // 窄屏与宽屏相同：成功后直接打开。
     const originalMatch = globalThis.matchMedia
     globalThis.matchMedia = ((query: string) =>
       ({ matches: query === '(max-width: 820px)', media: query }) as MediaQueryList) as never
@@ -3997,10 +4024,7 @@ describe('工具卡按 stepId 认领实时输出', () => {
     } finally {
       globalThis.matchMedia = originalMatch
     }
-    expect(openFile()).toBe(null)
-    open('cv_now', 'st_s', 'success', '作品/签收/封面.png')
-    expect(openFile()).toBe('作品/签收/封面.png')
-    expect(sidePanel()).toBe('files')
+    expect(openFile()).toBe('作品/窄屏.png')
   })
 
   /**
@@ -4029,7 +4053,7 @@ describe('工具卡按 stepId 认领实时输出', () => {
           callIndex: 0,
           waveIndex: 0,
           args: { action: 'apply' },
-          action: { kind: 'call', objectLabel: '宠物', target: null },
+          action: { kind: 'call', head: '文件读写', verb: '调用', object: null, target: null },
         },
       } as never)
       applyEvent({

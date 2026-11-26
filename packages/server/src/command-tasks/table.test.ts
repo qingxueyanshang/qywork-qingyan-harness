@@ -406,7 +406,7 @@ describe('前台命令在等待期间转入后台', () => {
     await until(() => bodies.length === 2, '工具结束后的第二次请求')
     const second = bodies[1]!
     expect(second).toContain('先停下，改为查看文档')
-    expect(second).toContain('等待期间用户发来消息，命令转入后台继续运行')
+    expect(second).toContain('等待期间用户发来调整方向的消息，命令转入后台继续运行')
     const [task] = commands.listOf(cv)
     expect(task?.command).toBe(hold('A'))
     expect(second).toContain(task!.id)
@@ -428,6 +428,36 @@ describe('前台命令在等待期间转入后台', () => {
     expect(bodies.length).toBe(2)
     await handleCommand(stop, { ...deps(), ws: sock.ws })
     expect(sock.sent.at(-1)).toMatchObject({ type: 'command.rejected', message: '该命令已结束' })
+  }, 30_000)
+
+  /**
+   * 原始失败形状：发送方式默认为「排队」，排队的消息不结束前台等待，命令一直占用当前这一步，
+   * 消息要等命令结束、本轮结束之后才送达。
+   */
+  test('收到「排队」的消息时同样转入后台，结果写明该消息在本轮结束后送达', async () => {
+    const cv = conversation()
+    // 第三项供排队的消息在本轮结束后开启的下一轮使用，不留给其后的用例。
+    script.push(
+      callsTurn([run('call_q', { command: hold('Q') })]),
+      textTurn('先处理排队的消息。'),
+      textTurn('已查看文档。'),
+    )
+
+    void startRun(cv, '运行一次构建', undefined, deps())
+    const pid = await pidOf('Q')
+    await until(() => bodies.length === 1, '第一次请求')
+
+    await submitMessage(cv, { id: 'queue_1', content: '构建完再看文档', steer: false }, deps())
+    await until(() => bodies.length === 2, '工具结束后的第二次请求')
+    expect(bodies[1]).toContain('用户有一条排在本轮之后的消息，本轮结束后才会送达')
+    expect(bodies[1]).toContain('命令转入后台继续运行')
+    expect(commands.listOf(cv)[0]?.command).toBe(hold('Q'))
+    expect(alive(pid)).toBe(true)
+    commands.stopOf(cv)
+    await until(() => !alive(pid), '命令进程结束')
+    await until(() => bodies.length === 3, '排队的消息开启的下一轮')
+    expect(bodies[2]).toContain('构建完再看文档')
+    await idle(cv)
   }, 30_000)
 })
 

@@ -106,6 +106,7 @@ export {
   markStepExecuting,
   recordCompactionStep,
   setStepNodeState,
+  settledToolEvents,
   settleRunningSteps,
   settleToolStep,
   stepInExecution,

@@ -67,7 +67,7 @@ function fixture(): { store: Store; conversationId: ConversationId } {
     kind: 'tool_result',
     args: { path: 'calc.js' },
     outcome: { status: 'success', executed: true, message: '读取 calc.js（4 行）' },
-    action: { kind: 'read', objectLabel: '文件', target: 'calc.js' },
+    action: { kind: 'read', head: '文件读写', verb: '读取', object: 'calc.js', target: 'calc.js' },
   })
   registerResource(store, {
     runId: run.id,
@@ -96,7 +96,7 @@ function fixture(): { store: Store; conversationId: ConversationId } {
       executed: true,
       message: '命令退出码 1\nExpected 3 to be 4',
     },
-    action: { kind: 'run', objectLabel: '命令', target: 'npm test' },
+    action: { kind: 'run', head: '命令执行', verb: '运行', object: 'npm test', target: 'npm test' },
   })
 
   appendStep(store, {

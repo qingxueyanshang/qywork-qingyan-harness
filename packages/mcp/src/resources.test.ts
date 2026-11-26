@@ -204,7 +204,7 @@ describe('resource 工具', () => {
     for (const s of reg.toolSpecs) {
       expect(s.permissionEffect).toBe('read')
       // 动作维度与权限维度正交：正文来自外部 server，动作是 call，副作用仍然只是读取。
-      expect(s.actionKind).toBe('call')
+      expect(s.verb).toBe('调用')
       expect(s.targetExtractor?.({})).toBe('mcp:demo/resource')
     }
     await reg.stopAll()

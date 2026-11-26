@@ -27,6 +27,7 @@ import {
   listSteps,
   markStepExecuting,
   setStepNodeState,
+  settledToolEvents,
   settleToolStep,
 } from './repos/steps.ts'
 import { upsertWorkspace } from './repos/workspaces.ts'
@@ -228,7 +229,13 @@ describe('崩溃恢复', () => {
       payload: {
         kind: 'tool_call',
         args: { command: 'docker start sqhj-postgres' },
-        action: { kind: 'run', objectLabel: '命令', target: 'docker start sqhj-postgres' },
+        action: {
+          kind: 'run',
+          head: '命令执行',
+          verb: '运行',
+          object: 'docker start sqhj-postgres',
+          target: 'docker start sqhj-postgres',
+        },
       } as never,
     })
     markStepExecuting(store, started.id)
@@ -241,7 +248,13 @@ describe('崩溃恢复', () => {
       payload: {
         kind: 'tool_call',
         args: { path: 'run.ps1' },
-        action: { kind: 'read', objectLabel: '文件', target: 'run.ps1' },
+        action: {
+          kind: 'read',
+          head: '文件读写',
+          verb: '读取',
+          object: 'run.ps1',
+          target: 'run.ps1',
+        },
       } as never,
     })
 
@@ -266,13 +279,21 @@ describe('崩溃恢复', () => {
     }
 
     const one = payloadOf(started.id)
-    expect(one.action?.objectLabel).toBe('命令')
+    expect(one.action?.verb).toBe('运行')
     expect(one.args?.command).toBe('docker start sqhj-postgres')
     // 合并写入 outcome 之后，两种情况的 executed 仍须不同。
     expect(one.outcome.executed).toBe(true)
     const two = payloadOf(notStarted.id)
     expect(two.outcome.executed).toBe(false)
-    expect(two.action?.objectLabel).toBe('文件')
+    expect(two.action?.verb).toBe('读取')
+
+    // 原始失败形状：收尾只写库，界面上这两行保持运行中，刷新后才变为失败。收尾改写的每一行都有对应的结束事件，
+    // 执行期间被中断的结果不明，未开始执行的已中断。
+    const events = settledToolEvents(store, run.id)
+    expect(events.map((e) => [e.stepId, e.outcome.errorKind, e.outcome.resultState])).toEqual([
+      [started.id, 'interrupted', 'unknown'],
+      [notStarted.id, 'interrupted', undefined],
+    ])
     store.close()
   })
 

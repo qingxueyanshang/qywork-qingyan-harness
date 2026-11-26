@@ -88,7 +88,6 @@ export function windowTarget(args: Record<string, unknown>): string | null {
 export const BASE = {
   category: 'desktop',
   facet: '桌面控件',
-  objectLabel: '电脑控制',
   permissionEffect: 'desktop',
   requires: [DesktopPort],
 } as const

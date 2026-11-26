@@ -59,8 +59,7 @@ export interface McpResourceContents {
 export function resourceToolsFor(client: McpClient): ToolSpec[] {
   if (client.capabilities.resources === undefined) return []
   const server = client.name
-  // 权限 scope 的载体（scope = `<effect>:<target>`），也是卡片上的目标。
-  // 对象层填写的是「MCP」，见下方两处 `objectLabel`。
+  // 权限 scope 的载体（scope = `<effect>:<target>`）。工具行显示的对象见下方两处 `object`。
   const target = permissionLabel(server, 'resource')
 
   return [
@@ -71,13 +70,13 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
         `[MCP ${server}] 列出该 server 提供的 resource（uri、名称、类型），` +
         `不返回正文。取得 uri 后用 mcp__${server}__fetch_resource 读取正文。`,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
-      // 动作是 call：正文位于外部 server，此步骤是一次跨进程调用。
+      // 动作是「调用」：正文位于外部 server，此步骤是一次跨进程调用。
       // 权限维度另行确定，为 read：两个维度正交，见文件头第 3 条。
-      actionKind: 'call',
-      objectLabel: 'MCP',
-      // MCP 的工具一律归入「MCP」：类目由第三方决定，混入内置分类会使
-      // 「文件与草稿」一栏出现外部来源的工具。
-      category: 'mcp',
+      verb: '调用',
+      object: () => `${server}／list_resources`,
+      // MCP 的工具一律归入「MCP 调用」：类目由第三方决定，混入内置分类会使
+      // 「文件读写」一栏出现外部来源的工具。
+      category: 'mcp_call',
       facet: `MCP ${server}`,
       summary: `列出 ${server} 提供的 resource`,
       targetExtractor: () => target,
@@ -124,9 +123,9 @@ export function resourceToolsFor(client: McpClient): ToolSpec[] {
         required: ['uri'],
         additionalProperties: false,
       },
-      actionKind: 'call',
-      objectLabel: 'MCP',
-      category: 'mcp',
+      verb: '调用',
+      object: (a) => (typeof a.uri === 'string' ? a.uri : `${server}／fetch_resource`),
+      category: 'mcp_call',
       facet: `MCP ${server}`,
       summary: `读取 ${server} 的一个 resource 正文`,
       targetExtractor: (a) => (typeof a.uri === 'string' ? a.uri : target),

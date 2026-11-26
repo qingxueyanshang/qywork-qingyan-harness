@@ -16,10 +16,10 @@ import type { FileChange } from '@qywork/core'
  */
 export interface CommandPort {
   /**
-   * 本会话的投递队列中出现用户发来的「调整方向」消息（`FollowUp.steer` 为真且没有 `origin`）后兑现；
-   * 已存在时立即兑现。`signal` 中止时以中止原因拒绝。信号来源与 `DelegatePort.awaitReceipt` 相同。
+   * 本会话有用户发来、尚未送达的消息时兑现：「调整方向」的消息（已存在时立即兑现）为 `steer`，
+   * 调用之后新到达的「排队」消息为 `queue`。`signal` 中止时以中止原因拒绝。信号来源与 `DelegatePort.awaitReceipt` 相同。
    */
-  steered(signal: AbortSignal): Promise<void>
+  steered(signal: AbortSignal): Promise<'steer' | 'queue'>
   /** 登记一条转入后台的命令，返回任务编号。登记之后本轮停止不再影响该命令。 */
   adopt(task: {
     command: string

@@ -381,6 +381,12 @@ export {
   type ScheduleLastRun,
   type ScheduleView,
 } from './domain/schedule.ts'
+export {
+  TOOL_CATEGORIES,
+  TOOL_CATEGORY_HEADS,
+  type ToolCategory,
+} from './domain/tools/categories.ts'
+export { type ToolVerb, VERB_KINDS } from './domain/tools/verbs.ts'
 // workflow 的跨层序列化契约与纯投影：team/server/web 共用，不能各自计算。
 export {
   applyRevision,

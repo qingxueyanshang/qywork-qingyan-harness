@@ -13,7 +13,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
-import { openBatchBudget, Ports, provide } from '@qywork/agent'
+import { openBatchBudget, Ports, provide, resolveAction } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
 import {
   type BrowserActInput,
@@ -169,7 +169,7 @@ describe('注册元数据', () => {
     for (const spec of browserTools) {
       expect(spec.category).toBe('browser')
       expect(spec.permissionEffect).toBe('browser')
-      expect(spec.objectLabel).toBe('浏览器控制')
+      expect(spec.object).toBeDefined()
       expect(spec.facet).toBe('页面')
       expect(spec.summary.trim()).not.toBe('')
       // 默认串行：不声明 parallelSafe，同一页面上的两个动作不进入同一批。
@@ -179,10 +179,9 @@ describe('注册元数据', () => {
     expect(new Set(browserTools.map((t) => t.summary)).size).toBe(7)
   })
 
-  test('动作类型：只读操作为 read，改变页面的操作为 call', () => {
-    const kind = (spec: ToolSpec, args: Record<string, unknown>) =>
-      typeof spec.actionKind === 'function' ? spec.actionKind(args) : spec.actionKind
-    expect(kind(browserTabsTool, { action: 'list' })).toBe('read')
+  test('动作类型：列出标签页为查询，改变页面的操作为调用，目标是标签页编号时不直接显示', () => {
+    const kind = (spec: ToolSpec, args: Record<string, unknown>) => resolveAction(spec, args).kind
+    expect(kind(browserTabsTool, { action: 'list' })).toBe('query')
     expect(kind(browserTabsTool, { action: 'create' })).toBe('call')
     expect(kind(browserTabsTool, { action: 'close' })).toBe('call')
     expect(kind(browserObserveTool, {})).toBe('read')

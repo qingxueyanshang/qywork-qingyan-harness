@@ -183,7 +183,13 @@ function addToolWaves(
           },
         ],
       },
-      action: { kind: 'run', objectLabel: '命令', target: `npm test --scope=pkg${w}` },
+      action: {
+        kind: 'run',
+        head: '命令执行',
+        verb: '运行',
+        object: `npm test --scope=pkg${w}`,
+        target: `npm test --scope=pkg${w}`,
+      },
     })
   }
 }
@@ -1055,7 +1061,13 @@ describe('事实提取', () => {
       kind: 'tool_result',
       args: {},
       outcome: { status: 'success', executed: true, message: '改了 3 处' },
-      action: { kind: 'edit', objectLabel: '文件', target: 'src/auth/token.ts' },
+      action: {
+        kind: 'edit',
+        head: '文件读写',
+        verb: '修改',
+        object: 'src/auth/token.ts',
+        target: 'src/auth/token.ts',
+      },
     })
     // 正文较小，仅依靠收纳段不足以回收，摘要段必定执行，事实包因此有产出。
     addToolWaves(store, run.id, 4, 100, 2)
@@ -1091,7 +1103,13 @@ describe('事实提取', () => {
       payload: {
         kind: 'tool_call',
         args: {},
-        action: { kind: 'read', objectLabel: '文件', target: '还没读完.ts' },
+        action: {
+          kind: 'read',
+          head: '文件读写',
+          verb: '读取',
+          object: '还没读完.ts',
+          target: '还没读完.ts',
+        },
       },
     })
 

@@ -59,6 +59,7 @@ import {
   markRunRunning,
   recordCompactionStep,
   recordUsage,
+  settledToolEvents,
   touchRun,
   updateGoal,
   workspaceOf,
@@ -446,6 +447,11 @@ export async function startRun(
         conversationId,
       )
     } finally {
+      // 停止时被收尾改写为终态的工具行：生成器关闭之后才写入，只能在此发布结束事件。
+      if (currentRunId) {
+        for (const ev of settledToolEvents(deps.store, currentRunId))
+          deps.bus.publish(ev, conversationId)
+      }
       // 不释放时该会话被永久占用，之后的每条消息都以「已有任务在执行」被拒绝。
       deps.runs.release(conversationId)
       // 每条消息对应一个 Session，每个 Session 都持有扩展的一份引用。

@@ -163,10 +163,10 @@ describe('插件端到端', () => {
     await stop()
   })
 
-  /** 动作由宿主判定：清单中没有也不应有该字段，插件工具一律记为「调用」。 */
-  test('插件工具的动作恒为 call', async () => {
+  /** 动词由宿主判定：清单中没有也不应有该字段，插件工具一律记为「调用」。 */
+  test('插件工具的动词恒为「调用」', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
-    expect(ext.toolSpecs.find((t) => t.name === 'test_probe__run')?.actionKind).toBe('call')
+    expect(ext.toolSpecs.find((t) => t.name === 'test_probe__run')?.verb).toBe('调用')
     await stop()
   })
 
@@ -175,10 +175,10 @@ describe('插件端到端', () => {
    * 相同时标题与目标完全一致，目标字段不提供任何信息。
    * 目标同时承载权限 scope，因此带 `plugin:` 前缀且使用未规范化的 id。
    */
-  test('对象名恒为「插件」，具体工具记入 target', async () => {
+  test('工具行显示「插件／工具」，权限范围记入 target', async () => {
     const { ext, stop } = await workspaceWith(['workspace:read'])
     const spec = ext.toolSpecs.find((t) => t.name === 'test_probe__run')
-    expect(spec?.objectLabel).toBe('插件')
+    expect(spec?.object?.({})).toBe('test.probe／run')
     expect(spec?.targetExtractor?.({})).toBe('plugin:test.probe/run')
     await stop()
   })

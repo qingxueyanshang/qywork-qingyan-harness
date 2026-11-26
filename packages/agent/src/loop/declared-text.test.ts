@@ -166,9 +166,8 @@ describe('经 AgentLoop 的占用读数、锚点准入与投递额度', () => {
     const spec = {
       description: '测试夹具。',
       parameters: { type: 'object' as const, properties: {}, additionalProperties: false },
-      actionKind: 'read' as const,
-      objectLabel: '测试',
-      category: 'session' as const,
+      verb: '读取' as const,
+      category: 'context' as const,
       facet: '测试',
       summary: '测试夹具',
       permissionEffect: 'internal_control' as const,

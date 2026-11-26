@@ -11,13 +11,17 @@
  */
 
 import type { TokenDensity, ToolSchema } from '@qywork/ai'
-import type {
-  ActionDescriptor,
-  ActionKind,
-  FileChange,
-  IntermediateResourceRef,
-  ResourceCoverage,
-  ToolOutcomeWire,
+import {
+  type ActionDescriptor,
+  type FileChange,
+  type IntermediateResourceRef,
+  type ResourceCoverage,
+  TOOL_CATEGORIES,
+  TOOL_CATEGORY_HEADS,
+  type ToolCategory,
+  type ToolOutcomeWire,
+  type ToolVerb,
+  VERB_KINDS,
 } from '@qywork/core'
 import type { PortKey } from './ports/key.ts'
 import { normalizeArgs, schemaProblems } from './schema/check.ts'
@@ -269,67 +273,13 @@ export interface ToolOutcome {
   /** 本次调用落盘的中间资源。必须原样写入账本：压缩层据此判断正文是否仍然存在。 */
   resources?: IntermediateResourceRef[]
   errorKind?: string
+  /** 执行后才确定的对象名称，见 `ToolOutcomeWire.subject`。 */
+  subject?: string
+  /** 见 `ToolOutcomeWire.resultState`。 */
+  resultState?: 'background' | 'partial' | 'unknown'
 }
 
 // ─────────────────────────────── 工具声明 ───────────────────────────────
-
-/**
- * 工具能力大类。**没有「其他」。**
- *
- * 这是与动作轴（`ActionKind`）、权限轴（`PermissionEffect`）**正交**的第三条轴：
- * 动作轴描述「做了什么」，权限轴描述「有什么副作用」，本轴描述「属于哪个领域」。
- * 三轴分离使动作轴无需承担领域划分：没有本轴时，`search` / `fetch` /
- * `plan` / `delegate` 等词会进入动作轴。
- *
- * 分类共三层：`category`（大类）+ `facet`（类内功能方向）+ `summary`（一句话用途），
- * 注册期必填，缺少任何一项即注册失败。
- *
- * `mcp` 与 `plugins` 各自是一个领域：MCP server 提供的工具一律归入 `mcp`，插件提供的工具
- * 一律归入 `plugins`，因为它们的类目由第三方决定；内置工具中只有管理 MCP 配置的归入 `mcp`、
- * 安装插件的归入 `plugins`。两者不是后备类目：内置工具未标注类目时注册直接失败，不会归入其中。
- *
- * 枚举顺序即界面呈现顺序。
- */
-export type ToolCategory =
-  | 'files'
-  | 'code'
-  | 'web'
-  | 'browser'
-  | 'desktop'
-  | 'office'
-  | 'media'
-  | 'memory'
-  | 'skills'
-  | 'planning'
-  | 'goal'
-  | 'session'
-  | 'schedule'
-  | 'mcp'
-  | 'plugins'
-
-/**
- * 全部类目，**顺序即界面顺序**。
- *
- * 无法从类型派生：TypeScript 的联合类型在运行时不存在，注册期校验需要一份运行时取值。
- * 两处必须同步修改，因此紧邻放置在类型定义之后。
- */
-export const TOOL_CATEGORIES: ToolCategory[] = [
-  'files',
-  'code',
-  'web',
-  'browser',
-  'desktop',
-  'office',
-  'media',
-  'memory',
-  'skills',
-  'planning',
-  'goal',
-  'session',
-  'schedule',
-  'mcp',
-  'plugins',
-]
 
 /** 权限副作用轴。注册时必填：没有默认值，未填写即注册失败。 */
 export type PermissionEffect =
@@ -368,14 +318,19 @@ export interface ToolSpec {
    */
   strict?: boolean
   /**
-   * 动作语义。多动作门面从**显式参数**解析，禁止按工具名或结果文案推测。
+   * 工具行的动词。动作（`ActionKind`）由 `VERB_KINDS` 查表得出，不单独声明。多动作门面从**显式参数**解析，
+   * 禁止按工具名或结果文案推测。
    *
    * 第二个参数是可选的 `ctx`，但**不要以 `ctx.state` 作为判据**：它是 run 级的
    * （一条消息对应一个 run，Map 每次新建），无法查到跨轮的事实，而权限预检路径
-   * 无法取得 ctx。仅凭 args 无法得出结果时，说明该动作应为常量。
+   * 无法取得 ctx，缺少 ctx 时必须照常返回。仅凭 args 无法得出结果时，说明该动词应为常量。
    */
-  actionKind: ActionKind | ((args: Record<string, unknown>, ctx?: ToolContextBase) => ActionKind)
-  objectLabel: string | ((args: Record<string, unknown>) => string)
+  verb: ToolVerb | ((args: Record<string, unknown>, ctx?: ToolContextBase) => ToolVerb)
+  /**
+   * 工具行显示的对象：动词直接作用的对象，写具体名称，没有具体名称时写对象类型（标签页、窗口、回执）。
+   * 缺省时取 `targetExtractor` 的结果；目标是不透明编号的工具（标签页、窗口、外部工具的权限范围）必须声明。
+   */
+  object?: (args: Record<string, unknown>, ctx?: ToolContextBase) => string | null
   /** 从参数提取稳定目标（通常是文件路径），供进度判定与并行冲突检测使用。 */
   targetExtractor?: (args: Record<string, unknown>) => string | null
   /**
@@ -436,12 +391,14 @@ export function resolveAction(
   args: Record<string, unknown>,
   ctx?: ToolContextBase,
 ): ActionDescriptor {
-  const kind = typeof spec.actionKind === 'function' ? spec.actionKind(args, ctx) : spec.actionKind
-  const label = typeof spec.objectLabel === 'function' ? spec.objectLabel(args) : spec.objectLabel
+  const verb = typeof spec.verb === 'function' ? spec.verb(args, ctx) : spec.verb
+  const target = spec.targetExtractor ? spec.targetExtractor(args) : null
   return {
-    kind,
-    objectLabel: label,
-    target: spec.targetExtractor ? spec.targetExtractor(args) : null,
+    kind: VERB_KINDS[verb],
+    head: TOOL_CATEGORY_HEADS[spec.category],
+    verb,
+    object: spec.object ? spec.object(args, ctx) : target,
+    target,
   }
 }
 
@@ -636,6 +593,8 @@ export class ToolRegistry {
         ...(out.noEffect ? { noEffect: out.noEffect } : {}),
         ...(out.resources?.length ? { resources: out.resources } : {}),
         ...(out.errorKind ? { errorKind: out.errorKind } : {}),
+        ...(out.subject ? { subject: out.subject } : {}),
+        ...(out.resultState ? { resultState: out.resultState } : {}),
       }
     } catch (err) {
       /*

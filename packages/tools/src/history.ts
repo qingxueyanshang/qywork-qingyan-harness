@@ -72,9 +72,9 @@ export const readHistoryTool: ToolSpec = {
     },
     additionalProperties: false,
   },
-  actionKind: 'read',
-  objectLabel: '会话历史',
-  category: 'session',
+  verb: '读取',
+  object: () => '历史原文',
+  category: 'context',
   facet: '中间内容',
   summary: '按编号读取已折叠的历史原文',
   targetExtractor: (a) =>

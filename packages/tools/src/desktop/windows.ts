@@ -13,7 +13,8 @@ export const desktopWindowsTool: ToolSpec = {
     'foregroundEnabled 是当前前台操作开关；为 false 时只能使用 background 动作，' +
     '需要前台操作的任务用 write_todos 把该项标为 blocked（user_only），由用户开启，不要重试或更换目标绕过。',
   parameters: { type: 'object', properties: {}, additionalProperties: false },
-  actionKind: 'read',
+  verb: '列出',
+  object: () => '窗口',
   summary: '列出可操作的桌面窗口',
   targetExtractor: () => '电脑控制',
 

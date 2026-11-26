@@ -685,7 +685,8 @@ export const desktopActSequenceTool: ToolSpec = {
     required: ['windowId', 'steps'],
     additionalProperties: false,
   },
-  actionKind: 'call',
+  verb: '操作',
+  object: () => '窗口',
   summary: '在窗口中依次执行一组操作',
   targetExtractor: windowTarget,
 

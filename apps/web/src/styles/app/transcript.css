@@ -761,18 +761,14 @@
   padding: var(--s-1) var(--s-2) var(--s-2);
 }
 
-/* 分隔线：同一展开体中相邻两个区块的分界，1px 浅色线，不是边框也不是留白。 */
-.fold-divider {
-  height: 1px;
-  margin: 6px 0;
-  background: var(--border-subtle);
-}
-/* 失败的调用没有参数也没有输出时，错误正文之后没有其他区块，分隔线不显示。 */
-.fold-divider:last-child {
-  display: none;
+/* 展开内容的输入、输出、错误三段：相邻两段之间是 1px 浅色线，第一段之前没有线。 */
+.fold-section + .fold-section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
 }
 
-/* 「输出」等小标签，位于结果块上方。 */
+/* 「输入」「输出」「错误」段标题。 */
 .fold-tag {
   margin-bottom: 3px;
   color: var(--text-tertiary);
@@ -1421,15 +1417,4 @@
   margin-top: var(--s-3);
   color: var(--danger);
   font-size: var(--fs-sm);
-}
-
-/* `open_in_panel` 的卡片：折叠条目占满余下宽度，「打开」按钮位于行尾，展开后仍对齐首行。 */
-.open-in-panel {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--s-2);
-}
-.open-in-panel > :first-child {
-  flex: 1;
-  min-width: 0;
 }

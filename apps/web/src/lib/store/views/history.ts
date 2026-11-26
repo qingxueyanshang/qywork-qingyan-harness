@@ -628,8 +628,8 @@ function stepToItems(s: Step): TranscriptItem[] {
     const p =
       s.payload?.kind === 'tool_call' || s.payload?.kind === 'tool_result' ? s.payload : null
     const outcome = p?.kind === 'tool_result' ? p.outcome : undefined
-    // action 来自后端落库的解析结果，是卡片的完整标题（动词 + 对象 + 目标）。
-    // `ToolSpec` 的 `actionKind` / `objectLabel` 均为必填，因此 action 必定存在。
+    // action 来自后端落库的解析结果，是卡片的完整标题（开头、动词与对象）。
+    // `ToolSpec` 的 `verb` 与 `category` 均为必填，因此 action 必定存在。
     // 不要为缺失情况添加回退：回退为 `execute` 会使刷新后整轮的读取文件操作
     // 全部显示为「执行」；回退为工具名则会使同一操作出现第二种显示。
     return [

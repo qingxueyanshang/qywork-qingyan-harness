@@ -1,7 +1,7 @@
 /** `desktop_act`：在窗口上执行一个动作，把三态回执与动作后的观察合成为结果。 */
 
 import type { ToolContext, ToolOutcome, ToolSpec } from '@qywork/agent'
-import type { DesktopAction, DesktopActionKind } from '@qywork/core'
+import type { DesktopAction, DesktopActionKind, ToolVerb } from '@qywork/core'
 import {
   ACTION_DEFS,
   ACTIONS,
@@ -28,6 +28,34 @@ import { type Aim, inputField, landingLine, planAct } from './shared/target.ts'
 
 /** 定位目标使用的参数。它们适用于每种动作，不参与动作参数的核对。 */
 const TARGET_PARAMS = ['windowId', 'action', 'ref', 'automationId', 'name', 'role']
+
+/** 工具行的动词。没有对应通用说法的动作（移出选区、加载列表项）显示为「操作」。 */
+const ACT_VERBS: Record<DesktopActionKind, ToolVerb> = {
+  invoke: '点击',
+  set_value: '填写',
+  set_range_value: '填写',
+  select: '选择',
+  add_to_selection: '选择',
+  remove_from_selection: '操作',
+  set_toggle: '切换',
+  expand: '展开',
+  collapse: '折叠',
+  scroll: '滚动',
+  scroll_into_view: '滚动',
+  realize_item: '操作',
+  select_text: '选择',
+  click: '点击',
+  hover: '悬停',
+  drag: '拖动',
+  wheel: '滚动',
+  type_text: '输入',
+  press_key: '按键',
+  activate: '激活',
+  set_window_state: '缩放',
+  move_window: '拖动',
+  resize_window: '缩放',
+  close_window: '关闭',
+}
 
 /**
  * 把三态回执与动作后的新观察合成为一个结果。
@@ -226,7 +254,14 @@ export const desktopActTool: ToolSpec = {
     required: ['windowId', 'action'],
     additionalProperties: false,
   },
-  actionKind: 'call',
+  verb: (args) => ACT_VERBS[args.action as DesktopActionKind] ?? '操作',
+  object: (args) => {
+    const action = args.action as DesktopActionKind
+    if (action === 'type_text' && typeof args.text === 'string') return `「${args.text}」`
+    if (action === 'press_key' && typeof args.key === 'string') return args.key
+    if (ACTION_DEFS[action]?.target === 'window') return '窗口'
+    return typeof args.name === 'string' && args.name.trim() ? `「${args.name.trim()}」` : '控件'
+  },
   summary: '对桌面控件执行语义操作',
   targetExtractor: windowTarget,
 

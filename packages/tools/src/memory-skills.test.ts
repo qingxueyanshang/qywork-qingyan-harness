@@ -162,11 +162,11 @@ describe('记忆', () => {
     expect(moveMemoryTool.permissionEffect).toBe('delete')
   })
 
-  test('动作是常量：一个工具名对应一个动作，无需从参数推算', () => {
-    expect(readMemoryTool.actionKind).toBe('read')
-    expect(writeMemoryTool.actionKind).toBe('write')
-    expect(deleteMemoryTool.actionKind).toBe('delete')
-    expect(moveMemoryTool.actionKind).toBe('edit')
+  test('动词是常量：一个工具名对应一个动词，无需从参数推算', () => {
+    expect(readMemoryTool.verb).toBe('读取')
+    expect(writeMemoryTool.verb).toBe('保存')
+    expect(deleteMemoryTool.verb).toBe('删除')
+    expect(moveMemoryTool.verb).toBe('移动')
   })
 
   test('空目录返回空列表而不是抛出异常', async () => {

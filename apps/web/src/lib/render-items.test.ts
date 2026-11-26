@@ -8,12 +8,11 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
-  actionLabel,
+  actionDetail,
   buildRenderItems,
   delegationStatus,
   groupTitle,
   sameRenderItem,
-  verb,
 } from './render-items.ts'
 import type { TranscriptItem } from './store/index.ts'
 
@@ -40,13 +39,22 @@ const item = (kind: TranscriptItem['kind'], extra: ItemOverrides = {}): Transcri
     text: '',
     ...extra,
   }) as TranscriptItem
-const tool = (objectLabel: string, actionKind = 'read', extra: ItemOverrides = {}) =>
-  item('tool', {
+/** 夹具按动作给出开头与动词：读取与创建归「文件读写」，运行归「命令执行」，调用归「网页控制」。 */
+const HEADS: Record<string, [string, string]> = {
+  read: ['文件读写', '读取'],
+  write: ['文件读写', '创建'],
+  run: ['命令执行', '运行'],
+  call: ['网页控制', '点击'],
+}
+const tool = (object: string, kind = 'read', extra: ItemOverrides = {}) => {
+  const [head, verb] = HEADS[kind] ?? ['文件读写', '读取']
+  return item('tool', {
     toolName: 'read_file',
     status: 'success',
-    action: { kind: actionKind, objectLabel } as TranscriptItem['action'],
+    action: { kind, head, verb, object, target: object } as TranscriptItem['action'],
     ...extra,
   })
+}
 
 const kinds = (items: ReturnType<typeof buildRenderItems>) => items.map((r) => r.kind)
 
@@ -363,93 +371,55 @@ describe('后台子任务摘要', () => {
 
 describe('分组标题文案', () => {
   /**
-   * 运行中同样显示摘要，不改为「正在<某一项的动词>…」。
-   *
-   * 一个工具组通常包含多种动作，以其中一项的动词作为整组标题无法描述整组动作；
-   * 且该句与卡片自身的「运行命令 · npm test」只差「正在」二字。
-   * 是否在运行由分组标题右侧的加载图标表示。
+   * 运行中同样显示摘要，不改为「正在<某一项的动作>…」：一个工具组通常包含多类动作，
+   * 以其中一项作为整组标题无法描述整组；本轮所处的阶段由读数条显示。
    */
-  test('含运行中的工具时仍显示摘要，不改为「正在…」', () => {
-    expect(groupTitle([tool('文件', 'read'), tool('命令', 'run', { status: 'running' })])).toBe(
-      '读取 1 个文件，运行 1 次命令',
+  test('含运行中的工具时仍显示摘要，按开头计次数', () => {
+    expect(groupTitle([tool('a.ts', 'read'), tool('npm test', 'run', { status: 'running' })])).toBe(
+      '文件读写 1 次，命令执行 1 次',
     )
   })
 
-  /** 计数包含正在运行的工具：工具陆续启动时计数随之增长，不会先显示为空。 */
-  test('运行中的工具也计入计数', () => {
-    expect(groupTitle([tool('命令', 'run', { status: 'running' })])).toBe('运行 1 次命令')
+  test('同一开头合并计数，按首次出现的顺序排列', () => {
+    expect(groupTitle([tool('a.ts'), tool('npm test', 'run'), tool('b.ts', 'write')])).toBe(
+      '文件读写 2 次，命令执行 1 次',
+    )
   })
 
-  test('同类动作的对象一致时使用该名词', () => {
-    expect(groupTitle([tool('文件', 'read'), tool('文件', 'read')])).toBe('读取 2 个文件')
-  })
-
-  test('同类动作的对象不一致时退化为「动作」，不强行选用误导性的名词', () => {
-    expect(groupTitle([tool('a.ts', 'read'), tool('b.ts', 'read')])).toBe('读取 2 个动作')
-    // 调用与运行按「次」计数：对象是同一个浏览器或同一条命令，按「个」计数会把一个页面计为三个。
-    expect(
-      groupTitle([
-        tool('浏览器控制', 'call'),
-        tool('浏览器控制', 'call'),
-        tool('浏览器控制', 'call'),
-      ]),
-    ).toBe('调用 3 次浏览器控制')
-  })
-
-  test('多类动作按首次出现顺序拼接', () => {
-    const t = groupTitle([tool('x', 'read'), tool('y', 'write'), tool('x', 'read')])
-    expect(t.indexOf('读取')).toBeLessThan(t.indexOf('创建'))
-  })
-
-  test('失败工具仍计入动作摘要，失败数由分组标题单独显示', () => {
-    expect(groupTitle([tool('文件', 'read'), tool('文件', 'read', { status: 'failure' })])).toBe(
-      '读取 2 个文件',
+  test('失败工具仍计入次数，失败数由分组标题组件单独显示', () => {
+    expect(groupTitle([tool('a.ts'), tool('b.ts', 'read', { status: 'failure' })])).toBe(
+      '文件读写 2 次',
     )
   })
 
   test('思考条目不参与分组标题统计', () => {
-    expect(groupTitle([tool('文件', 'read'), item('thinking'), tool('文件', 'read')])).toBe(
-      '读取 2 个文件',
-    )
+    expect(groupTitle([tool('a.ts'), item('thinking'), tool('b.ts')])).toBe('文件读写 2 次')
   })
 })
 
-describe('动词与单条文案', () => {
-  /** 七个动作，每个 kind 对应一个词；缺少任一个时，对应卡片的标题为空。 */
-  test('七个动作各有动词', () => {
-    expect(verb('query')).toBe('查询')
-    expect(verb('read')).toBe('读取')
-    expect(verb('write')).toBe('创建')
-    expect(verb('edit')).toBe('修改')
-    expect(verb('delete')).toBe('删除')
-    expect(verb('run')).toBe('运行')
-    expect(verb('call')).toBe('调用')
+describe('单行第二段', () => {
+  test('动词加对象', () => {
+    expect(actionDetail(tool('a.ts'))).toBe('读取 a.ts')
   })
 
-  /**
-   * 不设后备文案。无法拼接出动作的行不存在：名称不在注册表中的调用在 `agent/loop/tool-wave.ts`
-   * 已被拦截在执行链之外，不会成为 step；`action` 自第一个提交起一直写入数据库；
-   * 已停用的 kind 由迁移 16 转换。这两条断言锁定的是「出现时能识别为缺陷」，
-   * 而不是「显示为何种文字」；不要为它编写后备词条。
-   */
-  test('无法识别的 kind 返回空字符串，不编造词语，也不以原始名称代替', () => {
-    expect(actionLabel(tool('命令', 'execute', { toolName: 'run_command' }))).toBe('')
+  test('执行后确定的对象优先于调用时记录的对象', () => {
+    const t = tool('a.ts', 'read', {
+      outcome: { status: 'success', executed: true, message: '', subject: 'a.ts:10-20' },
+    })
+    expect(actionDetail(t)).toBe('读取 a.ts:10-20')
   })
 
+  test('没有对象时只显示动词', () => {
+    const t = item('tool', {
+      toolName: 'list_schedules',
+      action: { kind: 'query', head: '定时管理', verb: '列出', object: null, target: null },
+    })
+    expect(actionDetail(t)).toBe('列出')
+  })
+
+  /** 不设后备文案：没有 action 的行是缺陷，须在界面上可见，不以工具名代替。 */
   test('没有 action 的行返回空字符串', () => {
-    expect(actionLabel(item('tool', { toolName: 'weird__thing' }))).toBe('')
-  })
-
-  test('「运行命令」由动词与对象拼接而成，不是特例', () => {
-    expect(actionLabel(tool('命令', 'run'))).toBe('运行命令')
-  })
-
-  test('有对象时为动词加对象', () => {
-    expect(actionLabel(tool('a.ts', 'read'))).toBe('读取a.ts')
-  })
-
-  test('没有对象名时也不以工具名代替', () => {
-    expect(actionLabel(item('tool', { toolName: 'grep' }))).toBe('')
+    expect(actionDetail(item('tool', { toolName: 'grep' }))).toBe('')
   })
 })
 

@@ -13,13 +13,11 @@ import {
   compact,
   delegateGraph,
   diffFrom,
-  displayTarget,
   fileDelta,
   firstLine,
   firstString,
   hitRate,
   listOf,
-  readRange,
   requestOutcome,
   resultImages,
   sanitizeTarget,
@@ -166,33 +164,6 @@ describe('target 截断方向', () => {
   })
 })
 
-describe('分段读取的行号范围', () => {
-  test('同一文件的不同段落各自显示实际读取的范围', () => {
-    expect(readRange({ startLine: 1, endLine: 70, totalLines: 700 })).toBe('1-70')
-    expect(readRange({ startLine: 395, endLine: 448, totalLines: 700 })).toBe('395-448')
-    expect(readRange({ startLine: 657, endLine: 700, totalLines: 700 })).toBe('657-700')
-  })
-
-  test('读取整个文件、0 行结果与缺少行号时不显示范围', () => {
-    expect(readRange({ startLine: 1, endLine: 144, totalLines: 144 })).toBeNull()
-    expect(readRange({ startLine: 800, endLine: 799, totalLines: 700 })).toBeNull()
-    expect(readRange({ content: 'x' })).toBeNull()
-    expect(readRange(undefined)).toBeNull()
-  })
-})
-
-describe('外置工具的目标去除前缀', () => {
-  test('只去除开头的前缀，路径中的冒号保持不变', () => {
-    expect(displayTarget('mcp:github/search')).toBe('github/search')
-    expect(displayTarget('plugin:demo/count')).toBe('demo/count')
-    // 去除的是前缀而不是子串：文件名中包含的 `mcp:` 不应被去除。
-    expect(displayTarget('src/mcp:notes.ts')).toBe('src/mcp:notes.ts')
-    expect(displayTarget('bun test')).toBe('bun test')
-    // 只去除一层：以 `mcp:` 开头的 server 名本身仍须保留在目标中。
-    expect(displayTarget('mcp:mcp:x')).toBe('mcp:x')
-  })
-})
-
 describe('修改行数', () => {
   test('多个文件求和，两个数都为 0 时不显示角标', () => {
     expect(fileDelta(undefined)).toBeNull()
@@ -319,14 +290,31 @@ describe('读数格式', () => {
     expect(hitRate(usage({ inputTokens: 250, cachedTokens: 750, turns: [] }))).toBe('75.00%')
   })
 
-  test('成功时不显示文字，只有失败时显示', () => {
-    expect(statusWord('success')).toBe('')
-    expect(statusWord('running')).toBe('')
-    expect(statusWord(undefined)).toBe('')
-    expect(statusWord('failure')).toBe('失败')
+  test('成功与运行中不显示文字，出问题时显示状态词', () => {
+    expect(statusWord('success', undefined)).toBe('')
+    expect(statusWord('running', undefined)).toBe('')
+    expect(statusWord(undefined, undefined)).toBe('')
+    expect(statusWord('failure', undefined)).toBe('失败')
     // 图片未送达只在调用成功时显示：失败的调用没有结果图片。
-    expect(statusWord('success', true)).toBe('图片未发送')
-    expect(statusWord('failure', true)).toBe('失败')
+    expect(statusWord('success', undefined, true)).toBe('图片未发送')
+    expect(statusWord('failure', undefined, true)).toBe('失败')
+  })
+
+  /** 用词与读数条一致：用户停止为「已中断」，请求已发出而结果不明为「结果不明」。 */
+  test('八个状态词只按状态、错误类别、是否执行与结果状态判定', () => {
+    expect(statusWord('failure', { executed: false, errorKind: 'interrupted' })).toBe('已中断')
+    expect(
+      statusWord('failure', { executed: true, errorKind: 'interrupted', resultState: 'unknown' }),
+    ).toBe('结果不明')
+    expect(statusWord('failure', { errorKind: 'media_unknown', resultState: 'unknown' })).toBe(
+      '结果不明',
+    )
+    expect(statusWord('failure', { executed: false, errorKind: 'permission_denied' })).toBe(
+      '已拒绝',
+    )
+    expect(statusWord('failure', { executed: true, errorKind: 'timeout' })).toBe('超时')
+    expect(statusWord('success', { resultState: 'background' })).toBe('已转入后台')
+    expect(statusWord('success', { resultState: 'partial' })).toBe('部分完成')
   })
 })
 
@@ -380,16 +368,16 @@ describe('结果取值', () => {
 })
 
 describe('参数表', () => {
-  test('跳过空值，对象序列化，超长内容使用专用块而不进入参数表', () => {
+  test('跳过空值，对象序列化，超长内容截断显示而不是整项省略', () => {
     expect(
       argsRows({ path: 'a.ts', empty: '', nothing: null, gone: undefined, opts: { deep: 1 } }),
     ).toEqual([
       ['path', 'a.ts'],
       ['opts', '{"deep":1}'],
     ])
-    // 长文本进入参数表会增大卡片尺寸，应使用代码块显示。
-    expect(argsRows({ content: 'z'.repeat(401) })).toEqual([])
-    expect(argsRows({ content: 'z'.repeat(400) })).toHaveLength(1)
+    // 原始失败形状：超过 400 字的提示词与画布操作整项不显示，展开内容中没有输入。
+    expect(argsRows({ prompt: 'z'.repeat(401) })).toEqual([['prompt', `${'z'.repeat(400)}…`]])
+    expect(argsRows({ prompt: 'z'.repeat(400) })).toEqual([['prompt', 'z'.repeat(400)]])
   })
 
   test('firstString 按给定顺序取第一个非空字符串', () => {

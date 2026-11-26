@@ -120,9 +120,8 @@ export const subagentTool: ToolSpec = {
     },
     additionalProperties: false,
   },
-  actionKind: 'run',
-  objectLabel: '子 agent',
-  category: 'session',
+  verb: '派发',
+  category: 'collab',
   facet: '协作',
   summary: '派发子 agent 执行任务',
   targetExtractor: (a) =>

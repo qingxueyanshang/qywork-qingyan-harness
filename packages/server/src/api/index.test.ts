@@ -1454,9 +1454,7 @@ describe('工具清单', () => {
     name: string
     category: string
     facet: string
-    objectLabel: string
     summary: string
-    actionKind: string
     permissionEffect: string
     params: { name: string; required: boolean }[]
     source: string
@@ -1479,12 +1477,11 @@ describe('工具清单', () => {
     return ((await res?.json()) as { tools: Row[] }).tools
   }
 
-  test('每行包含底层名、动作、权限与来源，而不只有中文用途', async () => {
+  test('每行包含底层名、类目、权限与来源，而不只有中文用途', async () => {
     const row = (await tools()).find((t) => t.name === 'read_file')
     expect(row).toBeDefined()
-    expect(row?.actionKind).toBe('read')
+    expect(row?.category).toBe('files')
     expect(row?.permissionEffect).toBe('read')
-    expect(row?.objectLabel).toBe('文件')
     expect(row?.source).toBe('builtin')
   })
 
@@ -1545,7 +1542,7 @@ describe('工具清单', () => {
    * 「模块」页按类目分组。内置工具中只有管理 MCP 配置的工具归入 `mcp`、安装插件的工具归入 `plugins`；
    * 画布与生成工具标为这两类时，会与 MCP server 提供的工具列在同一组。
    */
-  test('内置工具按领域分组：画布与生成自成一类，MCP 与插件各自一类', async () => {
+  test('内置工具按领域分组：画布、生成、MCP 与插件各自一类', async () => {
     const rows = await tools()
     const category = (name: string) => rows.find((t) => t.name === name)?.category
     for (const name of [
@@ -1556,12 +1553,11 @@ describe('工具清单', () => {
       'retrieve_canvas',
       'cancel_canvas',
       'capture_canvas_frame',
-      'retrieve_media',
-      'generate_image',
-      'generate_video',
-      'generate_audio',
+      'export_timeline',
     ])
-      expect(category(name)).toBe('media')
+      expect(category(name)).toBe('canvas')
+    for (const name of ['retrieve_media', 'generate_image', 'generate_video', 'generate_audio'])
+      expect(category(name)).toBe('generate')
     const builtinIn = (c: string) =>
       rows
         .filter((t) => t.source === 'builtin' && t.category === c)
@@ -1620,26 +1616,13 @@ describe('工具清单', () => {
   })
 
   /**
-   * `write_todos` 首次创建时为「创建」、之后为「修改」；write_file 按 mode 区分新建与覆盖修改；
-   * `browser_tabs` 的 list 读取清单，create / bind / close 改变本会话持有的页，
-   * `background_command` 不带 stop 时读取输出、带 stop 时停止命令，
-   * 这些动作随参数变化，工具清单如实显示「不固定」。
    * 权限效果只有 `personalize` 与 `pet` 按参数区分（读取为 read，修改为 write，见 `resolvePermissionEffect`），
    * 其余固定：该列是安全边界，不固定的工具须逐个列出。
    */
-  test('待办、文件写入、浏览器标签、后台命令与外观按参数区分动作，其余权限效果固定', async () => {
+  test('只有外观的两个工具按参数区分权限效果，其余固定', async () => {
     const appearance = ['personalize', 'pet']
     for (const row of await tools()) {
       if (row.permissionEffect === '不固定') expect(appearance).toContain(row.name)
-      expect(row.objectLabel).not.toBe('不固定')
-      if (row.actionKind === '不固定')
-        expect([
-          'write_todos',
-          'write_file',
-          'browser_tabs',
-          'background_command',
-          ...appearance,
-        ]).toContain(row.name)
     }
   })
 })

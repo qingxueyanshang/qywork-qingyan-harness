@@ -3,6 +3,7 @@
  */
 
 import {
+  type AgentEvent,
   type ConversationId,
   type FileChange,
   type NodePhase,
@@ -420,11 +421,41 @@ export function settleRunningSteps(store: Store, runId: RunId): void {
     status: 'failure',
     executed: true,
     message: '执行期间被中断，结果未知',
+    errorKind: 'interrupted',
+    resultState: 'unknown',
   })
   settle(false, {
     status: 'failure',
     executed: false,
     message: '未开始执行即被中断',
+    errorKind: 'interrupted',
+  })
+}
+
+/**
+ * `settleRunningSteps` 改写过的工具行对应的结束事件。收尾发生在会话的生成器关闭之后，此时已无法经事件流发出；
+ * 调用方在本轮结束后发布这些事件，界面上的状态与刷新后一致。不要改为由界面在轮次结束时自行把运行中的行记为失败：
+ * 那会在界面上另立一份收尾规则，与账本中的结果不一致。
+ */
+export function settledToolEvents(
+  store: Store,
+  runId: RunId,
+): Extract<AgentEvent, { type: 'tool.finished' }>[] {
+  return listSteps(store, runId).flatMap((step) => {
+    const payload = step.payload
+    if (step.kind !== 'tool_action' || payload?.kind !== 'tool_result') return []
+    if (payload.outcome.errorKind !== 'interrupted') return []
+    return [
+      {
+        type: 'tool.finished' as const,
+        runId,
+        stepId: step.id,
+        toolCallId: step.toolCallId ?? '',
+        status: 'failure' as const,
+        outcome: payload.outcome,
+        durationMs: step.durationMs ?? 0,
+      },
+    ]
   })
 }
 

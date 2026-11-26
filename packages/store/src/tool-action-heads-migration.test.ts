@@ -1,0 +1,188 @@
+/**
+ * 覆盖迁移 81（`081-tool-action-heads.ts`）：历史工具行由「动作 + 对象名」转换为开头、动词与对象，
+ * 执行后确定的对象写入结果的 `subject`。
+ *
+ * 原始失败形状：历史记录只有 `objectLabel`，新界面按 `head` 与 `verb` 显示，转换缺失时历史中的工具行标题为空。
+ */
+import { Database } from 'bun:sqlite'
+import { describe, expect, test } from 'bun:test'
+import { migration081 } from './migrations/081-tool-action-heads.ts'
+
+/** 在只含 steps 表的内存库中插入一行，执行迁移 81 的全部批次，返回转换后的 payload；未改写时返回 null。 */
+function convertToolAction(
+  tool: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const db = new Database(':memory:')
+  try {
+    db.run('CREATE TABLE steps (id TEXT PRIMARY KEY, kind TEXT, tool_name TEXT, payload TEXT)')
+    const raw = JSON.stringify(payload)
+    db.query('INSERT INTO steps (id, kind, tool_name, payload) VALUES (?, ?, ?, ?)').run(
+      's',
+      'tool_action',
+      tool,
+      raw,
+    )
+    let after = 0
+    for (;;) {
+      const next = migration081.background!(db, {} as never, after)
+      if (next === null) break
+      after = next
+    }
+    const row = db.query("SELECT payload FROM steps WHERE id = 's'").get() as { payload: string }
+    return row.payload === raw ? null : (JSON.parse(row.payload) as Record<string, unknown>)
+  } finally {
+    db.close()
+  }
+}
+
+const old = (kind: string, objectLabel: string, target: string | null) => ({
+  kind,
+  objectLabel,
+  target,
+})
+
+describe('按工具名与参数转换', () => {
+  test('文件读写：分段读取写入行号范围，写文件改名时写入实际路径', () => {
+    const read = convertToolAction('read_file', {
+      kind: 'tool_result',
+      action: old('read', '文件', 'src/a.ts'),
+      args: { path: 'src/a.ts', offset: 395 },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '',
+        data: { startLine: 395, endLine: 448, totalLines: 700 },
+      },
+    })
+    expect(read?.action).toEqual({
+      kind: 'read',
+      head: '文件读写',
+      verb: '读取',
+      object: 'src/a.ts',
+      target: 'src/a.ts',
+    })
+    expect((read?.outcome as { subject?: string }).subject).toBe('src/a.ts:395-448')
+
+    const write = convertToolAction('write_file', {
+      kind: 'tool_result',
+      action: old('write', '文件', 'page.html'),
+      args: { path: 'page.html', mode: 'create' },
+      outcome: {
+        status: 'success',
+        executed: true,
+        message: '',
+        fileChanges: [{ path: 'page-2.html', changeType: 'created' }],
+      },
+    })
+    expect((write?.outcome as { subject?: string }).subject).toBe('page-2.html')
+  })
+
+  test('原先显示错误的工具按实际动作转换，动作随动词重新得出', () => {
+    const open = convertToolAction('open_in_panel', {
+      kind: 'tool_result',
+      action: old('read', '文件', 'page.html'),
+      args: { path: 'page.html' },
+    })
+    expect(open?.action).toMatchObject({ kind: 'call', head: '文件读写', verb: '打开' })
+
+    const capture = convertToolAction('capture_canvas_frame', {
+      kind: 'tool_result',
+      action: old('write', '画布', 'a.canvas.json'),
+      args: { path: 'a.canvas.json', node: '封面', at: 12.5 },
+    })
+    expect(capture?.action).toMatchObject({
+      head: '画布读写',
+      verb: '截取',
+      object: '封面 12.5 秒',
+    })
+  })
+
+  test('浏览器与电脑控制不显示不透明编号，窗口标题写入 subject', () => {
+    const act = convertToolAction('browser_act', {
+      kind: 'tool_result',
+      action: old('call', '浏览器控制', 'tab_7'),
+      args: { tabId: 'tab_7', action: 'click', ref: '12' },
+    })
+    expect(act?.action).toMatchObject({
+      head: '网页控制',
+      verb: '点击',
+      object: '元素',
+      target: 'tab_7',
+    })
+
+    const observe = convertToolAction('desktop_observe', {
+      kind: 'tool_result',
+      action: old('read', '电脑控制', 'dw_3'),
+      args: { windowId: 'dw_3' },
+      outcome: { status: 'success', executed: true, message: '', data: { title: '记事本' } },
+    })
+    expect(observe?.action).toMatchObject({ head: '电脑控制', verb: '查看', object: '窗口' })
+    expect((observe?.outcome as { subject?: string }).subject).toBe('记事本')
+  })
+
+  test('外部工具按名称前缀归类，对象由权限范围转换为「server／工具」', () => {
+    const mcp = convertToolAction('mcp__github__search', {
+      kind: 'tool_result',
+      action: old('call', 'MCP', 'mcp:github/search'),
+      args: {},
+    })
+    expect(mcp?.action).toMatchObject({ head: 'MCP 调用', verb: '调用', object: 'github／search' })
+
+    const plugin = convertToolAction('shot__capture', {
+      kind: 'tool_result',
+      action: old('call', '插件', 'plugin:shot/capture'),
+      args: {},
+    })
+    expect(plugin?.action).toMatchObject({ head: '插件调用', object: 'shot／capture' })
+  })
+
+  test('待办按原动作区分创建与更新', () => {
+    const edit = convertToolAction('write_todos', {
+      kind: 'tool_result',
+      action: old('edit', '待办', null),
+      args: { todos: [] },
+    })
+    expect(edit?.action).toMatchObject({ verb: '更新', object: '待办清单', kind: 'edit' })
+  })
+
+  test('已转换的行与没有 action 的行不改写', () => {
+    expect(
+      convertToolAction('read_file', {
+        kind: 'tool_result',
+        action: { kind: 'read', head: '文件读写', verb: '读取', object: 'a.ts', target: 'a.ts' },
+      }),
+    ).toBeNull()
+    expect(convertToolAction('read_file', { kind: 'tool_call' })).toBeNull()
+  })
+})
+
+test('分批执行：逐批推进，全部处理完返回 null，原字段 objectLabel 被删除', () => {
+  const db = new Database(':memory:')
+  db.run('CREATE TABLE steps (id TEXT PRIMARY KEY, kind TEXT, tool_name TEXT, payload TEXT)')
+  const insert = db.query('INSERT INTO steps (id, kind, tool_name, payload) VALUES (?, ?, ?, ?)')
+  insert.run(
+    's1',
+    'tool_action',
+    'run_command',
+    JSON.stringify({ kind: 'tool_call', action: old('run', '命令', 'npm test'), args: {} }),
+  )
+  insert.run('s2', 'user', null, JSON.stringify({ kind: 'user' }))
+  const batch = migration081.background!
+  let after = 0
+  for (;;) {
+    const next = batch(db, {} as never, after)
+    if (next === null) break
+    after = next
+  }
+  const row = db.query("SELECT payload FROM steps WHERE id = 's1'").get() as { payload: string }
+  const payload = JSON.parse(row.payload) as { action: Record<string, unknown> }
+  expect(payload.action).toEqual({
+    kind: 'run',
+    head: '命令执行',
+    verb: '运行',
+    object: 'npm test',
+    target: 'npm test',
+  })
+  db.close()
+})

@@ -104,42 +104,27 @@ export function sanitizeTarget(target: string): string {
 }
 
 /**
- * 外置工具的目标去除 `mcp:` / `plugin:` 前缀，只在显示时去除。
+ * 工具行行尾的状态词。成功与运行中为空字符串：一屏数十行都显示「成功」不提供任何信息，
+ * 运行中由读数条显示「正在执行…」。用词与读数条一致：用户停止为「已中断」，请求已发出而结果不明为「结果不明」。
  *
- * 后端的值必须带前缀：权限 scope 是 `${effect}:${target}`，target 是前缀的唯一载体，
- * 去除后，id 为 `github` 的插件的 `search` 与同名 MCP server 的 `search`
- * 会得到相同的 scope 字符串，产生冲突。而卡片上的对象名已注明「MCP」/「插件」，
- * 目标中再重复一次会显示为「调用 MCP · mcp:github/search」。
+ * 只按 `status`、`errorKind`、`executed` 与 `resultState` 判定，不按工具名或回执正文推断。
  */
-export function displayTarget(target: string): string {
-  return target.replace(/^(?:mcp|plugin):/, '')
-}
-
-/**
- * `read_file` 实际交付的行号范围（`395-448`），附加在路径之后。
- *
- * 同一文件分段读取时，不带范围时各行显示同一路径，与重复读取无法区分。
- * 读取整个文件、或起始行超出文件末尾（结果为 0 行）时返回 null。
- */
-export function readRange(data: unknown): string | null {
-  const d = data as { startLine?: unknown; endLine?: unknown; totalLines?: unknown } | undefined
-  if (
-    typeof d?.startLine !== 'number' ||
-    typeof d.endLine !== 'number' ||
-    typeof d.totalLines !== 'number'
-  ) {
-    return null
-  }
-  if (d.endLine < d.startLine || (d.startLine <= 1 && d.endLine >= d.totalLines)) return null
-  return `${d.startLine}-${d.endLine}`
-}
-
-/** 终态文字。成功时为空字符串：一屏数十行都显示「成功」不提供任何信息。 */
 export function statusWord(
   status: 'running' | 'success' | 'failure' | undefined,
+  outcome: { executed?: boolean; errorKind?: string; resultState?: string } | undefined,
   imagesUndelivered?: boolean,
 ): string {
-  if (status === 'failure') return '失败'
+  if (status === 'failure') {
+    if (outcome?.resultState === 'unknown') return '结果不明'
+    if (outcome?.errorKind === 'interrupted') return '已中断'
+    if (outcome?.errorKind === 'permission_denied') return '已拒绝'
+    if (outcome?.errorKind === 'timeout') return '超时'
+    return '失败'
+  }
+  if (status === 'success') {
+    if (outcome?.resultState === 'background') return '已转入后台'
+    if (outcome?.resultState === 'partial') return '部分完成'
+  }
   return imagesUndelivered ? '图片未发送' : ''
 }
 
@@ -210,17 +195,22 @@ export function resultImages(data: unknown): ResultImage[] {
   return images
 }
 
-/** 参数表：跳过空值与超长值；长文本使用专用块显示，放入键值表会使卡片尺寸过大。 */
+/**
+ * 参数表：跳过空值，超过 400 字的值截断显示。不要改为跳过超长值：生成的提示词、画布操作等长参数
+ * 会因此整项不显示，展开内容中没有本次调用的输入；截断使卡片尺寸保持有限。
+ */
 export function argsRows(args: Record<string, unknown>): [string, string][] {
   const rows: [string, string][] = []
   for (const [k, v] of Object.entries(args)) {
     if (v === undefined || v === null || v === '') continue
     const text = typeof v === 'string' ? v : JSON.stringify(v)
-    if (text.length > 400) continue
-    rows.push([k, text])
+    rows.push([k, text.length > ARG_MAX ? `${text.slice(0, ARG_MAX)}…` : text])
   }
   return rows
 }
+
+/** 参数表中单个值显示的最大字数。 */
+const ARG_MAX = 400
 
 /**
  * 待办清单型参数：`{ todos: [{ content, status, blocker?, need?, failure?, cause?, attempts? }, …] }`。

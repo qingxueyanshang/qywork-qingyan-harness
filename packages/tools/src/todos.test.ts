@@ -511,43 +511,40 @@ describe('权限', () => {
  */
 describe('动作语义：首次提交是创建，修改已有清单才是编辑', () => {
   const kindWith = (prev: TodoItem[] | null) =>
-    (writeTodosTool.actionKind as (a: Record<string, unknown>, c?: ToolContext) => string)({}, {
+    (writeTodosTool.verb as (a: Record<string, unknown>, c?: ToolContext) => string)({}, {
       port: new Ports([provide(TodoPort, { read: () => prev })]).get,
     } as ToolContext)
 
   test('没有上一份清单：创建', () => {
-    expect(kindWith(null)).toBe('write')
+    expect(kindWith(null)).toBe('创建')
   })
 
-  test('上一份尚未全部完成：修改', () => {
+  test('上一份尚未全部完成：更新', () => {
     expect(
       kindWith([
         { id: 'todo_1', content: '甲', status: 'completed' },
         { id: 'todo_2', content: '乙', status: 'in_progress' },
       ]),
-    ).toBe('edit')
+    ).toBe('更新')
   })
 
   /** 上一份已全部完成时，再提交的是下一项任务的清单，应显示「创建」。 */
   test('上一份已全部完成：视为创建', () => {
-    expect(kindWith([{ id: 'todo_1', content: '甲', status: 'completed' }])).toBe('write')
+    expect(kindWith([{ id: 'todo_1', content: '甲', status: 'completed' }])).toBe('创建')
   })
 
   /**
    * 端口未接入（`qy exec` 这类一次性执行没有会话）时按「创建」处理。
-   * 显示「修改」则是在没有清单时声称修改了一份不存在的清单。
+   * 显示「更新」则是在没有清单时声称更新了一份不存在的清单。
    */
-  test('端口未接入：按创建处理，不按修改', () => {
-    const spec = writeTodosTool.actionKind as (
-      a: Record<string, unknown>,
-      c?: ToolContext,
-    ) => string
-    expect(spec({}, undefined)).toBe('write')
-    expect(spec({}, { port: new Ports().get } as ToolContext)).toBe('write')
+  test('端口未接入：按创建处理，不按更新', () => {
+    const spec = writeTodosTool.verb as (a: Record<string, unknown>, c?: ToolContext) => string
+    expect(spec({}, undefined)).toBe('创建')
+    expect(spec({}, { port: new Ports().get } as ToolContext)).toBe('创建')
   })
 
-  /** 对象是「待办」而不是「计划」：计划（方案）是另一类产物，本工具不产出它。 */
-  test('对象始终为「待办」', () => {
-    expect(writeTodosTool.objectLabel).toBe('待办')
+  /** 对象是「待办清单」而不是「计划」：计划（方案）是另一类产物，本工具不产出它。 */
+  test('对象始终为「待办清单」', () => {
+    expect(writeTodosTool.object?.({})).toBe('待办清单')
   })
 })

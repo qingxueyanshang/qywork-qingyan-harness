@@ -122,7 +122,8 @@ export const desktopObserveTool: ToolSpec = {
     required: ['windowId'],
     additionalProperties: false,
   },
-  actionKind: 'read',
+  verb: '查看',
+  object: () => '窗口',
   summary: '读取窗口的控件列表或截取窗口图像',
   targetExtractor: windowTarget,
 

@@ -90,26 +90,24 @@ export const writeTodosTool: ToolSpec = {
     additionalProperties: false,
   },
   /*
-   * 首次提交是创建，修改已有清单才是编辑。
+   * 首次提交是「创建」，修改已有清单才是「更新」。
    *
    * 判据必须使用 `TodoPort`（会话级，读取账本中上一条 `write_todos` step）。
    * 不要改用 `ctx.state`：它是 run 级的（每条消息一个 run，Map 重新创建），
    * 跨轮无法查到上一份清单，结果是下一轮的第一次提交一律显示为「创建」。
-   * 也不要硬编码为常量，那是方向相反的同类缺陷，会始终返回「修改」。
+   * 也不要硬编码为常量，那是方向相反的同类缺陷，会始终返回「更新」。
    *
    * 全部完成后再提交一份视为新清单：它属于下一项任务，应返回「创建」。
    *
-   * 无法读取（`qy exec` 没有会话）时按 write 处理：显示「创建」至多低估一次修订，
-   * 显示「编辑」则是在没有清单时声称修改了一份不存在的清单。
-   *
-   * 不为它新增 `plan` 动作：与对象「待办」组合后读作「规划待办」，动宾语义重复。
+   * 无法读取（`qy exec` 没有会话、权限预检没有上下文）时返回「创建」：至多低估一次修订，
+   * 返回「更新」则是在没有清单时声称更新了一份不存在的清单。
    */
-  actionKind: (_args, ctx) => {
+  verb: (_args, ctx) => {
     const prev = ctx?.port(TodoPort)?.read()
-    if (!prev?.length) return 'write'
-    return prev.every((t) => t.status === 'completed') ? 'write' : 'edit'
+    if (!prev?.length) return '创建'
+    return prev.every((t) => t.status === 'completed') ? '创建' : '更新'
   },
-  objectLabel: '待办',
+  object: () => '待办清单',
   category: 'planning',
   facet: '待办账本',
   summary: '提交或更新当前任务的待办清单（整体替换）',

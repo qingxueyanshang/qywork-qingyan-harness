@@ -282,7 +282,7 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
     const spec = specFor(c, (await c.listTools())[0]!)
     expect(spec.permissionEffect).toBe('delete')
     // 收紧的是权限维度。动作维度与它正交，恒为 call：外部 server 的能力不属于本机执行。
-    expect(spec.actionKind).toBe('call')
+    expect(spec.verb).toBe('调用')
     await c.stop()
   })
 
@@ -292,18 +292,17 @@ describe('权限：server 的 hint 只能收紧，不能放宽', () => {
   })
 
   /**
-   * 卡片由动词、对象、目标三层组成。对象名填类别名，目标填具体工具，两处不能是同一字符串：
-   * 相同时标题与目标完全一致，目标字段不提供任何信息。
+   * 工具行显示「server／工具」，target 是带 `mcp:` 前缀的权限范围，不直接显示。
    */
-  test('对象名恒为「MCP」，具体工具由 target 表示', async () => {
+  test('工具行显示「server／工具」，权限范围由 target 表示', async () => {
     const { dir, entry } = await fixture()
     const c = client(entry, dir)
     await c.start()
     const def = (await c.listTools())[0]!
     const spec = specFor(c, def)
-    expect(spec.objectLabel).toBe('MCP')
+    expect(spec.category).toBe('mcp_call')
+    expect(spec.object?.({})).toBe(`${c.name}／${def.name}`)
     expect(spec.targetExtractor?.({})).toBe(permissionLabel(c.name, def.name))
-    expect(spec.objectLabel).not.toBe(spec.targetExtractor?.({}))
     await c.stop()
   })
 

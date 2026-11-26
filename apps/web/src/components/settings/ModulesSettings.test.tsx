@@ -1,8 +1,8 @@
 /**
- * 「模块」页的浏览器控制、电脑控制、Office 文档、画布与生成四组：分组标题中的开关读取并写入
+ * 「模块」页的网页控制、电脑控制、文档读写、画布读写与媒体生成五组：分组标题中的开关读取并写入
  * `browserEnabled` / `desktopEnabled` / `officeEnabled` / `mediaEnabled`。
  *
- * 覆盖范围：`ModulesSettings.tsx` 的分组标题开关、工具行分组与「上下文」组的自动压缩比例滑块、
+ * 覆盖范围：`ModulesSettings.tsx` 的分组标题开关、工具行分组与「会话读取」组的自动压缩比例滑块、
  * `OnOff.tsx` 的两项开关。
  *
  * 「字段缺失视为启用」由本文件与 `server/src/desktop/assembly.test.ts` 分别锁定一端：
@@ -31,9 +31,7 @@ const TOOLS = {
       name: 'desktop_windows',
       category: 'desktop',
       facet: '桌面控件',
-      objectLabel: '电脑控制',
       summary: '列出可操作的桌面窗口',
-      actionKind: 'read',
       permissionEffect: 'desktop',
       params: [],
       source: 'builtin',
@@ -42,21 +40,26 @@ const TOOLS = {
       name: 'browser_tabs',
       category: 'browser',
       facet: '页面',
-      objectLabel: '浏览器控制',
       summary: '列出、新建、接管或关闭标签页',
-      actionKind: 'read',
       permissionEffect: 'browser',
       params: [],
       source: 'builtin',
     },
     {
       name: 'read_canvas',
-      category: 'media',
+      category: 'canvas',
       facet: '生成',
-      objectLabel: '画布',
       summary: '读取画布或列出工作区里的画布',
-      actionKind: 'read',
       permissionEffect: 'read',
+      params: [],
+      source: 'builtin',
+    },
+    {
+      name: 'generate_image',
+      category: 'generate',
+      facet: '生成',
+      summary: '用图像生成模型生成或编辑图片',
+      permissionEffect: 'write',
       params: [],
       source: 'builtin',
     },
@@ -158,27 +161,29 @@ test('分组标题开关：缺省视为启用，单击后写入 desktopEnabled',
     expect(isOn(host)).toBe(true)
     expect(await until(() => stored.desktopEnabled === true)).toBe(true)
 
-    // Office 文档分组：开关形式相同，写入 officeEnabled，不改变电脑控制的开关。
-    expect(isOn(host, 'Office 文档')).toBe(true)
-    click(switchOf(host, 'Office 文档') as HTMLInputElement)
+    // 文档读写分组：开关形式相同，写入 officeEnabled，不改变电脑控制的开关。
+    expect(isOn(host, '文档读写')).toBe(true)
+    click(switchOf(host, '文档读写') as HTMLInputElement)
     expect(config()?.officeEnabled).toBe(false)
     expect(await until(() => stored.officeEnabled === false)).toBe(true)
     expect(stored.desktopEnabled).toBe(true)
 
-    // 画布与生成分组：分组标题中是开关而不是「去配置」，写入 mediaEnabled。
+    // 画布读写分组：分组标题中是开关而不是「去配置」，写入 mediaEnabled；媒体生成分组的开关读写同一个字段。
     const media = Array.from(host.querySelectorAll<HTMLElement>('.settings-block-head')).find(
-      (h) => h.querySelector('h3')?.textContent === '画布与生成',
+      (h) => h.querySelector('h3')?.textContent === '画布读写',
     )
     expect(media?.querySelector('.module-console')).toBeNull()
-    expect(isOn(host, '画布与生成')).toBe(true)
-    click(switchOf(host, '画布与生成') as HTMLInputElement)
+    expect(isOn(host, '画布读写')).toBe(true)
+    expect(isOn(host, '媒体生成')).toBe(true)
+    click(switchOf(host, '画布读写') as HTMLInputElement)
     expect(config()?.mediaEnabled).toBe(false)
     expect(await until(() => stored.mediaEnabled === false)).toBe(true)
+    expect(isOn(host, '媒体生成')).toBe(false)
     expect(stored.officeEnabled).toBe(false)
 
-    // 浏览器控制分组：开关形式相同，写入 browserEnabled。
-    expect(isOn(host, '浏览器控制')).toBe(true)
-    click(switchOf(host, '浏览器控制') as HTMLInputElement)
+    // 网页控制分组：开关形式相同，写入 browserEnabled。
+    expect(isOn(host, '网页控制')).toBe(true)
+    click(switchOf(host, '网页控制') as HTMLInputElement)
     expect(config()?.browserEnabled).toBe(false)
     expect(await until(() => stored.browserEnabled === false)).toBe(true)
     expect(stored.mediaEnabled).toBe(false)
@@ -188,7 +193,7 @@ test('分组标题开关：缺省视为启用，单击后写入 desktopEnabled',
   }
 })
 
-/** 「上下文」组中某一档的滑块。 */
+/** 「会话读取」组中某一档的滑块。 */
 function sliderOf(host: HTMLElement, label: string): HTMLInputElement | null {
   return host.querySelector<HTMLInputElement>(`input[type="range"][aria-label="${label}"]`)
 }

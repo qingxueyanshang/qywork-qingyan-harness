@@ -7,7 +7,6 @@ import { setPetApply } from '../appearance/pet.ts'
 import { panelTargetOf } from '../files.ts'
 import { invalidateExtensions } from '../settings.ts'
 import { setState, state } from '../state.ts'
-import { narrowScreen } from '../ui.ts'
 import { appendChange, refreshLatestChangeTurn } from '../views/changes.ts'
 import { handlers } from './handler.ts'
 import { pushNodeOutput, pushToolOutput } from './pace.ts'
@@ -79,11 +78,9 @@ export const toolEvents = handlers({
       )
         invalidateExtensions()
       // 只为用户正在查看的会话打开面板：其他会话的工具卡不在屏幕上，面板突然切换会打断用户。
-      // 窄屏不自动打开：面板覆盖全屏，替换正在阅读的回复；由工具卡的「打开」按钮打开（`OpenInPanelCard`）。
       if (
         ev.status === 'success' &&
         cid === state.activeConversation &&
-        !narrowScreen() &&
         state.views[cid]?.transcript.find((item) => item.id === ev.stepId)?.toolName ===
           'open_in_panel'
       ) {

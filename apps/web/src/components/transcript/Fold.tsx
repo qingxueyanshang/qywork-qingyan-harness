@@ -34,6 +34,11 @@ export function Fold(props: {
   failed?: boolean
   /** 首次或再次展开且 DOM 挂载完成后调用；用于把仍在增长的内层内容滚动到最新位置。 */
   onOpen?: () => void
+  /**
+   * 双击标题行。提供时按下第二次阻止默认行为，双击不选中标题中的文字。
+   * 双击中的两次单击各切换一次折叠，结果与双击前相同。
+   */
+  onHeadDblClick?: () => void
   children: JSX.Element
 }) {
   /*
@@ -68,12 +73,16 @@ export function Fold(props: {
       onToggle={(e) => setFoldOpen(props.id, e.currentTarget.open)}
     >
       {/* 整行不换行：文本槽负责省略，右侧的标记不收缩。 */}
-      <summary class="fold-head">
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: summary 是可聚焦、可由键盘操作的原生交互元素，该规则未将其识别为交互元素 */}
+      <summary
+        class="fold-head"
+        onMouseDown={(e) => {
+          if (props.onHeadDblClick && e.detail > 1) e.preventDefault()
+        }}
+        onDblClick={() => props.onHeadDblClick?.()}
+      >
         <span class="fold-summary">
           <span class="fold-label">{props.label}</span>
-          <Show when={props.statusWord}>
-            <span class="fold-word">{props.statusWord}</span>
-          </Show>
           <Show when={props.target}>
             <span class="fold-target" data-tip={props.target}>
               · {sanitizeTarget(props.target!)}
@@ -89,6 +98,10 @@ export function Fold(props: {
                 <span class="fold-del">−{c().deletions}</span>
               </span>
             )}
+          </Show>
+          {/* 状态词紧跟在对象与增删行数之后，理由同上：它描述的是这一次调用。 */}
+          <Show when={props.statusWord}>
+            <span class="fold-word">{props.statusWord}</span>
           </Show>
         </span>
       </summary>
