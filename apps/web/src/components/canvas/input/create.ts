@@ -62,7 +62,7 @@ export const shoot = async (canvas: CanvasController, id: string) => {
 
 /**
  * 从节点新建一张后续生成卡，并把该节点连接为输入：文本卡以 `text` 连接（提示词中插入引用），视频节点作为参考视频，
- * 图片作为首帧（视频生成）或参考（图像生成与使用对话模型的卡）。
+ * 音频作为参考音频，图片作为首帧（视频生成）或参考（图像生成与使用对话模型的卡）。
  * 给出 `at` 时，卡片左边沿中点（输入连线的终点）位于该点，与已有节点重叠时也不移动。
  * 不要改为 `near`：它以该点为卡片中心，且与已有节点相交时下移，落点靠近源节点时卡片被移到源节点下方。
  */
@@ -79,13 +79,7 @@ export const extend = async (
   let role: CanvasEdgeRole
   if (isTextCard(source)) role = 'text'
   else if (!kind || kind === 'art') return
-  else
-    role =
-      output === 'image' || isChatOutput(output)
-        ? 'reference'
-        : kind === 'image'
-          ? 'first_frame'
-          : kind
+  else role = kind !== 'image' ? kind : output === 'video' ? 'first_frame' : 'reference'
   const place = at
     ? { x: Math.round(at.x), y: Math.round(at.y - blankBox(output).h / 2) }
     : { beside: nodeId }
@@ -102,8 +96,9 @@ export const extendable = (canvas: CanvasController, nodeId: string): GenerateOu
   if (source && isTextCard(source)) return [...GENERATE_OUTPUTS]
   const kind = canvas.view() ? mediaOf(canvas.view()!, nodeId).kind : null
   if (kind === null || kind === 'art') return []
-  return GENERATE_OUTPUTS.filter((o) =>
-    o === 'image' || isChatOutput(o) ? kind === 'image' : o === 'video',
+  return GENERATE_OUTPUTS.filter(
+    (o) =>
+      o === 'video' || (isChatOutput(o) && kind !== 'audio') || (o === 'image' && kind === 'image'),
   )
 }
 

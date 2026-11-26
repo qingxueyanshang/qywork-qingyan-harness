@@ -7,10 +7,16 @@
  */
 
 import { relative } from 'node:path'
-import type { ContentBlock } from '@qywork/ai'
-import { artSizeOf, type MediaSpend, withArtViewport } from '@qywork/core'
+import type { ContentBlock, MediaInput } from '@qywork/ai'
+import { artSizeOf, withArtViewport } from '@qywork/core'
 import type { MediaCall, MediaCallResult } from '@qywork/tools'
-import { imageBlock, imageMention, runChatGeneration } from './chat-generate/run.ts'
+import {
+  type ChatDeps,
+  imageBlock,
+  imageMention,
+  runChatGeneration,
+  videoMention,
+} from './chat-generate/run.ts'
 import type { QyConfig } from './config.ts'
 
 /** 页面可用的 three.js 附加模块。与 sidecar 的 `/art/lib/addons/` 一一对应，修改时两处同时修改。 */
@@ -36,7 +42,9 @@ export function artSystemPrompt(size: { w: number; h: number }): string {
       '都随之推进。动画优先由这几项驱动；setTimeout 与 setInterval 按真实时间执行，录制结果中的动画速度会不正确。',
     '',
     '术语：白模指只有几何形体、统一浅灰材质、带光照与阴影的场景，用于构图与走位。',
-    `参考图按顺序依次称为「${imageMention(1)}」「${imageMention(2)}」……，要求中以同样的名称指代。`,
+    `参考图按顺序依次称为「${imageMention(1)}」「${imageMention(2)}」……，` +
+      `参考视频依次称为「${videoMention(1)}」「${videoMention(2)}」……，要求中以同样的名称指代。` +
+      '参考视频以视频本身或按画面变化抽取的若干帧给出，帧前写明该帧在视频中的时刻。',
     '参考图后括号中的路径是该图相对页面的路径。页面中要显示参考图时，<img> 的 src 或 CSS 的 url() 直接写这个路径，' +
       '画布显示页面时载入该图片；不要把图片编码进页面，也不要用占位图形代替已提供的参考图。',
     '给出当前页面时，在它的基础上按要求修改，输出修改后的完整文档。',
@@ -56,26 +64,33 @@ export function generateArt(
   config: QyConfig,
   call: MediaCall,
   signal: AbortSignal,
-  onSpend?: (spend: MediaSpend) => void,
+  deps: ChatDeps,
 ): Promise<MediaCallResult> {
   const size = artSizeOf(call.params)
-  const content: ContentBlock[] = []
-  let images = 0
-  for (const input of call.inputs) {
-    if (input.mime === 'text/html') {
-      const page = new TextDecoder().decode(input.bytes)
-      content.push({ type: 'text', text: `当前页面：\n\`\`\`html\n${page}\n\`\`\`` })
-      continue
+  const content = (video: (input: MediaInput) => ContentBlock[]): ContentBlock[] => {
+    const blocks: ContentBlock[] = []
+    let images = 0
+    for (const input of call.inputs) {
+      if (input.mime === 'text/html') {
+        const page = new TextDecoder().decode(input.bytes)
+        blocks.push({ type: 'text', text: `当前页面：\n\`\`\`html\n${page}\n\`\`\`` })
+        continue
+      }
+      if (input.role === 'video') {
+        blocks.push(...video(input))
+        continue
+      }
+      images += 1
+      const rel = call.outputDir ? relative(call.outputDir, input.path).replaceAll('\\', '/') : ''
+      blocks.push({
+        type: 'text',
+        text: rel ? `${imageMention(images)}（${rel}）：` : `${imageMention(images)}：`,
+      })
+      blocks.push(imageBlock(input))
     }
-    images += 1
-    const rel = call.outputDir ? relative(call.outputDir, input.path).replaceAll('\\', '/') : ''
-    content.push({
-      type: 'text',
-      text: rel ? `${imageMention(images)}（${rel}）：` : `${imageMention(images)}：`,
-    })
-    content.push(imageBlock(input))
+    blocks.push({ type: 'text', text: `要求：${call.prompt}` })
+    return blocks
   }
-  content.push({ type: 'text', text: `要求：${call.prompt}` })
   return runChatGeneration(
     config,
     'art',
@@ -98,6 +113,6 @@ export function generateArt(
       },
     },
     signal,
-    onSpend,
+    deps,
   )
 }

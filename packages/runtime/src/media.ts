@@ -32,8 +32,9 @@ import {
   mediaOperationFor,
   modelMention,
 } from '@qywork/core'
-import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/tools'
+import type { MediaCall, MediaCallResult, MediaPort, OfficePort } from '@qywork/tools'
 import { generateArt } from './art.ts'
+import type { ChatDeps } from './chat-generate/run.ts'
 import { generateText } from './chat-generate/text.ts'
 import {
   configDir,
@@ -58,7 +59,7 @@ const CHAT_GENERATORS: Record<
     config: QyConfig,
     call: MediaCall,
     signal: AbortSignal,
-    onSpend?: (spend: MediaSpend) => void,
+    deps: ChatDeps,
   ) => Promise<MediaCallResult>
 > = { art: generateArt, text: generateText }
 
@@ -112,15 +113,27 @@ function spendOf(
   }
 }
 
-/** `onSpend`：服务商返回生成结果时传出花费，由调用方记入账本。 */
-export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) => void): MediaPort {
+/**
+ * `onSpend`：服务商返回生成结果时传出花费，由调用方记入账本。
+ * `office`：Office 端口，使用对话模型的类别在模型不接受原生视频时据此抽帧；没有时这类视频无法发送。
+ */
+export function makeMediaPort(
+  config: QyConfig,
+  onSpend?: (spend: MediaSpend) => void,
+  office?: OfficePort,
+): MediaPort {
   // 端口按一轮执行创建；结果未知或待取回时，本轮只允许恢复该类产物，避免自动重发计费请求。
   const unresolved = new Set<MediaOutput>()
   return {
     displayName: (type, provider, model) => savedDisplayName(config, type, { provider, model }),
     parameterTable: (output) => mediaParameterTable(listMediaModels(config), output),
     async generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult> {
-      if (isChatOutput(call.type)) return CHAT_GENERATORS[call.type](config, call, signal, onSpend)
+      if (isChatOutput(call.type)) {
+        return CHAT_GENERATORS[call.type](config, call, signal, {
+          ...(onSpend ? { onSpend } : {}),
+          ...(office ? { office } : {}),
+        })
+      }
       if (unresolved.has(call.type) && !call.resumeImageResult && !call.resumeTaskId) {
         log.warn('media', '本轮结果尚未确认，未提交新的生成', {
           type: call.type,

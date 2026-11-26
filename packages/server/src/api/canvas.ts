@@ -61,24 +61,30 @@ function text(value: unknown): string | undefined {
 
 /**
  * 界面发起的生成所用的端口：花费记为一行 `kind='media'`、无轮次、无会话、带项目的账目。
- * Agent 发起的生成不经过此处，使用其本轮的生成端口，花费计入本轮。
+ * Agent 发起的生成不经过此处，使用其本轮的生成端口，花费计入本轮。Office 端口供对话生成为参考视频抽帧。
  */
-export function uiMediaPort(d: Pick<ApiRequestDeps, 'config' | 'store' | 'workspaceId'>) {
-  return makeMediaPort(d.config, (spend) => {
-    recordUsage(d.store, {
-      kind: 'media',
-      runId: null,
-      conversationId: null,
-      workspaceId: d.workspaceId,
-      model: spend.model,
-      provider: spend.kind,
-      inputTokens: 0,
-      outputTokens: 0,
-      cost: spend.cost,
-      currency: spend.currency,
-      occurredAt: spend.at,
-    })
-  })
+export function uiMediaPort(
+  d: Pick<ApiRequestDeps, 'config' | 'store' | 'workspaceId' | 'office'>,
+) {
+  return makeMediaPort(
+    d.config,
+    (spend) => {
+      recordUsage(d.store, {
+        kind: 'media',
+        runId: null,
+        conversationId: null,
+        workspaceId: d.workspaceId,
+        model: spend.model,
+        provider: spend.kind,
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: spend.cost,
+        currency: spend.currency,
+        occurredAt: spend.at,
+      })
+    },
+    d.office?.port(),
+  )
 }
 
 export const handleCanvasApi: ApiHandler = async (url, req, d) => {

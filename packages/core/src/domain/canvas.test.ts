@@ -2072,7 +2072,7 @@ describe('画布：Art', () => {
     expect([gen(doc, 'a1').w, gen(doc, 'a1').h]).toEqual([300, 169])
   })
 
-  test('Art 卡只接受图片作参考图；Art 节点不能作为任何生成卡的输入', () => {
+  test('Art 卡接受图片作参考图、视频作参考视频；Art 节点不能作为任何生成卡的输入', () => {
     const doc = apply(emptyCanvas(), [
       { op: 'add_file', ref: '$img', path: '参考/街口.png' },
       { op: 'add_file', ref: '$mov', path: '参考/走位.mp4' },
@@ -2083,9 +2083,15 @@ describe('画布：Art', () => {
       { op: 'connect', from: '$img', to: '$art', role: 'reference' },
     ])
     expect(doc.edges).toHaveLength(1)
-    expect(rejects(doc, [{ op: 'connect', from: 'a2', to: 'a4', role: 'video' }])).toContain(
-      '只接受参考图',
+    expect(rejects(doc, [{ op: 'connect', from: 'a2', to: 'a4', role: 'reference' }])).toContain(
+      '只接受参考图与参考视频',
     )
+    const withVideo = apply(doc, [{ op: 'update', id: 'a4', prompt: '按 @[a2] 的走位搭白模' }])
+    expect(withVideo.edges.map((e) => [e.from, e.role])).toEqual([
+      ['a1', 'reference'],
+      ['a2', 'video'],
+    ])
+    expect(compilePrompt(withVideo, 'a4', CHAT_MENTION)).toBe('按 视频1 的走位搭白模')
     for (const to of ['a4', 'a5']) {
       expect(rejects(doc, [{ op: 'connect', from: 'a3', to, role: 'reference' }])).toContain(
         '只接受参考图',
@@ -2129,7 +2135,7 @@ describe('画布：文本生成卡', () => {
     ])
   }
 
-  test('新建文本生成卡与文本卡的框相同，默认名称按「文本」计数；参考图以 reference 连接，文本卡以 text 连接', () => {
+  test('新建文本生成卡与文本卡的框相同，默认名称按「文本」计数；参考图以 reference、参考视频以 video、文本卡以 text 连接', () => {
     const doc = chain()
     expect([gen(doc, 'a3').name, gen(doc, 'a3').w, gen(doc, 'a3').h]).toEqual(['文本1', 300, 169])
     expect(doc.edges.map((e) => [e.from, e.to, e.role])).toEqual([
@@ -2139,12 +2145,17 @@ describe('画布：文本生成卡', () => {
     expect(compilePrompt(doc, 'a3', CHAT_MENTION, new Map([['a1', '第一幕：雨夜。']]))).toBe(
       '按 第一幕：雨夜。 写分镜，人物参照 图1',
     )
+    const withVideo = apply(doc, [
+      { op: 'add_file', ref: '$mov', path: '参考/走位.mp4' },
+      { op: 'connect', from: '$mov', to: 'a3', role: 'video' },
+    ])
+    expect(withVideo.edges.at(-1)).toMatchObject({ to: 'a3', role: 'video' })
     expect(
       rejects(doc, [
-        { op: 'add_file', ref: '$mov', path: '参考/走位.mp4' },
-        { op: 'connect', from: '$mov', to: 'a3', role: 'video' },
+        { op: 'add_file', ref: '$voice', path: '参考/旁白.mp3' },
+        { op: 'connect', from: '$voice', to: 'a3', role: 'audio' },
       ]),
-    ).toContain('只接受参考图')
+    ).toContain('只接受参考图与参考视频')
   })
 
   test('其他生成卡引用文本生成卡时以 text 连接，展开为当前版本的全文；尚无结果或结果仍待取回时没有正文路径', () => {

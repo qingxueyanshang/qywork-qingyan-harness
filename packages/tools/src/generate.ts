@@ -456,6 +456,7 @@ export async function generateMedia(req: GenerateRequest): Promise<GenerateOutco
       prompt: req.prompt,
       inputs,
       outputDir: dirname(target),
+      workspaceRoot: workspaceOf(req.roots),
       params: req.params,
       ...(req.pick ?? {}),
       ...(req.onSpend ? { onSpend: req.onSpend } : {}),

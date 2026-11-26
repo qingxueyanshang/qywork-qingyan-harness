@@ -109,6 +109,7 @@ describe('generate_image', () => {
       inputs: [],
       params: { size: '1024*1536' },
       outputDir: join(root, 'generated'),
+      workspaceRoot: root,
       logFields: {
         conversation: 'cv_test',
         run: 'rn_test',

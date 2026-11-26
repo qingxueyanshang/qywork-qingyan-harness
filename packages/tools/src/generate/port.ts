@@ -43,6 +43,8 @@ export interface MediaCall {
    * 产物将写入的目录（绝对路径）。`art` 据此告知模型每张参考图相对页面的路径，页面按该路径引用图片。
    */
   outputDir?: string
+  /** 工作区根目录（绝对路径）。对话生成为参考视频抽帧时，worker 的临时目录位于其中；缺省时不能抽帧。 */
+  workspaceRoot?: string
   /** 大模型按参数表填写的原生字段，由实现方按目录校验。 */
   params: Record<string, unknown>
   /** 与 `model` 须同时提供或同时省略；均省略时使用该类别的默认模型。 */

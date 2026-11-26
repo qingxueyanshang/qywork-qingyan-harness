@@ -4972,6 +4972,39 @@ describe('画布：连线', () => {
     ])
   })
 
+  /** 原始失败形状：Art 卡只接受图片，视频无法连接到 Art 卡。 */
+  test('视频的输出连接点：拖到 Art 卡上连接为参考视频，点击后可新建视频生成、Art 与文本生成卡', async () => {
+    const { host, server, refs } = await mount([
+      { op: 'add_file', ref: '$m', path: '走位.mp4', x: 0, y: 0 },
+      { op: 'add_generate', ref: '$art', output: 'art', x: 400, y: 0 },
+    ])
+    const port = node(host, refs.$m!).querySelector<HTMLElement>('.canvas-port.out')!
+    await dragLink(host, port, node(host, refs.$art!))
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([
+      { op: 'connect', from: refs.$m!, to: refs.$art!, role: 'video' },
+    ])
+    port.click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-menu'),
+      () => '',
+    )
+    const items = [...document.querySelectorAll<HTMLButtonElement>('.canvas-menu button')]
+    expect(items.map((b) => b.textContent)).toEqual(['视频生成', 'Art 生成', '文本生成'])
+    items.find((b) => b.textContent === '文本生成')!.click()
+    await waitFor(
+      () => server.ops.length === 2,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[1]).toEqual([
+      { op: 'add_generate', ref: '$n', output: 'text', beside: refs.$m! },
+      { op: 'connect', from: refs.$m!, to: '$n', role: 'video' },
+    ])
+  })
+
   test('在无法连接的目标（文件节点、已连接的卡片）上松开时不发送请求', async () => {
     const { host, server, refs } = await mount([
       ...CARD,

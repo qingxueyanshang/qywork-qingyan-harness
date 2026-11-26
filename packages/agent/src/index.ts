@@ -71,12 +71,14 @@ export { transientErrorCode } from './loop/attempt.ts'
 export { AgentLoop } from './loop/index.ts'
 // `breakdownOf` 另有一个包外消费者：runtime 的消息条目重建按同一分组规则逐条估算
 // `assembleMessages` 与 `mediaCapabilitiesOf` 同理：两轮之间的压缩读数按下一轮请求的同一装配估算
+// `materialize` 与 `videoDelivery`：runtime 的画布对话生成按会话的同一判定发送参考视频
 export {
   assembleMessages,
   breakdownOf,
   type DeclaredText,
   envelopeResult,
   imagesOf,
+  materialize,
   mediaCapabilitiesOf,
   omitImages,
   runDensity,

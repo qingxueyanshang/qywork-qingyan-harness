@@ -642,29 +642,35 @@ export function GeneratePanel(props: {
       return connected.has(n.id)
     })
   }
-  const accepts = (kind: CanvasMediaKind) =>
-    props.node.output === 'image' || isChatOutput(props.node.output)
-      ? kind === 'image'
-      : props.node.output === 'audio'
-        ? audioReferences() && kind === 'audio'
-        : props.node.output === 'video' && kind !== 'art'
-  /** 首尾帧只接受图片；图像生成卡与使用对话模型的卡只接受图片；视频生成卡接受图片、视频、音频。 */
-  const imagesOnly = () => {
+  /**
+   * 添加素材时可连接的类别：首尾帧与图像生成卡只接受图片，使用对话模型的卡接受图片与视频，视频生成卡接受图片、视频与音频。
+   * 音频生成卡另按 `audioReferences` 判定。
+   */
+  const mediaKinds = (): ('image' | 'video' | 'audio')[] => {
     const role = roleOf(menu())
-    return (
-      role === 'first_frame' ||
-      role === 'last_frame' ||
-      props.node.output === 'image' ||
-      isChatOutput(props.node.output)
-    )
+    if (role === 'first_frame' || role === 'last_frame' || props.node.output === 'image')
+      return ['image']
+    return isChatOutput(props.node.output) ? ['image', 'video'] : ['image', 'video', 'audio']
   }
+  const accepts = (kind: CanvasMediaKind) =>
+    props.node.output === 'audio'
+      ? audioReferences() && kind === 'audio'
+      : (mediaKinds() as CanvasMediaKind[]).includes(kind)
   const acceptsPath = (path: string) => {
     if (props.node.output === 'audio') return audioReferences() && isInlineAudio(path, true)
-    if (isInlineImage(path)) return true
-    return !imagesOnly() && (isInlineVideo(path) || isInlineAudio(path))
+    const kinds = mediaKinds()
+    return (
+      (kinds.includes('image') && isInlineImage(path)) ||
+      (kinds.includes('video') && isInlineVideo(path)) ||
+      (kinds.includes('audio') && isInlineAudio(path))
+    )
   }
   const uploadAccept = () =>
-    props.node.output === 'audio' ? 'audio/*' : imagesOnly() ? 'image/*' : 'image/*,video/*,audio/*'
+    props.node.output === 'audio'
+      ? 'audio/*'
+      : mediaKinds()
+          .map((k) => `${k}/*`)
+          .join(',')
   const roleFor = (kind: CanvasMediaKind): MediaInputRole =>
     kind === 'video' ? 'video' : kind === 'audio' ? 'audio' : 'reference'
 
@@ -1399,7 +1405,7 @@ export function GeneratePanel(props: {
                 <SourcePicker
                   nodes={pickable()}
                   files={roleOf(m()) !== undefined}
-                  kinds={imagesOnly() ? ['image'] : ['image', 'video', 'audio']}
+                  kinds={mediaKinds()}
                   accepts={acceptsPath}
                   accept={uploadAccept()}
                   thumb={(id) => <Thumb view={props.view} nodeId={id} />}

@@ -32,10 +32,10 @@ export const ART_SIZE_PARAM: MediaParamDefinition & { label: string } = {
 }
 
 /**
- * 使用对话模型的类别（art、text）在要求中指代参考图的写法。生成端口按同一写法在每张图前标注名称，
+ * 使用对话模型的类别（art、text）在要求中指代参考图与参考视频的写法。生成端口按同一写法在每张图、每段视频前标注名称，
  * 系统提示词中说明这一约定。
  */
-export const CHAT_MENTION = { image: '图{n}' } satisfies MentionStyle
+export const CHAT_MENTION = { image: '图{n}', video: '视频{n}' } satisfies MentionStyle
 
 /** 使用对话模型的类别的参数表：art 只有尺寸，text 没有参数。服务端校验、生成面板与画布工具说明共用。 */
 export const CHAT_OUTPUT_PARAMS: Record<

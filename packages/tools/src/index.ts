@@ -121,7 +121,12 @@ export {
 export { safeFetch } from './net-safety.ts'
 export { OfficePort } from './office/port.ts'
 // 路径：工作区边界的唯一判据，runtime 与 server 均使用
-export { officeRunDir } from './office-worker.ts'
+export {
+  officeRunDir,
+  type SampledFrame,
+  sampleVideoFrames,
+  type WorkerScope,
+} from './office-worker.ts'
 export {
   conversationTempDir,
   displayPath,

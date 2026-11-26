@@ -76,9 +76,26 @@ export interface WorkerRun {
   callDir: string
 }
 
+/**
+ * 一次 worker 调用使用的上下文字段：工作区与临时目录的归属、沙箱的根目录、取消信号、凭证与环境变量。
+ * 工具调用传入 `ToolContext`；画布生成的抽帧没有工具调用，由调用方按工作区构造（`sampleVideoFrames`）。
+ */
+export type WorkerScope = Pick<
+  ToolContext,
+  | 'workspaceRoot'
+  | 'conversationId'
+  | 'runId'
+  | 'additionalDirectories'
+  | 'denyNetwork'
+  | 'signal'
+  | 'secrets'
+  | 'envAllowList'
+  | 'unrestrictedPaths'
+>
+
 /** 启动一次 worker 并读取 `response.json`；超时、取消或未取得结果时以 `cleanup` 处理残留的办公软件进程。 */
 export async function runWorker(
-  ctx: ToolContext,
+  ctx: WorkerScope,
   port: OfficePort,
   request: Record<string, unknown>,
   timeoutMs: number,
@@ -185,8 +202,54 @@ export function stageNote(res: WorkerResponse): string {
     .join('\n')}`
 }
 
+/** 按画面变化抽取的一帧：按图片发送的上限缩小后的字节、格式与时间（worker 写出的时刻文字）。 */
+export interface SampledFrame {
+  bytes: Uint8Array
+  mime: string
+  label: string
+}
+
 /**
- * 视频按时间抽帧：worker 的 `frames` 动作在区间内按画面变化提取一组带时间戳的帧，作为图片返回。
+ * worker 的 `frames` 动作：在区间内按画面变化提取一组带时间戳的帧，按时间顺序排列。`text` 是 worker 写给模型的说明。
+ * 读取完帧之后删除调用目录。失败时 `outcome` 是 worker 未给出结果的回执（`noResponse`），
+ * worker 报告失败时另有 `workerMessage`（其原因原文）。
+ */
+async function framesOf(
+  scope: WorkerScope,
+  port: OfficePort,
+  abs: string,
+  range: { start?: number; end?: number },
+): Promise<
+  | { ok: true; frames: SampledFrame[]; text: string }
+  | { ok: false; outcome: ToolOutcome; workerMessage?: string }
+> {
+  const request = {
+    action: 'frames',
+    path: abs,
+    ...(range.start !== undefined ? { start: range.start } : {}),
+    ...(range.end !== undefined ? { end: range.end } : {}),
+  }
+  const run = await runWorker(scope, port, request, READ_TIMEOUT_MS)
+  if (!run.response) return { ok: false, outcome: noResponse(run) }
+  const res = run.response
+  if (!res.ok || !res.images?.length) {
+    return {
+      ok: false,
+      outcome: { status: 'failure', message: res.message },
+      workerMessage: res.message,
+    }
+  }
+  const frames: SampledFrame[] = []
+  for (const img of res.images) {
+    const fit = await shrinkImage(new Uint8Array(await readFile(img.path)), 'image/jpeg')
+    frames.push({ bytes: fit.bytes, mime: fit.mime, label: img.label })
+  }
+  await releaseCall(run)
+  return { ok: true, frames, text: res.text ?? '' }
+}
+
+/**
+ * 视频按时间抽帧，作为图片返回（`read_file`）。
  *
  * 用于接受图片、不接受原生视频的模型。说明文字由 worker 生成：实际覆盖的时间点、最长的未覆盖区间、
  * 如何用 `read_file` 的 start/end 继续读取某一段，以及音频未处理。帧在回执中按时间顺序排列。
@@ -198,28 +261,34 @@ export async function readVideoFrames(
   shown: string,
   range: { start?: number; end?: number },
 ): Promise<ToolOutcome> {
-  const request = {
-    action: 'frames',
-    path: abs,
-    ...(range.start !== undefined ? { start: range.start } : {}),
-    ...(range.end !== undefined ? { end: range.end } : {}),
+  const read = await framesOf(ctx, port, abs, range)
+  if (!read.ok) {
+    return read.workerMessage === undefined
+      ? read.outcome
+      : {
+          status: 'failure',
+          message: `${shown}：${read.workerMessage}。不要更换参数重新读取该文件。`,
+        }
   }
-  const run = await runWorker(ctx, port, request, READ_TIMEOUT_MS)
-  if (!run.response) return noResponse(run)
-  const res = run.response
-  if (!res.ok || !res.images?.length) {
-    return { status: 'failure', message: `${shown}：${res.message}。不要更换参数重新读取该文件。` }
-  }
-  const images: { data: string; mime: string }[] = []
-  for (const img of res.images) {
-    const raw = new Uint8Array(await readFile(img.path))
-    const fit = await shrinkImage(raw, 'image/jpeg')
-    chargeImage(ctx, imageSizeOf(fit.bytes))
-    images.push({ data: Buffer.from(fit.bytes).toString('base64'), mime: fit.mime })
-  }
-  // 帧已写入回执，磁盘上的副本不再被读取。
-  await releaseCall(run)
-  return { status: 'success', message: res.text ?? '', data: { images } }
+  const images = read.frames.map((f) => {
+    chargeImage(ctx, imageSizeOf(f.bytes))
+    return { data: Buffer.from(f.bytes).toString('base64'), mime: f.mime }
+  })
+  return { status: 'success', message: read.text, data: { images } }
+}
+
+/**
+ * 整段视频按画面变化抽取的帧，供不接受原生视频的对话生成（画布的 art 卡与文本生成卡）作为图片发送。
+ * 与 `read_file` 使用同一个 worker 动作；不扣除投递额度：生成请求不经过会话的投递预算。
+ * worker 的说明文字指向 `read_file`，生成请求不带工具，因此不返回它，由调用方写明时长与尺寸。
+ */
+export async function sampleVideoFrames(
+  scope: WorkerScope,
+  port: OfficePort,
+  abs: string,
+): Promise<{ ok: true; frames: SampledFrame[] } | { ok: false; message: string }> {
+  const read = await framesOf(scope, port, abs, {})
+  return read.ok ? { ok: true, frames: read.frames } : { ok: false, message: read.outcome.message }
 }
 
 /** 截取的一帧：PNG 字节、实际时间与视频时长（秒，无法读取时为 null）、像素宽高。 */

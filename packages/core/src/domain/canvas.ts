@@ -1696,7 +1696,12 @@ function roleProblem(
   if (target.output === 'audio') {
     return kind === 'audio' && role === 'audio' ? null : `${to} 只接受参考音频，${from} 无法连接`
   }
-  if (target.output === 'image' || isChatOutput(target.output)) {
+  if (isChatOutput(target.output)) {
+    return (kind === 'image' && role === 'reference') || (kind === 'video' && role === 'video')
+      ? null
+      : `${to} 只接受参考图与参考视频，${from} 无法连接`
+  }
+  if (target.output === 'image') {
     return kind === 'image' && role === 'reference' ? null : `${to} 只接受参考图，${from} 无法连接`
   }
   if (kind === 'image') {

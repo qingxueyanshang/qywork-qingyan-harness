@@ -1,17 +1,26 @@
 /**
  * 使用对话模型的生成类别（`art`、`text`）共用的一次请求：选定卡片的对话模型，不带工具发送一条用户消息，
  * 取得回复全文后交给该类别转为产物。各类别只提供系统提示词、用户消息与回复的取用方式（`ChatGeneration`）。
+ * 参考视频的发送方式在此统一决定（`videoBlocks`），各类别只决定它们在消息中的位置。
  *
  * 被限流或暂时故障、尚未收到正文时按对话请求的重发规则重试。失败的约定与生成端口相同：返回 `{ ok: false, message }`；
  * 用户停止时 signal 中止，异常原样抛出。
  */
 
+import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
+import { basename } from 'node:path'
 import {
   concurrencyRejected,
+  materialize,
+  mediaCapabilitiesOf,
+  runDensity,
   type SendOutcome,
   sendLane,
   sendLimiter,
   transientErrorCode,
+  videoDelivery,
+  videoMetaOf,
 } from '@qywork/agent'
 import {
   buildAdapter,
@@ -19,6 +28,7 @@ import {
   type ContentBlock,
   computeCost,
   isLocalEndpoint,
+  type LlmAdapter,
   type MediaFile,
   type MediaInput,
   ProviderError,
@@ -35,8 +45,15 @@ import {
   resendDelay,
   waitOrAbort,
 } from '@qywork/core'
-import type { MediaCall, MediaCallResult } from '@qywork/tools'
 import {
+  type MediaCall,
+  type MediaCallResult,
+  type OfficePort,
+  officeRunDir,
+  sampleVideoFrames,
+} from '@qywork/tools'
+import {
+  collectSecrets,
   type ModelRef,
   type QyConfig,
   type ResolvedModel,
@@ -52,13 +69,28 @@ export type ChatReply =
 /** 一个类别的请求内容与回复的取用方式。 */
 export interface ChatGeneration {
   system: string
-  content: ContentBlock[]
+  /** 用户消息。`video(input)` 是该参考视频的内容块（`videoBlocks`），由调用方按发送方式准备。 */
+  content(video: (input: MediaInput) => ContentBlock[]): ContentBlock[]
   /** 回复全文转为产物；`truncated` 为真表示输出达到上限，回复不完整。 */
   reply(text: string, truncated: boolean): ChatReply
 }
 
+/**
+ * 装配方提供的依赖。`office` 用于模型不接受原生视频时抽帧（Office 的 Python worker）；没有时这类视频无法发送，该次生成失败。
+ */
+export interface ChatDeps {
+  onSpend?: (spend: MediaSpend) => void
+  office?: OfficePort
+}
+
 /** 第 n 张参考图在要求中的名称（`CHAT_MENTION`），n 从 1 开始。 */
 export const imageMention = (n: number) => CHAT_MENTION.image.replaceAll('{n}', String(n))
+
+/** 第 n 段参考视频在要求中的名称（`CHAT_MENTION`），n 从 1 开始。 */
+export const videoMention = (n: number) => CHAT_MENTION.video.replaceAll('{n}', String(n))
+
+/** 抽帧时 worker 的临时目录归属（`officeRunDir` 的会话段）：生成请求不属于任何会话，抽帧结束后整个目录删除。 */
+const FRAMES_SCOPE = 'media-frames'
 
 /** 参考图的内容块。 */
 export function imageBlock(input: MediaInput): ContentBlock {
@@ -85,14 +117,89 @@ export function resolveChatModel(
   return resolveModel(config, target)
 }
 
+/**
+ * 一段参考视频的内容块。发送方式与会话读取视频的判定相同（`videoDelivery`）：在模型的原生范围内时为视频块，
+ * 发送前由 `materialize` 内联或由适配器上传；否则经 Office worker 按画面变化抽帧，帧作为图片发送。
+ * 两种方式都先写明名称、时长与画面尺寸。无法发送时返回原因。
+ */
+async function videoBlocks(
+  config: QyConfig,
+  adapter: LlmAdapter,
+  call: MediaCall,
+  input: MediaInput,
+  n: number,
+  office: OfficePort | undefined,
+  signal: AbortSignal,
+): Promise<ContentBlock[] | string> {
+  const name = videoMention(n)
+  const meta = videoMetaOf(input.path) ?? {
+    bytes: input.bytes.byteLength,
+    seconds: null,
+    size: null,
+    audio: false,
+  }
+  const facts = [
+    meta.seconds === null ? '时长未知' : `时长 ${Number(meta.seconds.toFixed(1))} 秒`,
+    meta.size ? `${meta.size.width}×${meta.size.height}` : '尺寸未知',
+  ].join('，')
+  const delivery = videoDelivery(
+    meta,
+    runDensity(adapter).video,
+    adapter.transmits.mediaUploadAbove,
+  )
+  if (delivery !== 'frames') {
+    return [
+      { type: 'text', text: `${name}（${facts}）：` },
+      { type: 'video', mimeType: input.mime, source: { kind: 'path', path: input.path }, meta },
+    ]
+  }
+  const file = basename(input.path)
+  if (adapter.spec.vision === false) return `${name}（${file}）：当前模型既不接受视频也不接受图片`
+  if (!office || !call.workspaceRoot) {
+    return `${name}（${file}）：当前模型不接受该视频，按画面抽帧需要 Office 的 Python 运行环境，当前没有可用的环境`
+  }
+  const runId = randomUUID()
+  const scope = {
+    workspaceRoot: call.workspaceRoot,
+    conversationId: FRAMES_SCOPE,
+    runId,
+    signal,
+    secrets: collectSecrets(config),
+  }
+  try {
+    const sampled = await sampleVideoFrames(scope, office, input.path)
+    if (!sampled.ok) return `${name}（${file}）：抽帧失败：${sampled.message}`
+    return [
+      {
+        type: 'text',
+        text: `${name}（${facts}）：按画面变化抽取的 ${sampled.frames.length} 帧，依次如下。`,
+      },
+      ...sampled.frames.flatMap((f): ContentBlock[] => [
+        { type: 'text', text: `${name} ${f.label}：` },
+        {
+          type: 'image',
+          mimeType: f.mime,
+          source: { kind: 'base64', data: Buffer.from(f.bytes).toString('base64') },
+        },
+      ]),
+    ]
+  } finally {
+    await rm(officeRunDir(call.workspaceRoot, FRAMES_SCOPE, runId), {
+      recursive: true,
+      force: true,
+    }).catch(() => {})
+  }
+}
+
 export async function runChatGeneration(
   config: QyConfig,
   output: ChatOutput,
   call: MediaCall,
   generation: ChatGeneration,
   signal: AbortSignal,
-  onSpend?: (spend: MediaSpend) => void,
+  deps: ChatDeps,
 ): Promise<MediaCallResult> {
+  const { onSpend } = deps
   const ref =
     call.provider !== undefined && call.model !== undefined
       ? { provider: call.provider, model: call.model }
@@ -133,15 +240,36 @@ export async function runChatGeneration(
     ...(target.spec ? { spec: target.spec } : {}),
     ...(target.transport ? { transport: target.transport } : {}),
   })
-  const req: ChatRequest = {
-    model: adapter.spec.id,
-    system: [{ text: generation.system }],
-    messages: [{ role: 'user', content: generation.content }],
-    tools: [],
-    maxOutputTokens: adapter.spec.maxOutputTokens,
-    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
-    signal,
+  const videos = new Map<MediaInput, ContentBlock[]>()
+  for (const input of call.inputs) {
+    if (input.role !== 'video') continue
+    const blocks = await videoBlocks(
+      config,
+      adapter,
+      call,
+      input,
+      videos.size + 1,
+      deps.office,
+      signal,
+    )
+    if (typeof blocks === 'string') return { ok: false, message: blocks }
+    videos.set(input, blocks)
   }
+  // 原生发送的视频以路径给出，`materialize` 按适配器读取字节或保留路径交给适配器上传，与会话的请求相同。
+  const density = runDensity(adapter)
+  const req: ChatRequest = await materialize(
+    {
+      model: adapter.spec.id,
+      system: [{ text: generation.system }],
+      messages: [{ role: 'user', content: generation.content((input) => videos.get(input) ?? []) }],
+      tools: [],
+      maxOutputTokens: adapter.spec.maxOutputTokens,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+      signal,
+    },
+    mediaCapabilitiesOf(adapter, { density, imagesRejected: false, videosRejected: false }),
+    null,
+  )
 
   const label = named(target)
   let text = ''

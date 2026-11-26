@@ -907,6 +907,31 @@ describe('画布运行：文本生成', () => {
     expect(await readFile(join(ws.root, version.path), 'utf8')).toBe('小满站在雨里。\n')
   })
 
+  test('参考视频以 video 用途发送，提示词中的引用按「视频n」编号', async () => {
+    const { ws, ids } = await setup([
+      { op: 'add_file', ref: '$m', path: 'clip.mp4', name: '走位' },
+      { op: 'add_generate', ref: '$t', output: 'text', prompt: '描述 @[$m] 的走位' },
+    ])
+    await writeFile(join(ws.root, 'clip.mp4'), MP4)
+    const svc = new CanvasService({
+      publish: () => {},
+      mentionStyleOf: (o) => (o === 'text' ? CHAT_MENTION : undefined),
+    })
+    const fake = fakePort()
+    const run = await svc.runs.run(ws, PATH, ids.$t!, { media: fake.port })
+    const p = await fake.next()
+    expect(p.call.prompt).toBe('描述 视频1 的走位')
+    expect(p.call.inputs.map((i) => [i.role, i.mime])).toEqual([['video', 'video/mp4']])
+    expect(p.call.workspaceRoot).toBe(ws.root)
+    p.finish({
+      ok: true,
+      provider: 'relay',
+      model: 'chat',
+      files: [{ bytes: new TextEncoder().encode('由左向右。\n'), mime: 'text/markdown' }],
+    })
+    expect(await run.done).toMatchObject({ ok: true })
+  })
+
   test('引用的文本生成卡尚无结果时不提交生成；读取画布时不标为引用失效', async () => {
     const { ws, svc, ids } = await setup([
       { op: 'add_generate', ref: '$t', output: 'text', name: '分镜', prompt: '写一句' },

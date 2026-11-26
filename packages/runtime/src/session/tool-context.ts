@@ -22,6 +22,7 @@ import {
   GoalPort,
   HistoryPort,
   MediaPort,
+  OfficePort,
   SchedulePort,
   SkillSourcePaths,
   TodoBroadcast,
@@ -126,13 +127,16 @@ export function makeToolContext(
       provide(SkillSourcePaths, () =>
         listMessages(store, conversationId, null).flatMap((m) => m.attachments.map((a) => a.path)),
       ),
-      // 有画布时始终提供：画布上的 art 卡使用对话模型，没有配置生成模型也能运行。
+      // 有画布时始终提供：画布上的 art 卡与文本生成卡使用对话模型，没有配置生成模型也能运行。
+      // Office 端口供这两类卡为参考视频抽帧。
       ...(listMediaModels(session.opts.config).length || session.ports.has(CanvasPort)
         ? [
             provide(
               MediaPort,
-              makeMediaPort(session.opts.config, (spend) =>
-                recordMediaSpend(session, runId, conversationId, spend, emit),
+              makeMediaPort(
+                session.opts.config,
+                (spend) => recordMediaSpend(session, runId, conversationId, spend, emit),
+                session.ports.get(OfficePort) ?? undefined,
               ),
             ),
           ]
