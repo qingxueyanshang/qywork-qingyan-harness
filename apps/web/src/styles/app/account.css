@@ -202,11 +202,8 @@
   position: relative;
   margin-left: auto;
 }
-/* 兑换码与充值按钮的高度与图标按钮相近。
-   上移 2px：带底色或边框的按钮与线条图标按几何中心对齐时，视觉上偏下。 */
+/* 兑换码与充值按钮的高度与图标按钮相近，与图标按钮按中心对齐。 */
 .account-redeem {
-  position: relative;
-  top: -2px;
   flex: none;
   align-self: auto;
   margin-left: auto;
@@ -219,8 +216,6 @@
 }
 /* 充值按钮在头部行尾，右缘与下方内容对齐。 */
 .account-recharge {
-  position: relative;
-  top: -2px;
   flex: none;
   height: 24px;
   padding: 0 var(--s-3);
