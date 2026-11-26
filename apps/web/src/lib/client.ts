@@ -139,6 +139,16 @@ export function scaledFileUrl(url: string, width: number): string {
 }
 
 /**
+ * 视频文件的直链（`fileUrl`）加上时刻 `at`（秒）：服务端只返回呈现该时刻所需的帧组成的 MP4，时刻与时长同原视频。
+ * 画布卡片的封面据此解码，不载入原视频。
+ */
+export function frameFileUrl(url: string, at: number): string {
+  const u = new URL(url, location.href)
+  u.searchParams.set('frame', String(at))
+  return u.toString()
+}
+
+/**
  * 解析接入点。
  *
  * 优先级：URL fragment（扫码进入）> 注入的全局变量（Tauri）> 同源加空令牌。

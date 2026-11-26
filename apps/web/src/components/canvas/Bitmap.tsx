@@ -3,11 +3,12 @@
  *
  * 不要改用 `<img>` 或常驻的 `<video>`：`<img>` 按原图分辨率解码，一张 4K 图约 33 MB，五十张 4K 图实测进程树
  * 内存增量 1.5 GB，缩放时解码缓存被逐出后重新解码，单帧停滞数秒；每个 `<video>` 各占一套解码器，二十个视频节点
- * 实测约 500 MB。此处取得原文件（视频定位到开头一帧）后用 `createImageBitmap` 缩小到档位宽度，只保留缩小后的位图。
+ * 实测约 500 MB。此处取得图片的缩小版本或视频的帧片段（定位到开头一帧）后用 `createImageBitmap` 缩小到档位宽度，
+ * 只保留缩小后的位图。
  */
 
 import { createEffect, createMemo, createSignal, onCleanup, Show } from 'solid-js'
-import { scaledFileUrl } from '../../lib/client.ts'
+import { frameFileUrl, scaledFileUrl } from '../../lib/client.ts'
 import { IconArt, IconImage, IconVideo } from '../Icons.tsx'
 import { artPoster } from './art.ts'
 import { releaseVideo, seekVideo } from './frame.ts'
@@ -89,13 +90,16 @@ export function decodeImage(
   })
 }
 
-/** 取视频开头一帧并等比缩小到填满 `box` 所需的宽度，与时长一起返回。 */
+/**
+ * 取视频开头一帧并等比缩小到填满 `box` 所需的宽度，与时长一起返回。`url` 为视频文件的直链：载入的是服务端裁出的帧片段
+ * （`frameFileUrl`），不是原视频；原视频经浏览器缓冲，WebKit 取一帧即下载数 MB。
+ */
 export function decodeVideo(
   url: string,
   box: DecodeBox,
 ): Promise<{ bitmap: ImageBitmap; duration: number }> {
   return limited(async () => {
-    const video = await seekVideo(url, POSTER_AT)
+    const video = await seekVideo(frameFileUrl(url, POSTER_AT), POSTER_AT)
     try {
       const natural = { w: video.videoWidth, h: video.videoHeight }
       const bitmap = await shrink(video, video.videoWidth, coverWidth(box, natural))

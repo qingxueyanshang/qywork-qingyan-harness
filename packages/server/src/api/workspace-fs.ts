@@ -28,7 +28,9 @@ import {
   preview,
   renameEntry,
 } from '../files.ts'
+import { bytesResponse } from '../http-util.ts'
 import { scaledImage } from '../media-jobs.ts'
+import { frameClipOf } from '../video/frame-clip.ts'
 import { type ApiHandler, json } from './types.ts'
 
 /** `/api/files/raw` 的 `w` 可缩小的位图类型；GIF 只取第一帧，SVG 无需缩小，均原样返回。 */
@@ -190,6 +192,8 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
    * 原始字节。带非空的版本 `v`（界面传入修改时间或画布记录的版本）时地址随内容变化，按一年缓存并标为不可变：
    * 远程访问时再次打开同一文件不再经隧道传输。不带版本时同一地址在文件改写后对应另一份内容，禁止浏览器缓存。
    * 带宽度 `w` 的位图返回缩小到该宽度的版本（`scaledImage`，在计算线程中执行并缓存），界面按显示尺寸取图，原图只在放大查看时传输。
+   * 带时刻 `frame`（秒）的视频返回呈现该时刻所需的帧组成的 MP4（`frameClipOf`），画布卡片的封面据此解码，不载入原视频；
+   * 无法裁出时答复 415。
    */
   if (p === '/api/files/raw') {
     const rel = q.get('path')
@@ -198,10 +202,19 @@ export const handleWorkspaceFsApi: ApiHandler = async (url, req, d) => {
     if (width !== null && !(Number.isInteger(width) && width > 0 && width <= MAX_SCALED_WIDTH)) {
       return json({ error: 'invalid', message: '宽度不合法' }, 422)
     }
+    const frame = q.has('frame') ? Number(q.get('frame')) : null
+    if (frame !== null && !(Number.isFinite(frame) && frame >= 0)) {
+      return json({ error: 'invalid', message: '时刻不合法' }, 422)
+    }
     const abs = await resolveInWorkspace(d.workspaceRoot, rel, { mustExist: true, literal: true })
     const raw = await openRaw(abs, rel)
     if (!raw) return json({ error: 'not_found', message: '文件不存在' }, 404)
     const cache = q.get('v') ? 'private, max-age=31536000, immutable' : 'no-store'
+    if (frame !== null) {
+      const clip = raw.mime.startsWith('video/') ? await frameClipOf(abs, frame) : null
+      if (!clip) return json({ error: 'unsupported', message: '无法从该文件取帧' }, 415)
+      return bytesResponse(req, clip, { 'content-type': 'video/mp4', 'cache-control': cache })
+    }
     if (width !== null && SCALABLE.has(raw.mime)) {
       const out = await scaledImage(abs, raw.mime, width)
       return new Response(out.bytes, {

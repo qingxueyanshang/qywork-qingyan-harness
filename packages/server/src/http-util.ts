@@ -54,6 +54,33 @@ export const CORS_HEADERS: Record<string, string> = {
   'access-control-max-age': '86400',
 }
 
+/**
+ * 内存中的字节按请求的 Range 答复：单段的 `bytes=a-b`、`bytes=a-`、`bytes=-n` 答复 206，起点越界答复 416，
+ * 其余写法答复完整内容。Bun 只对文件正文自行处理 Range；媒体以 200 答复时 Chromium 不允许定位，设置 `currentTime` 后回到 0。
+ */
+export function bytesResponse(
+  req: Request,
+  bytes: Uint8Array,
+  headers: Record<string, string>,
+): Response {
+  const all = { ...headers, 'accept-ranges': 'bytes' }
+  const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.get('range') ?? '')
+  if (!m || (!m[1] && !m[2])) return new Response(bytes, { headers: all })
+  const size = bytes.length
+  const from = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]))
+  const to = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1
+  if (from >= size || from > to) {
+    return new Response(null, {
+      status: 416,
+      headers: { ...all, 'content-range': `bytes */${size}` },
+    })
+  }
+  return new Response(bytes.subarray(from, to + 1), {
+    status: 206,
+    headers: { ...all, 'content-range': `bytes ${from}-${to}/${size}` },
+  })
+}
+
 export function withCors(res: Response): Response {
   for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v)
   return res
