@@ -443,11 +443,11 @@
 }
 
 /* ── 兑换码窗口 ──
- * 尺寸固定（B9）：结果行留有固定高度，有无内容时窗口不变形。 */
+ * 尺寸固定（B9）：结果行留有固定高度，有无内容时窗口不变形。窗口高度由各行决定，
+ * 不要另设固定高度：多出的高度成为输入框与按钮之间的空白。 */
 .redeem-dialog {
   position: relative;
   width: min(340px, calc(100vw - 32px));
-  height: min(204px, calc(100svh - 48px));
   box-sizing: border-box;
   padding: var(--s-4) var(--s-5) var(--s-5);
   border: 1px solid var(--border-default);
@@ -486,8 +486,6 @@
   right: var(--dialog-close-inset);
 }
 .redeem-form {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   margin-top: var(--s-3);
@@ -508,7 +506,7 @@
   display: block;
   min-height: 1.5em;
   max-height: 1.5em;
-  margin-top: auto;
+  margin-top: var(--s-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
