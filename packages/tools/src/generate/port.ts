@@ -14,13 +14,13 @@ import type {
  * 选择模型、按目录校验参数、调用接口由实现方完成（runtime，只有它持有配置与凭证）；读取参考图、写入产物由工具完成，
  * 与 `read_file` / `write_file` 使用同一套路径边界。
  *
- * runtime 在配置了生成模型或提供了画布端口时提供本端口：画布上的 art 卡使用对话模型，没有生成模型也能运行。
+ * runtime 在配置了生成模型或提供了画布端口时提供本端口：画布上的 art 卡与文本生成卡使用对话模型，没有生成模型也能运行。
  * 生成工具按已配置模型的类别注册，注册时本端口必然存在。
  */
 export interface MediaPort {
   generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult>
   /**
-   * 接口下为该模型保存的显示名称（由云端同步写入）；没有时为 undefined。`type` 为 `art` 时按对话模型查找。
+   * 接口下为该模型保存的显示名称（由云端同步写入）；没有时为 undefined。使用对话模型的类别（`isChatOutput`）按对话模型查找。
    * 回执中提及模型时经 `modelMention` 使用它：有显示名称时只写该名称。
    */
   displayName(type: GenerateOutput, provider: string, model: string): string | undefined
@@ -34,7 +34,7 @@ export interface MediaPort {
 export const MediaPort = definePort<MediaPort>('media')
 
 export interface MediaCall {
-  /** `art` 由对话模型写出 HTML 页面，其余类别由生成模型生成。 */
+  /** `art` 由对话模型写出 HTML 页面，`text` 由对话模型写出文本，其余类别由生成模型生成。 */
   type: GenerateOutput
   prompt: string
   /** 输入文件，各自带有用途。操作由用途推导（见实现方），不由大模型选择。 */

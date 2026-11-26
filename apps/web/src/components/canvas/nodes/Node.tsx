@@ -66,7 +66,7 @@ export function Node(p: { id: string }) {
   })
   const at = () => canvas.pos(n())
   const isSelected = () => canvas.selected().has(n().id)
-  const kind = (): GenerateOutput | 'text' | 'timeline' | null => {
+  const kind = (): GenerateOutput | 'timeline' | null => {
     const node = n()
     if (node.type === 'generate') return node.output
     if (node.type === 'timeline') return 'timeline'

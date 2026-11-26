@@ -1,5 +1,11 @@
 /** 生成参数的声明与条件约束；目录、服务端校验和画布控件共用。 */
-import type { GenerateOutput, MediaInputRole, MediaOutput } from './media.ts'
+import {
+  type ChatOutput,
+  type GenerateOutput,
+  isChatOutput,
+  type MediaInputRole,
+  type MediaOutput,
+} from './media.ts'
 
 /**
  * 生成操作。由调用时提供的输入推定，不由大模型选择。
@@ -20,8 +26,8 @@ export type MediaOperation =
   | 'speech'
 
 /**
- * 从输入用途推导生成模式；素材组合是否合法仍由生成入口校验。`art` 只有一种模式，
- * 参数表（`ART_SIZE_PARAM`）不按模式区分。
+ * 从输入用途推导生成模式；素材组合是否合法仍由生成入口校验。使用对话模型的类别只有一种模式，取值为类别本身，
+ * 参数表（`CHAT_OUTPUT_PARAMS`）不按模式区分。
  */
 export function mediaOperationFor(
   output: MediaOutput,
@@ -30,12 +36,12 @@ export function mediaOperationFor(
 export function mediaOperationFor(
   output: GenerateOutput,
   roles: readonly MediaInputRole[],
-): MediaOperation | 'art'
+): MediaOperation | ChatOutput
 export function mediaOperationFor(
   output: GenerateOutput,
   roles: readonly MediaInputRole[],
-): MediaOperation | 'art' {
-  if (output === 'art') return 'art'
+): MediaOperation | ChatOutput {
+  if (isChatOutput(output)) return output
   if (output === 'image') return roles.length ? 'edit' : 'generate'
   if (output === 'audio') return 'speech'
   if (roles.includes('video')) return 'video_to_video'

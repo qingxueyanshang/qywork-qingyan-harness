@@ -8,19 +8,21 @@
  */
 
 import {
-  ART_SIZE_PARAM,
   activeMediaParams,
   blankBox,
   type CanvasGenerateNode,
+  type CanvasMediaKind,
   type CanvasNodeState,
   type CanvasOp,
   type CanvasView,
+  CHAT_OUTPUT_PARAMS,
   canvasMediaOf,
   displayNameOf,
   excerptOf,
   fitBox,
   formatMoney,
   type GenerateOutput,
+  isChatOutput,
   isInlineAudio,
   isInlineImage,
   isInlineVideo,
@@ -34,6 +36,7 @@ import {
   ratioOf,
   relabelInputs,
   resolveMediaParam,
+  textPathOf,
 } from '@qywork/core'
 import {
   createEffect,
@@ -99,6 +102,7 @@ const PLACEHOLDER: Record<GenerateOutput, string> = {
   video: '描述画面变化，输入 @ 引用素材',
   audio: '输入要朗读的文字',
   art: '描述页面或场景，输入 @ 引用参考图',
+  text: '描述要写的内容，输入 @ 引用文本或参考图',
 }
 /** 带单位的参数：时长按秒，张数按张。 */
 const UNIT = PARAM_UNITS
@@ -109,7 +113,7 @@ const ONE_ROW = 6
 
 type SizeShape = NonNullable<MediaParamOption['shapes']>[number]
 
-/** 卡片模型菜单中的一项：生成模型，或 art 卡的对话模型。 */
+/** 卡片模型菜单中的一项：生成模型，或使用对话模型的卡（art、text）的对话模型。 */
 type CardModel = Pick<
   MediaModelOption,
   'provider' | 'id' | 'label' | 'operations' | 'isDefault' | 'params' | 'maxAudios'
@@ -265,14 +269,14 @@ function choicesOf(p: MediaParamOption): (string | number | boolean | undefined)
 export function mediaOf(
   view: CanvasView,
   nodeId: string,
-): { kind: GenerateOutput | null; path: string | null } {
+): { kind: CanvasMediaKind | null; path: string | null } {
   const node = view.doc.nodes.find((n) => n.id === nodeId)
   if (!node) return { kind: null, path: null }
   if (node.type === 'file') return { kind: canvasMediaOf(node), path: node.path }
   if (node.type === 'timeline') return { kind: null, path: null }
   const current = node.versions.find((v) => v.id === node.current)
   const path = current && !current.path.endsWith('.task.json') ? current.path : null
-  return { kind: node.output, path }
+  return { kind: canvasMediaOf(node), path }
 }
 
 /** 画布中文件的地址，带读取画布时该文件所依据内容的版本（`CanvasView.revisions`）。 */
@@ -406,12 +410,13 @@ export function GeneratePanel(props: {
   }
 
   /**
-   * 卡片可选的模型。art 卡使用对话模型：列出配置中的全部接口 × 模型，缺省为当前默认模型，参数只有尺寸。
+   * 卡片可选的模型。使用对话模型的卡（art、text）列出配置中的全部接口 × 模型，缺省为当前默认模型，参数为该类别的固定参数表。
    * 经 memo 计算：菜单按对象判定当前项，每次读取都新建对象时判定不成立。
    */
   const known = createMemo((): (CardModel & { delisted?: true })[] => {
     const catalog = modelCatalog()
-    if (props.node.output !== 'art') {
+    const output = props.node.output
+    if (!isChatOutput(output)) {
       return (catalog?.media ?? [])
         .filter((m) => m.output === props.node.output)
         .map((m) => (m.delisted ? { ...m, label: `${m.label}（已下架）` } : m))
@@ -424,7 +429,7 @@ export function GeneratePanel(props: {
         label: m.delisted ? `${m.label}（已下架）` : m.label,
         operations: [],
         isDefault: catalog?.active?.provider === p.name && catalog.active.model === m.id,
-        params: [ART_SIZE_PARAM],
+        params: [...CHAT_OUTPUT_PARAMS[output]],
         ...(m.delisted ? { delisted: true as const } : {}),
       })),
     )
@@ -637,20 +642,20 @@ export function GeneratePanel(props: {
       return connected.has(n.id)
     })
   }
-  const accepts = (kind: GenerateOutput) =>
-    props.node.output === 'image' || props.node.output === 'art'
+  const accepts = (kind: CanvasMediaKind) =>
+    props.node.output === 'image' || isChatOutput(props.node.output)
       ? kind === 'image'
       : props.node.output === 'audio'
         ? audioReferences() && kind === 'audio'
         : props.node.output === 'video' && kind !== 'art'
-  /** 首尾帧只接受图片；图像生成卡与 Art 卡只接受图片；视频生成卡接受图片、视频、音频。 */
+  /** 首尾帧只接受图片；图像生成卡与使用对话模型的卡只接受图片；视频生成卡接受图片、视频、音频。 */
   const imagesOnly = () => {
     const role = roleOf(menu())
     return (
       role === 'first_frame' ||
       role === 'last_frame' ||
       props.node.output === 'image' ||
-      props.node.output === 'art'
+      isChatOutput(props.node.output)
     )
   }
   const acceptsPath = (path: string) => {
@@ -660,7 +665,7 @@ export function GeneratePanel(props: {
   }
   const uploadAccept = () =>
     props.node.output === 'audio' ? 'audio/*' : imagesOnly() ? 'image/*' : 'image/*,video/*,audio/*'
-  const roleFor = (kind: GenerateOutput): MediaInputRole =>
+  const roleFor = (kind: CanvasMediaKind): MediaInputRole =>
     kind === 'video' ? 'video' : kind === 'audio' ? 'audio' : 'reference'
 
   const pick = (sourceId: string, m = menu()) => {
@@ -699,20 +704,24 @@ export function GeneratePanel(props: {
   }
 
   /**
-   * 展开查看的文本引用：点击文本标签切换。内容为文件当前的全文或摘录；显示时手写的素材编号按所选模型的写法改写
+   * 展开查看的文本引用：点击文本标签切换。内容为文件当前的全文或摘录（文本生成卡为当前版本的全文，尚无结果时为空）；
+   * 显示时手写的素材编号按所选模型的写法改写
    * （`relabelInputs`，写法取自 `view.mentions`），与运行时发送的文字相同，换模型后随画布快照更新。
    * 来源写成字符串：展开期间文件被改写时随修改时间重新读取，画布重新读取而文件未变时不重新读取。
    */
   const [preview, setPreview] = createSignal<string | null>(null)
   const previewSource = () => {
     const node = props.view.doc.nodes.find((n) => n.id === preview())
-    return node?.type === 'file' ? node : null
+    const path = node && textPathOf(node)
+    return path ? { path, excerpt: node.type === 'file' ? node.excerpt : undefined } : null
   }
   const [previewText] = createResource(
     () => {
       const id = preview()
       const path = previewSource()?.path
-      return id && `${id}\u0000${path ? (props.view.revisions?.[path] ?? '') : ''}`
+      return (
+        id && `${id}\u0000${path ?? ''}\u0000${path ? (props.view.revisions?.[path] ?? '') : ''}`
+      )
     },
     async () => {
       const source = previewSource()
@@ -1110,8 +1119,8 @@ export function GeneratePanel(props: {
         const mine = ++quoteSeq
         setPrice(null)
         const output = props.node.output
-        // art 按 token 计价，发送前无法估算。
-        if (!m || output === 'art') {
+        // 使用对话模型的类别按 token 计价，发送前无法估算。
+        if (!m || isChatOutput(output)) {
           setPrice(null)
           return
         }

@@ -9,10 +9,11 @@ export const OUTPUT_LABEL: Record<GenerateOutput, string> = {
   video: '视频生成',
   audio: '音频生成',
   art: 'Art 生成',
+  text: '文本生成',
 }
 
 export function KindIcon(props: {
-  kind: GenerateOutput | 'text' | 'timeline' | null
+  kind: GenerateOutput | 'timeline' | null
   size?: number
   stroke?: number | undefined
 }) {

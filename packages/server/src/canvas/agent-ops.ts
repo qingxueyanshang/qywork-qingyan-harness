@@ -40,7 +40,7 @@ export type ParamSpecsOf = (
   pick: { provider: string; model: string } | undefined,
 ) => readonly MediaParamDefinition[] | undefined
 
-/** 已配置模型 `model` 的接口名：生成卡为配置了该生成模型的接口，art 卡为提供该对话模型的接口。 */
+/** 已配置模型 `model` 的接口名：生成卡为配置了该生成模型的接口，使用对话模型的卡（art、text）为提供该对话模型的接口。 */
 export type ProvidersOf = (output: GenerateOutput, model: string) => readonly string[]
 
 /** 接口下为该模型保存的显示名称；没有时为 undefined。报错中按 `modelMention` 提及模型。 */

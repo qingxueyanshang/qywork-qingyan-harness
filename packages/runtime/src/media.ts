@@ -1,6 +1,6 @@
 /**
  * 生成端口的实现：选择模型、由输入推断操作、按目录校验参数、调用生成接口。读取输入与写入产物由工具负责（`tools/generate.ts`）。
- * `art` 类别交给 `art.ts`，由对话模型写出 HTML 页面。
+ * 使用对话模型的类别按 `CHAT_GENERATORS` 分派：`art` 写出 HTML 页面，`text` 写出文本。
  *
  * 失败一律返回 `{ ok: false, message }`，消息直接提供给大模型阅读，须写明修改方法：可选的模型、合法的取值。
  * 用户停止时 signal 中止，异常原样抛出，由工具波次按中断处理收尾。
@@ -23,6 +23,8 @@ import {
   validateMediaCall,
 } from '@qywork/ai'
 import {
+  type ChatOutput,
+  isChatOutput,
   log,
   type MediaKind,
   type MediaOutput,
@@ -32,6 +34,7 @@ import {
 } from '@qywork/core'
 import type { MediaCall, MediaCallResult, MediaPort } from '@qywork/tools'
 import { generateArt } from './art.ts'
+import { generateText } from './chat-generate/text.ts'
 import {
   configDir,
   listMediaModels,
@@ -47,6 +50,17 @@ const DOWNLOAD_DIR = 'downloads'
 import { mediaParameterTable } from './prompt.ts'
 
 const OUTPUT_LABEL: Record<MediaOutput, string> = { image: '图像', video: '视频', audio: '音频' }
+
+/** 使用对话模型的类别各自的实现，不经生成目录。 */
+const CHAT_GENERATORS: Record<
+  ChatOutput,
+  (
+    config: QyConfig,
+    call: MediaCall,
+    signal: AbortSignal,
+    onSpend?: (spend: MediaSpend) => void,
+  ) => Promise<MediaCallResult>
+> = { art: generateArt, text: generateText }
 
 /**
  * 由输入推断操作。操作不由大模型选择：可减少一个易填错的枚举参数，也避免出现选择了图生视频却未提供图片的情况。
@@ -106,8 +120,7 @@ export function makeMediaPort(config: QyConfig, onSpend?: (spend: MediaSpend) =>
     displayName: (type, provider, model) => savedDisplayName(config, type, { provider, model }),
     parameterTable: (output) => mediaParameterTable(listMediaModels(config), output),
     async generate(call: MediaCall, signal: AbortSignal): Promise<MediaCallResult> {
-      // art 使用对话模型，不经生成目录。
-      if (call.type === 'art') return generateArt(config, call, signal, onSpend)
+      if (isChatOutput(call.type)) return CHAT_GENERATORS[call.type](config, call, signal, onSpend)
       if (unresolved.has(call.type) && !call.resumeImageResult && !call.resumeTaskId) {
         log.warn('media', '本轮结果尚未确认，未提交新的生成', {
           type: call.type,

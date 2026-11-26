@@ -38,15 +38,12 @@ import {
   promptRelabels,
   resolveArtRef,
   serializeCanvas,
+  TASK_SUFFIX,
+  textPathOf,
   textReferenceProblems,
   toPosixPath,
 } from '@qywork/core'
-import {
-  renameWithRetry,
-  resolveInWorkspace,
-  resolveWritablePath,
-  TASK_SUFFIX,
-} from '@qywork/tools'
+import { renameWithRetry, resolveInWorkspace, resolveWritablePath } from '@qywork/tools'
 import { findByName } from '../files.ts'
 import { mediaSizeOf } from '../media-size.ts'
 import { agentView, checkActiveParams, prepareAgentOps } from './agent-ops.ts'
@@ -256,8 +253,9 @@ export class CanvasDocs {
   }
 
   /**
-   * 文本卡文件当前的内容，按节点 id：`nodeId` 为生成卡时是它引用的文本卡，为文本卡时是它本身。
-   * 文件不存在或无法读取时不提供该项，由 `textReferenceProblems` 报为失效。`cache` 按路径复用同一次读取画布中已读的文件。
+   * 文本卡文件当前的内容，按节点 id：`nodeId` 为生成卡时是它引用的文本卡，为文本卡时是它本身；文本生成卡为当前版本的产物（`textPathOf`）。
+   * 文件不存在、无法读取或文本生成卡尚无结果时不提供该项，由 `textReferenceProblems` 报为失效（文本生成卡由运行时拒绝）。
+   * `cache` 按路径复用同一次读取画布中已读的文件。
    */
   async textsOf(
     root: string,
@@ -274,11 +272,12 @@ export class CanvasDocs {
     ]
     for (const id of sources) {
       const source = doc.nodes.find((n) => n.id === id)
-      if (source?.type !== 'file' || !isTextCard(source)) continue
-      if (!cache.has(source.path)) {
-        cache.set(source.path, await readFile(join(root, source.path), 'utf8').catch(() => null))
+      const path = source && textPathOf(source)
+      if (!source || !path) continue
+      if (!cache.has(path)) {
+        cache.set(path, await readFile(join(root, path), 'utf8').catch(() => null))
       }
-      const text = cache.get(source.path)
+      const text = cache.get(path)
       if (typeof text === 'string') texts.set(source.id, text)
     }
     return texts
@@ -310,8 +309,10 @@ export class CanvasDocs {
     const read = new Map<string, string | null>()
     // 各张卡的文件检查互不依赖，并行执行；文本卡引用的文件先一次读入 `read`，`textsOf` 只取缓存。
     const textPaths = new Set<string>()
-    for (const node of doc.nodes)
-      if (node.type === 'file' && isTextCard(node)) textPaths.add(node.path)
+    for (const node of doc.nodes) {
+      const path = textPathOf(node)
+      if (path) textPaths.add(path)
+    }
     await Promise.all(
       [...textPaths].map(async (p) => {
         read.set(p, await readFile(join(workspaceRoot, p), 'utf8').catch(() => null))

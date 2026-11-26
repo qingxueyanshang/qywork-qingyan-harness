@@ -269,6 +269,9 @@ const CANVAS_NOTE =
   'text（文本卡）。' +
   '文本卡是放置在画布上的 .md / .txt：生成卡的提示词写 @[文本卡名称]，运行时展开为文件当前的内容，' +
   '修改文件即改变所有引用它的卡发送的提示词。' +
+  'output 为 text 的生成卡由对话模型写出文本，产物是 generated/ 下的 .md，接受参考图；' +
+  '其他生成卡以 @[卡片名称] 引用它时与文本卡相同，展开为当前版本的全文；它有结果之前，引用它的卡不能运行，' +
+  '同一批 run_canvas 中先运行它、再运行引用它的卡。' +
   'add_file 给出 excerpt 时该卡是摘录卡，只引用文件中的一段：' +
   '{"after":"该段之前全文唯一的一段文字，如所在的标题行","start":"该段开头的文字","end":"该段结尾的文字"}，' +
   '发送从 after 之后第一次出现的 start 起、到其后第一次出现的 end 止的文字（均含）；不给 after 时 start 须全文唯一。' +
@@ -584,7 +587,7 @@ export const editCanvasTool: ToolSpec = {
     'ops_json 是一批操作的 JSON 数组，逐条生效：某条不成立时跳过并在回执中写明原因，其余照常执行；' +
     '引用了被跳过操作的批内名称的操作同样跳过。回执只列出本批执行与跳过的操作、改动的卡的全文、位置或尺寸改变的卡的名称与删除的卡。操作：' +
     '{"op":"add_file","path":"工作区路径","name":"卡片名称","group":"组"}（摘录卡另加 "excerpt"）、' +
-    '{"op":"add_generate","output":"image|video|audio|art","name":"卡片名称","group":"组","prompt":"…","params":{…}}、' +
+    '{"op":"add_generate","output":"image|video|audio|art|text","name":"卡片名称","group":"组","prompt":"…","params":{…}}、' +
     '{"op":"update","id":"卡片名称",…待修改的字段}（可改 name、group、prompt、provider、model、params、current、path、excerpt、clips、muted 与位置尺寸 x、y、w、h；' +
     'prompt 整体替换提示词；excerpt 改摘录，为 null 时改为整篇；group 改变时卡片移到新组所在列的末尾，同时给出 x、y 时以其为准）、' +
     '{"op":"edit_prompt","id":"生成卡名称","old":"提示词中的一段原文","new":"替换后的文字"}（只改提示词中的一段：old 逐字取自 read_canvas 读取的原文，必须恰好出现一次；new 为空时删除该段）、' +
@@ -620,7 +623,8 @@ export const editCanvasTool: ToolSpec = {
     '参数名与取值按所用模型与卡片的输入核对，不合法或在当前输入下不可用时该条不执行并说明原因；' +
     'update 的 params 整体替换卡片参数，未写出的参数恢复缺省；read_canvas 列出的参数即实际发送的参数，与参数面板一致。' +
     '宽高比或尺寸参数同时决定卡片形状；未给出时卡片为方形，出图后按结果的比例改变形状，相邻的卡随之移开。' +
-    `art 卡的 provider、model 是对话模型，缺省为当前对话模型，params 只有 size：${ART_SIZE_PARAM.values?.join('、')}。` +
+    'art 与 text 卡的 provider、model 是对话模型，缺省为当前对话模型；' +
+    `art 的 params 只有 size：${ART_SIZE_PARAM.values?.join('、')}，text 没有 params。` +
     '提示词中用 @[卡片名称] 指代素材，引用未连线的素材时自动连线。' +
     '输入顺序即发送给模型的素材顺序；所用模型有素材编号写法时，提示词中的 @ 引用按输入顺序编号，与在提示词中出现的先后无关。' +
     '运行生成卡使用 run_canvas。',

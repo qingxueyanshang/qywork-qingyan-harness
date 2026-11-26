@@ -36,6 +36,7 @@ import {
   EFFORT_ORDER,
   type EffortLevel,
   type GenerateOutput,
+  isChatOutput,
   isCloudMediaKind,
   isMediaKind,
   log,
@@ -907,7 +908,7 @@ export function modelLabel(cfg: QyConfig, ref: ModelRef): string {
 
 /**
  * 接口下为该模型保存的显示名称（`StoredModel.displayName` / `StoredMediaModel.displayName`，由云端同步写入）；
- * 没有时为 undefined。`art` 使用对话模型，按 `models` 查找，其余类别按 `media` 查找。
+ * 没有时为 undefined。使用对话模型的类别（`isChatOutput`）按 `models` 查找，其余类别按 `media` 查找。
  * 向用户提及模型的文字经 `modelMention` 使用它。
  */
 export function savedDisplayName(
@@ -916,7 +917,7 @@ export function savedDisplayName(
   ref: ModelRef,
 ): string | undefined {
   const provider = cfg.providers[ref.provider]
-  return output === 'art'
+  return isChatOutput(output)
     ? provider?.models[ref.model]?.displayName
     : provider?.media?.[ref.model]?.displayName
 }

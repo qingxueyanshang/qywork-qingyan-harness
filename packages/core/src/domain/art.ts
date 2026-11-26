@@ -7,6 +7,7 @@
  */
 
 import type { CanvasPixels, MentionStyle } from './canvas.ts'
+import type { ChatOutput } from './media.ts'
 import type { MediaParamDefinition } from './media-params.ts'
 
 /** 没有 viewport 标签时的视口。 */
@@ -30,8 +31,20 @@ export const ART_SIZE_PARAM: MediaParamDefinition & { label: string } = {
   shapes: SIZES,
 }
 
-/** 要求中指代参考图的写法。生成端口按同一写法在每张图前标注名称，系统提示词中说明这一约定。 */
-export const ART_MENTION = { image: '图{n}' } satisfies MentionStyle
+/**
+ * 使用对话模型的类别（art、text）在要求中指代参考图的写法。生成端口按同一写法在每张图前标注名称，
+ * 系统提示词中说明这一约定。
+ */
+export const CHAT_MENTION = { image: '图{n}' } satisfies MentionStyle
+
+/** 使用对话模型的类别的参数表：art 只有尺寸，text 没有参数。服务端校验、生成面板与画布工具说明共用。 */
+export const CHAT_OUTPUT_PARAMS: Record<
+  ChatOutput,
+  readonly (MediaParamDefinition & { label: string })[]
+> = {
+  art: [ART_SIZE_PARAM],
+  text: [],
+}
 
 /** 参数中的尺寸；缺省或不在可选值中时为 `ART_DEFAULT_SIZE`。 */
 export function artSizeOf(params: Record<string, unknown>): CanvasPixels {

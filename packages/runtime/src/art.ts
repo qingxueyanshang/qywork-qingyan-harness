@@ -1,51 +1,17 @@
 /**
- * 生成端口中 `art` 类别的实现：由对话模型写出一个 HTML 页面。
+ * 生成端口中 `art` 类别的实现：由对话模型写出一个 HTML 页面。请求与重试经 `chat-generate/run.ts`。
  *
- * 一次请求，不带工具：系统提示词规定页面的运行环境，用户消息依次是参考图、当前页面（在其上修改）与要求。
- * 被限流或暂时故障、尚未收到正文时按对话请求的重发规则重试。
+ * 用户消息依次是参考图、当前页面（在其上修改）与要求。
  * 回复中取出 `<!doctype html>` … `</html>`，按尺寸参数写入 viewport 标签后作为 `text/html` 产物返回，
  * 落盘、命名与版本由调用方（`generateMedia`、画布服务）按生成产物的规则处理。
- *
- * 失败的约定与生成端口相同：返回 `{ ok: false, message }`；用户停止时 signal 中止，异常原样抛出。
  */
 
 import { relative } from 'node:path'
-import {
-  concurrencyRejected,
-  type SendOutcome,
-  sendLane,
-  sendLimiter,
-  transientErrorCode,
-} from '@qywork/agent'
-import {
-  buildAdapter,
-  type ChatRequest,
-  type ContentBlock,
-  computeCost,
-  isLocalEndpoint,
-  ProviderError,
-  type ProviderUsage,
-  STREAM_IDLE_TIMEOUT_MS,
-} from '@qywork/ai'
-import {
-  ART_MENTION,
-  artSizeOf,
-  log,
-  type MediaSpend,
-  modelMention,
-  RESEND_LIMIT,
-  resendDelay,
-  waitOrAbort,
-  withArtViewport,
-} from '@qywork/core'
+import type { ContentBlock } from '@qywork/ai'
+import { artSizeOf, type MediaSpend, withArtViewport } from '@qywork/core'
 import type { MediaCall, MediaCallResult } from '@qywork/tools'
-import {
-  type ModelRef,
-  type QyConfig,
-  type ResolvedModel,
-  resolveModel,
-  savedDisplayName,
-} from './config.ts'
+import { imageBlock, imageMention, runChatGeneration } from './chat-generate/run.ts'
+import type { QyConfig } from './config.ts'
 
 /** 页面可用的 three.js 附加模块。与 sidecar 的 `/art/lib/addons/` 一一对应，修改时两处同时修改。 */
 export const ART_ADDONS = [
@@ -53,8 +19,6 @@ export const ART_ADDONS = [
   'geometries/RoundedBoxGeometry.js',
   'environments/RoomEnvironment.js',
 ] as const
-
-const mention = (n: number) => ART_MENTION.image.replaceAll('{n}', String(n))
 
 /** 系统提示词。写运行环境与约定的定义；录制按页面时钟逐帧推进，动画的驱动方式因此写明。 */
 export function artSystemPrompt(size: { w: number; h: number }): string {
@@ -72,7 +36,7 @@ export function artSystemPrompt(size: { w: number; h: number }): string {
       '都随之推进。动画优先由这几项驱动；setTimeout 与 setInterval 按真实时间执行，录制结果中的动画速度会不正确。',
     '',
     '术语：白模指只有几何形体、统一浅灰材质、带光照与阴影的场景，用于构图与走位。',
-    `参考图按顺序依次称为「${mention(1)}」「${mention(2)}」……，要求中以同样的名称指代。`,
+    `参考图按顺序依次称为「${imageMention(1)}」「${imageMention(2)}」……，要求中以同样的名称指代。`,
     '参考图后括号中的路径是该图相对页面的路径。页面中要显示参考图时，<img> 的 src 或 CSS 的 url() 直接写这个路径，' +
       '画布显示页面时载入该图片；不要把图片编码进页面，也不要用占位图形代替已提供的参考图。',
     '给出当前页面时，在它的基础上按要求修改，输出修改后的完整文档。',
@@ -88,69 +52,12 @@ export function extractHtml(text: string): string | null {
   return text.slice(start, end + close.length)
 }
 
-/**
- * 设计稿卡使用的对话模型：卡片指定的接口与模型，未指定时为默认对话模型；须配置在该接口下。
- * 生成与画布的参数表共用，与生成模型相同：未配置的模型在画布更新时即被拒绝。
- *
- * 不要改用 `resolveModel`：它对写明接口的引用不要求模型配置在该接口下（会话可使用接口下未列出的型号），
- * 设计稿卡改换到未配置的模型时，请求会以该接口的地址与 key 发出。已下架的型号照常返回，由生成时拒绝。
- */
-export function resolveArtModel(
-  config: QyConfig,
-  ref: ModelRef | undefined,
-): ResolvedModel | undefined {
-  const target = ref ?? config.active
-  if (!target || !config.providers[target.provider]?.models[target.model]) return undefined
-  return resolveModel(config, target)
-}
-
-export async function generateArt(
+export function generateArt(
   config: QyConfig,
   call: MediaCall,
   signal: AbortSignal,
   onSpend?: (spend: MediaSpend) => void,
 ): Promise<MediaCallResult> {
-  const ref =
-    call.provider !== undefined && call.model !== undefined
-      ? { provider: call.provider, model: call.model }
-      : undefined
-  /** 消息中提及模型的写法，与生成模型的消息相同（`modelMention`）。 */
-  const named = (r: ModelRef) => modelMention(r, savedDisplayName(config, 'art', r))
-  const choices =
-    Object.entries(config.providers)
-      .flatMap(([name, p]) =>
-        Object.entries(p.models)
-          .filter(([, m]) => !m.delisted)
-          .map(([m]) => named({ provider: name, model: m })),
-      )
-      .join('、') || '（无）'
-  const target = resolveArtModel(config, ref)
-  if (!target) {
-    return {
-      ok: false,
-      message: ref
-        ? `未找到该对话模型：${named(ref)}。可选：${choices}`
-        : `没有默认的对话模型，请通过 provider 与 model 指定。可选：${choices}`,
-    }
-  }
-  // 渠道已不再提供该型号，请求必然被拒绝；与生成模型的处理相同。
-  if (target.delisted) {
-    return { ok: false, message: `${named(target)} 已下架，未发出请求。可选：${choices}` }
-  }
-  // 本机地址不要求 key，与对话请求相同（`isLocalEndpoint`）。
-  if (!target.apiKey && !isLocalEndpoint(target.baseUrl)) {
-    return { ok: false, message: `接口 ${target.provider} 未配置 API Key，请在设置 → 模型中填写` }
-  }
-  const adapter = buildAdapter({
-    kind: target.kind,
-    apiKey: target.apiKey ?? '',
-    model: target.model,
-    ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
-    ...(target.headers ? { headers: target.headers } : {}),
-    ...(target.spec ? { spec: target.spec } : {}),
-    ...(target.transport ? { transport: target.transport } : {}),
-  })
-
   const size = artSizeOf(call.params)
   const content: ContentBlock[] = []
   let images = 0
@@ -164,106 +71,33 @@ export async function generateArt(
     const rel = call.outputDir ? relative(call.outputDir, input.path).replaceAll('\\', '/') : ''
     content.push({
       type: 'text',
-      text: rel ? `${mention(images)}（${rel}）：` : `${mention(images)}：`,
+      text: rel ? `${imageMention(images)}（${rel}）：` : `${imageMention(images)}：`,
     })
-    content.push({
-      type: 'image',
-      mimeType: input.mime,
-      source: { kind: 'base64', data: Buffer.from(input.bytes).toString('base64') },
-    })
+    content.push(imageBlock(input))
   }
   content.push({ type: 'text', text: `要求：${call.prompt}` })
-  const req: ChatRequest = {
-    model: adapter.spec.id,
-    system: [{ text: artSystemPrompt(size) }],
-    messages: [{ role: 'user', content }],
-    tools: [],
-    maxOutputTokens: adapter.spec.maxOutputTokens,
-    idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
-    signal,
-  }
-
-  const label = named(target)
-  let text = ''
-  let usage: ProviderUsage | null = null
-  let truncated = false
-  for (let resends = 0; ; resends++) {
-    let failed: ProviderError | null = null
-    // 与对话请求取得同一个在途名额：第三方接口的并发按请求方计算（`sendLimiter`）。
-    let release: ((outcome: SendOutcome) => void) | null = null
-    try {
-      const granted = await sendLimiter.acquire(sendLane(adapter), signal)
-      release = granted
-      for await (const ev of adapter.stream(req)) {
-        if (ev.type === 'text_delta') text += ev.delta
-        else if (ev.type === 'usage') usage = ev.usage
-        else if (ev.type === 'done') truncated = ev.stopReason === 'max_tokens'
-      }
-      granted('completed')
-    } catch (err) {
-      release?.(concurrencyRejected(err) ? 'concurrency_rejected' : 'failed')
-      if (signal.aborted || !(err instanceof ProviderError)) throw err
-      failed = err
-    } finally {
-      // 对话接口按 token 计费，回复不完整同样计费：收到用量即记账。收到用量的请求不重发，用量只记一次。
-      if (usage) {
-        const spend: MediaSpend = {
-          kind: adapter.kind,
-          provider: target.provider,
-          model: target.model,
-          output: 'art',
-          quantity: usage.outputTokens,
-          cost: computeCost(adapter.spec, usage),
-          currency: adapter.spec.pricing.currency ?? 'USD',
-          at: Date.now(),
+  return runChatGeneration(
+    config,
+    'art',
+    call,
+    {
+      system: artSystemPrompt(size),
+      content,
+      reply(text, truncated) {
+        const html = extractHtml(text)
+        if (!html) {
+          return {
+            ok: false,
+            message: truncated ? '输出达到上限，页面不完整' : '回复中没有完整的 HTML 文档',
+          }
         }
-        onSpend?.(spend)
-        call.onSpend?.(spend)
-      }
-    }
-    if (!failed) break
-    /*
-     * 与对话请求的重发同一判定（`transientErrorCode`）与同一套次数、间隔（`RESEND_LIMIT`、`resendDelay`），
-     * 重试经 `call.onRetry` 回报，卡片显示与其他类别相同。只重发尚未收到正文与用量的请求：已收到部分页面时重发即重新生成整页，
-     * 按失败返回；收到用量（用量事件或随失败附带的 `usage`）的请求已计费。
-     */
-    if (
-      text ||
-      usage ||
-      failed.usage ||
-      !transientErrorCode(failed.code) ||
-      resends >= RESEND_LIMIT
-    ) {
-      const receipt = resends ? `；已自动重试 ${resends} 次，仍失败` : ''
-      return { ok: false, message: `${label}：${failed.message}${receipt}` }
-    }
-    const wait = resendDelay(resends, failed.retryAfterMs)
-    // 每次重试写一行，写法与对话请求的重发日志相同；`call.logFields` 对应到发起的画布卡片或工具调用。
-    log.warn('art', `请求失败：${failed.message}`, {
-      retry: resends + 1,
-      code: failed.code,
-      waitSeconds: Math.round(wait / 1000),
-      ...call.logFields,
-    })
-    call.onRetry?.({ attempt: resends + 1, max: RESEND_LIMIT, reason: failed.message })
-    // 等待被中止时不回报结束：请求没有重新发出。
-    await waitOrAbort(wait, signal)
-    call.onRetry?.(null)
-  }
-
-  const html = extractHtml(text)
-  if (!html) {
-    return {
-      ok: false,
-      message: truncated
-        ? `${label}：输出达到上限，页面不完整`
-        : `${label}：回复中没有完整的 HTML 文档`,
-    }
-  }
-  return {
-    ok: true,
-    provider: target.provider,
-    model: target.model,
-    files: [{ bytes: new TextEncoder().encode(withArtViewport(html, size)), mime: 'text/html' }],
-  }
+        return {
+          ok: true,
+          file: { bytes: new TextEncoder().encode(withArtViewport(html, size)), mime: 'text/html' },
+        }
+      },
+    },
+    signal,
+    onSpend,
+  )
 }

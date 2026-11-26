@@ -20,10 +20,11 @@ import type {
   TunnelPush,
 } from '@qywork/core'
 import {
-  ART_MENTION,
-  ART_SIZE_PARAM,
   BROWSER_VIEW_PATH,
+  CHAT_MENTION,
+  CHAT_OUTPUT_PARAMS,
   conversationSummary,
+  isChatOutput,
   log,
   NATIVE_BROWSER_PATH,
   NATIVE_DESKTOP_PATH,
@@ -38,7 +39,7 @@ import {
   createOfficeHost,
   listMediaModels,
   releaseExtensions,
-  resolveArtModel,
+  resolveChatModel,
   resolveMediaModel,
   savedDisplayName,
 } from '@qywork/runtime'
@@ -214,16 +215,17 @@ export function serve(opts: ServeOptions) {
     opts.store,
   )
   // 画布的写入与画布上的生成仅经由此实例；事件不带会话 id，推送给所有客户端。
-  // art 使用对话模型，参数表与指代写法是固定的，不查生成目录；模型须配置在接口下，与生成时同一判定（`resolveArtModel`）。
+  // 使用对话模型的类别（art、text）参数表与指代写法是固定的，不查生成目录；模型须配置在接口下，与生成时同一判定（`resolveChatModel`）。
   const canvas = new CanvasService({
     paramSpecsOf: (output, pick) => {
-      if (output === 'art') return resolveArtModel(opts.config, pick) ? [ART_SIZE_PARAM] : undefined
+      if (isChatOutput(output))
+        return resolveChatModel(opts.config, pick) ? CHAT_OUTPUT_PARAMS[output] : undefined
       const target = resolveMediaModel(opts.config, output, pick)
       return target ? lookupMediaModel(target.model, target.kind, target.spec).params : undefined
     },
-    // art 的模型是对话模型，按接口下声明的对话模型查找。
+    // 使用对话模型的类别按接口下声明的对话模型查找。
     providersOf: (output, model) =>
-      output === 'art'
+      isChatOutput(output)
         ? Object.keys(opts.config.providers).filter((p) => opts.config.providers[p]?.models[model])
         : listMediaModels(opts.config)
             .filter((m) => m.output === output && m.model === model)
@@ -234,7 +236,7 @@ export function serve(opts: ServeOptions) {
     // 撤销请求最长等待 10 秒：超时按撤销失败处理，停止本地等待并保留任务。
     cancelTask: (task) => cancelMediaTask(opts.config, task, AbortSignal.timeout(10_000)),
     mentionStyleOf: (output, pick) => {
-      if (output === 'art') return ART_MENTION
+      if (isChatOutput(output)) return CHAT_MENTION
       const target = resolveMediaModel(opts.config, output, pick)
       return target ? lookupMediaModel(target.model, target.kind, target.spec).mention : undefined
     },

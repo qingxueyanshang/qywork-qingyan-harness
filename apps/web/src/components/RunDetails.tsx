@@ -494,6 +494,7 @@ const MEDIA_REQUEST: Record<GenerateOutput, string> = {
   video: '视频',
   audio: '音频',
   art: 'Art',
+  text: '文本',
 }
 
 /** 账本中非轮次条目的中文名称。键取自 `UsageKind`。 */

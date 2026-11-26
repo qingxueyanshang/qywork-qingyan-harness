@@ -4933,6 +4933,45 @@ describe('画布：连线', () => {
     ])
   })
 
+  /** 原始失败形状：文本卡没有输出连接点，界面上无法把文本接到图片生成，只能由 Agent 连线。 */
+  test('文本卡与文本生成卡有输出连接点：拖到生成卡上以 text 连接，点击后可新建任一类别的卡片', async () => {
+    const { host, server, refs } = await mount([
+      { op: 'add_file', ref: '$md', path: '大纲.md', x: 0, y: 0 },
+      { op: 'add_generate', ref: '$t', output: 'text', x: 0, y: 300 },
+      { op: 'add_generate', ref: '$p', output: 'image', x: 400, y: 0 },
+    ])
+    const port = (id: string) => node(host, id).querySelector<HTMLElement>('.canvas-port.out')!
+    await dragLink(host, port(refs.$t!), node(host, refs.$p!))
+    await waitFor(
+      () => server.ops.length === 1,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[0]).toEqual([{ op: 'connect', from: refs.$t!, to: refs.$p!, role: 'text' }])
+
+    port(refs.$md!).click()
+    await waitFor(
+      () => !!document.querySelector('.canvas-menu'),
+      () => '',
+    )
+    const items = [...document.querySelectorAll<HTMLButtonElement>('.canvas-menu button')]
+    expect(items.map((b) => b.textContent)).toEqual([
+      '图像生成',
+      '视频生成',
+      '音频生成',
+      'Art 生成',
+      '文本生成',
+    ])
+    items.find((b) => b.textContent === '文本生成')!.click()
+    await waitFor(
+      () => server.ops.length === 2,
+      () => JSON.stringify(server.ops),
+    )
+    expect(server.ops[1]).toEqual([
+      { op: 'add_generate', ref: '$n', output: 'text', beside: refs.$md! },
+      { op: 'connect', from: refs.$md!, to: '$n', role: 'text' },
+    ])
+  })
+
   test('在无法连接的目标（文件节点、已连接的卡片）上松开时不发送请求', async () => {
     const { host, server, refs } = await mount([
       ...CARD,
@@ -5173,6 +5212,7 @@ describe('画布：左侧工具条', () => {
       '视频生成',
       '音频生成',
       'Art 生成',
+      '文本生成',
       '时间线',
       '从工作区选择',
       '从设备上传',

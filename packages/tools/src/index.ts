@@ -89,7 +89,6 @@ export {
   MEDIA_TOOLS,
   recordTask,
   resumeMedia,
-  TASK_SUFFIX,
   taskHeldElsewhere,
 } from './generate.ts'
 export { GoalPort } from './goals/port.ts'

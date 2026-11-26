@@ -168,11 +168,20 @@ export type MediaQuote =
   | { cost: null; currency: Currency; tokenRates: { input: number; output: number } }
 
 /**
- * 生成调用与画布生成卡的类别：生成模型的三类，加上 `art`（由对话模型写出的 HTML 页面）。
- * `art` 不属于 `MEDIA_OUTPUTS`：它使用对话模型，模型库与生成模型的配置中没有这一类。
+ * 使用对话模型的生成类别：`art` 写出 HTML 页面，`text` 写出文本。不属于 `MEDIA_OUTPUTS`：
+ * 模型库与生成模型的配置中没有这两类，模型从对话模型中选择。
  */
-export const GENERATE_OUTPUTS = [...MEDIA_OUTPUTS, 'art'] as const
+export const CHAT_OUTPUTS = ['art', 'text'] as const
+export type ChatOutput = (typeof CHAT_OUTPUTS)[number]
+
+/** 生成调用与画布生成卡的类别：生成模型的三类，加上使用对话模型的两类。 */
+export const GENERATE_OUTPUTS = [...MEDIA_OUTPUTS, ...CHAT_OUTPUTS] as const
 export type GenerateOutput = (typeof GENERATE_OUTPUTS)[number]
+
+/** 该类别是否使用对话模型。按模型来源分支的位置一律经由它判定，不要写成 `output === 'art'`。 */
+export function isChatOutput(output: GenerateOutput): output is ChatOutput {
+  return (CHAT_OUTPUTS as readonly string[]).includes(output)
+}
 
 /**
  * 生成输入的用途。生成请求（`MediaInput.role`）与画布连线使用同一组取值。
@@ -192,13 +201,14 @@ export type MediaInputRole = (typeof MEDIA_INPUT_ROLES)[number]
 
 /**
  * 生成花费中数量字段的单位：图片按张、视频按秒、语音按字符，与各厂商的计费口径一致；
- * `art` 是对话模型的输出 token。
+ * 使用对话模型的类别是输出 token。
  */
 export const MEDIA_OUTPUT_UNIT: Record<GenerateOutput, '张' | '秒' | '字符' | 'token'> = {
   image: '张',
   video: '秒',
   audio: '字符',
   art: 'token',
+  text: 'token',
 }
 
 /**
@@ -208,7 +218,7 @@ export const MEDIA_OUTPUT_UNIT: Record<GenerateOutput, '张' | '秒' | '字符' 
  * 界面按既有约定将 0 显示为 N/A，不显示为免费。
  */
 export interface MediaSpend {
-  /** 请求所用的协议：生成模型为生成协议，`art` 为对话协议。 */
+  /** 请求所用的协议：生成模型为生成协议，使用对话模型的类别为对话协议。 */
   kind: MediaKind | ProviderKind
   /** 接口名。 */
   provider: string

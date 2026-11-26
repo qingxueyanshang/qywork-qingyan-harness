@@ -27,9 +27,9 @@ import {
   displayNameOf,
   type GenerateOutput,
   inputsOf,
+  isChatOutput,
   log,
   type MediaOutput,
-  mediaInputsOf,
   mediaOperationFor,
   newCanvasId,
   promptInputProblems,
@@ -37,6 +37,7 @@ import {
   recordRun,
   resolveArtRef,
   settleVersion,
+  TASK_SUFFIX,
   textReferenceProblems,
 } from '@qywork/core'
 import {
@@ -46,7 +47,6 @@ import {
   type MediaPort,
   recordTask,
   resumeMedia,
-  TASK_SUFFIX,
   taskHeldElsewhere,
 } from '@qywork/tools'
 import { mediaSizeOf } from '../media-size.ts'
@@ -330,7 +330,7 @@ export class CanvasRuns {
         !r.provider ||
         !r.model ||
         !(end >= earliest && end < MISJUDGED_BEFORE) ||
-        node.output === 'art'
+        isChatOutput(node.output)
       )
         continue
       const source = made.get(taskId)
@@ -499,8 +499,10 @@ export class CanvasRuns {
     if (mismatched.length) {
       throw new CanvasFailure(`「${node.name}」${mismatched.join('；')}`, 422)
     }
-    for (const edge of mediaInputsOf(doc, nodeId)) {
+    // 生成卡作为输入（媒体或文本）时须已有结果；文本文件卡的文件与摘录已由 `textReferenceProblems` 核对。
+    for (const edge of inputsOf(doc, nodeId)) {
       const source = doc.nodes.find((n) => n.id === edge.from)!
+      if (edge.role === 'text' && source.type === 'file') continue
       // 时间线不能作为输入（`validateCanvas` 拒绝），不会执行到此处。
       const file =
         source.type === 'file'
@@ -514,7 +516,7 @@ export class CanvasRuns {
       if (!(await this.isFile(ws.root, file))) {
         throw new CanvasFailure(`「${displayNameOf(source)}」的文件不存在：${file}`, 422)
       }
-      inputs.push({ role: edge.role, path: file })
+      if (edge.role !== 'text') inputs.push({ role: edge.role, path: file })
     }
     const pick = pickOf(node)
     const prompt = compilePrompt(doc, nodeId, this.deps.mentionStyleOf?.(node.output, pick), texts)
@@ -597,8 +599,8 @@ export class CanvasRuns {
           facts.model = model
           await this.remodel(ws.root, record, provider, model)
           // 有任务号的生成停止时按任务号撤销（`cancel`）：视频，以及经由云端的出图与音频（云端撤销尚未发往上游的任务，
-          // 已发往上游的答复已开始）。Art 由对话模型生成，没有任务号。
-          if (taskId && node.output !== 'art')
+          // 已发往上游的答复已开始）。使用对话模型的类别没有任务号。
+          if (taskId && !isChatOutput(node.output))
             this.submitted(entry, ws, rel, nodeId, {
               taskId,
               provider,
@@ -728,7 +730,7 @@ export class CanvasRuns {
         return { ok: false, message: `任务记录已不存在：${version.path}`, pending: false }
       }
       const task = await this.docs.readTask(ws.root, version.path)
-      if (task && node.output !== 'art')
+      if (task && !isChatOutput(node.output))
         this.submitted(entry, ws, rel, nodeId, {
           taskId: task.taskId,
           provider: task.provider,

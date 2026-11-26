@@ -29,6 +29,7 @@ import {
 import {
   GENERATE_OUTPUTS,
   type GenerateOutput,
+  isChatOutput,
   MEDIA_INPUT_ROLES,
   type MediaDiagnostic,
   type MediaInputRole,
@@ -49,6 +50,9 @@ export interface CanvasMade {
   inputs: { role: MediaInputRole; path: string }[]
   at: string
 }
+
+/** 生成任务记录的后缀。记录与产物位于同一目录，在文件树中可见；版本的路径以它结尾时结果仍待取回。 */
+export const TASK_SUFFIX = '.task.json'
 
 /** 图片或视频的像素宽高。 */
 export interface CanvasPixels {
@@ -146,8 +150,9 @@ export interface CanvasTimelineNode {
 export type CanvasNode = CanvasFileNode | CanvasGenerateNode | CanvasTimelineNode
 
 /**
- * 连线用途：媒体输入的用途（`MediaInputRole`），或 `text`——文本卡（`.md` / `.txt`）被生成卡的提示词引用。
- * `text` 连线不作为素材发送，运行时把提示词中的 `@[文本卡]` 展开为文件当前的内容（摘录卡为其中的一段）。
+ * 连线用途：媒体输入的用途（`MediaInputRole`），或 `text`——文本卡（`.md` / `.txt` 文件卡与文本生成卡，`isTextCard`）
+ * 被生成卡的提示词引用。`text` 连线不作为素材发送，运行时把提示词中的 `@[文本卡]` 展开为文件当前的内容
+ * （摘录卡为其中的一段，文本生成卡为当前版本的全文）。
  */
 export type CanvasEdgeRole = MediaInputRole | 'text'
 
@@ -547,9 +552,26 @@ export function excerptOf(
   return { ok: true, text: body.slice(s, to), from: s, to }
 }
 
-/** 文件节点是否为文本卡（`.md` / `.txt`）：可被生成卡的提示词引用。 */
+/**
+ * 节点是否为文本卡：`.md` / `.txt` 文件卡，或文本生成卡。两者都以 `text` 连线被生成卡的提示词引用，
+ * 运行时展开为正文（`textPathOf` 给出读取的文件）。
+ */
 export function isTextCard(node: CanvasNode): boolean {
-  return node.type === 'file' && canvasFileKind(node.path) === 'text'
+  return node.type === 'generate'
+    ? node.output === 'text'
+    : node.type === 'file' && canvasFileKind(node.path) === 'text'
+}
+
+/**
+ * 文本卡正文所在的文件：文件卡为其路径，文本生成卡为当前版本的产物；文本生成卡尚无结果（没有版本或仍为任务记录）
+ * 与不是文本卡时为 null。
+ */
+export function textPathOf(node: CanvasNode): string | null {
+  if (!isTextCard(node)) return null
+  if (node.type === 'file') return node.path
+  if (node.type !== 'generate') return null
+  const path = node.versions.find((v) => v.id === node.current)?.path
+  return path && !path.endsWith(TASK_SUFFIX) ? path : null
 }
 
 /** 文本卡本身不成立的原因；成立时为 null。`text` 为文件当前的内容，文件不存在时为 undefined。 */
@@ -563,6 +585,7 @@ function textCardProblem(node: CanvasFileNode, text: string | undefined): string
  * 不成立的文本引用。`nodeId` 为文本卡时是摘录无法定位的原因（文件不存在由节点状态表示，此处不报）；
  * 为生成卡时是它引用的失效文本卡，每项写成「@[卡片名称]：原因」。
  * `texts` 为各文本卡文件当前的内容（按节点 id），文件不存在时不提供该项。运行前据此拒绝、读取画布时据此标出失效的引用。
+ * 引用的文本生成卡不在此判定：尚无结果与媒体输入相同，只在运行时拒绝，读取画布时不标为失效。
  */
 export function textReferenceProblems(
   doc: CanvasDoc,
@@ -591,10 +614,10 @@ const ART_RE = /\.html?$/i
 
 /**
  * 工作区文件放到画布上时的显示类别：图片、视频、音频按媒体显示，HTML 按 Art 运行，`.md` / `.txt` 显示正文，
- * 其余返回 null（只显示文件名）。
+ * 其余返回 null（只显示文件名）。与生成卡的类别一一对应：生成卡的产物按同一类别显示。
  */
-export type CanvasFileKind = GenerateOutput | 'text'
-export const CANVAS_FILE_KINDS: readonly CanvasFileKind[] = [...GENERATE_OUTPUTS, 'text']
+export type CanvasFileKind = GenerateOutput
+export const CANVAS_FILE_KINDS: readonly CanvasFileKind[] = GENERATE_OUTPUTS
 
 export function canvasFileKind(path: string): CanvasFileKind | null {
   if (isInlineImage(path)) return 'image'
@@ -605,14 +628,16 @@ export function canvasFileKind(path: string): CanvasFileKind | null {
   return null
 }
 
+/** 节点的媒体类别：文本不是媒体，不在其中。 */
+export type CanvasMediaKind = Exclude<GenerateOutput, 'text'>
+
 /**
- * 节点的媒体类别。文件按扩展名判定，无法判定的（文本、压缩包等）为 null，不能作为生成的输入；
- * `art` 有类别，同样不能作为输入（`roleProblem`）。
+ * 节点的媒体类别。文件按扩展名判定，无法判定的（压缩包等）为 null，不能作为生成的输入；
+ * 文本（文本卡与文本生成卡）为 null，以 `text` 连线引用（`isTextCard`）；`art` 有类别，同样不能作为输入（`roleProblem`）。
  */
-export function canvasMediaOf(node: CanvasNode): GenerateOutput | null {
-  if (node.type === 'generate') return node.output
+export function canvasMediaOf(node: CanvasNode): CanvasMediaKind | null {
   if (node.type === 'timeline') return null
-  const kind = canvasFileKind(node.path)
+  const kind = node.type === 'generate' ? node.output : canvasFileKind(node.path)
   return kind === 'text' ? null : kind
 }
 
@@ -725,7 +750,8 @@ function expandPrompt(
     if (named) return named
     const source = doc.nodes.find((n) => n.id === id)
     const text = texts.get(id)
-    if (text !== undefined && source?.type === 'file') {
+    if (text !== undefined && source) {
+      if (source.type !== 'file') return text
       const r = excerptOf(text, source.excerpt)
       return r.ok ? r.text : ''
     }
@@ -839,12 +865,15 @@ const OUTPUT_NAME: Record<GenerateOutput, string> = {
   video: '视频',
   audio: '音频',
   art: 'Art',
+  text: '文本',
 }
+/** 文本生成卡与文本文件卡的框相同，理由见 `FILE_SIZE`。 */
 const GENERATE_SIZE: Record<GenerateOutput, [number, number]> = {
   image: [169, 169],
   video: [300, 169],
   audio: [300, 96],
   art: [300, 169],
+  text: [300, 169],
 }
 /** 文件卡的缺省框。文本卡与 16:9 的视频生成卡相同：两者常并排成列，框高一致时两列对齐，文本卡也能显示开头 7 至 8 行。 */
 const FILE_SIZE: Record<CanvasFileKind | 'other', [number, number]> = {
@@ -1662,12 +1691,12 @@ function roleProblem(
   const from = `「${displayNameOf(source)}」`
   const to = `「${target.name}」`
   if (isTextCard(source)) return role === 'text' ? null : `${from} 是文本，只能被提示词引用`
-  if (role === 'text') return `${from} 不是文本卡（.md / .txt），不能以 text 连接`
+  if (role === 'text') return `${from} 不是文本卡（.md / .txt）或文本生成卡，不能以 text 连接`
   const kind = canvasMediaOf(source)
   if (target.output === 'audio') {
     return kind === 'audio' && role === 'audio' ? null : `${to} 只接受参考音频，${from} 无法连接`
   }
-  if (target.output === 'image' || target.output === 'art') {
+  if (target.output === 'image' || isChatOutput(target.output)) {
     return kind === 'image' && role === 'reference' ? null : `${to} 只接受参考图，${from} 无法连接`
   }
   if (kind === 'image') {

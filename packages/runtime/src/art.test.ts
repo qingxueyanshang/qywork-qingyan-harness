@@ -1,6 +1,6 @@
 /**
  * 覆盖范围：`art.ts` 的 `generateArt`（经 `media.ts` 的 `makeMediaPort` 分派，含被限流时的重试与重试的日志）、
- * `resolveArtModel`（生成与画布参数表共用的模型判定）与 `extractHtml`。
+ * `chat-generate/run.ts` 的 `resolveChatModel`（生成与画布参数表共用的模型判定）与 `extractHtml`。
  *
  * 对端是本机模拟的对话接口（OpenAI 兼容协议），按脚本返回 SSE 正文，并记录收到的请求体。
  */
@@ -8,7 +8,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import type { MediaSpend } from '@qywork/core'
 import { artViewportOf, log } from '@qywork/core'
-import { extractHtml, resolveArtModel } from './art.ts'
+import { extractHtml } from './art.ts'
+import { resolveChatModel } from './chat-generate/run.ts'
 import type { QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
 
@@ -284,18 +285,18 @@ describe('Art 生成', () => {
 })
 
 /** 画布更新设计稿卡时按它判定模型是否已配置（`server.ts` 的 `paramSpecsOf`），生成时同样按它解析。 */
-describe('resolveArtModel', () => {
+describe('resolveChatModel', () => {
   test('只接受接口下已配置的对话模型；未指定时取默认对话模型', () => {
-    expect(resolveArtModel(config(), { provider: 'relay', model: 'other-model' })?.model).toBe(
+    expect(resolveChatModel(config(), { provider: 'relay', model: 'other-model' })?.model).toBe(
       'other-model',
     )
     expect(
-      resolveArtModel(config(), { provider: 'relay', model: 'not-configured' }),
+      resolveChatModel(config(), { provider: 'relay', model: 'not-configured' }),
     ).toBeUndefined()
-    expect(resolveArtModel(config(), { provider: 'nope', model: 'chat-model' })).toBeUndefined()
-    expect(resolveArtModel(config(), undefined)?.model).toBe('chat-model')
+    expect(resolveChatModel(config(), { provider: 'nope', model: 'chat-model' })).toBeUndefined()
+    expect(resolveChatModel(config(), undefined)?.model).toBe('chat-model')
     const { active: _active, ...noDefault } = config()
-    expect(resolveArtModel(noDefault, undefined)).toBeUndefined()
+    expect(resolveChatModel(noDefault, undefined)).toBeUndefined()
   })
 })
 

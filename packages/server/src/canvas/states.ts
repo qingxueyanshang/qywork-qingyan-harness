@@ -9,15 +9,15 @@
 import { stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { TaskPhase } from '@qywork/ai'
-import type {
-  CanvasNode,
-  CanvasNodeState,
-  CanvasRunRecord,
-  CanvasRunResult,
-  MediaOutput,
-  RetryWait,
+import {
+  type CanvasNode,
+  type CanvasNodeState,
+  type CanvasRunRecord,
+  type CanvasRunResult,
+  type MediaOutput,
+  type RetryWait,
+  TASK_SUFFIX,
 } from '@qywork/core'
-import { TASK_SUFFIX } from '@qywork/tools'
 
 /**
  * 写入队列、运行中集合与失败记录的键：按字面拼接得到的画布绝对路径。

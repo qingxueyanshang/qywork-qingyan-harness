@@ -1,5 +1,5 @@
 /**
- * 生成：经生成端口调用已配置的生成模型（画布 art 卡为对话模型），产物写入工作区。
+ * 生成：经生成端口调用已配置的生成模型（画布的 art 卡与文本生成卡为对话模型），产物写入工作区。
  *
  * `generateMedia` / `resumeMedia` 是唯一的执行路径：读取输入、调用端口、记录远端任务、落盘与收尾均在此完成，
  * 与 `read_file` / `write_file` 使用同一路径边界与可写判定。生成工具、取回工具与服务端画布服务均调用它们，
@@ -40,6 +40,7 @@ import {
   type RetryWait,
   retryAttemptText,
   retryCauseText,
+  TASK_SUFFIX,
   taskPhaseLabel,
 } from '@qywork/core'
 import { jsonArg } from './args.ts'
@@ -69,6 +70,7 @@ const EXTENSION: Record<string, string> = {
   'audio/flac': '.flac',
   'audio/pcm': '.pcm',
   'text/html': '.html',
+  'text/markdown': '.md',
 }
 
 /** 扩展名到格式的映射：`EXTENSION` 的反向映射，另含同一格式的别名。 */
@@ -90,9 +92,6 @@ function landingPath(target: string, mime: string): string {
   const declared = MIME_OF_EXTENSION[ext.toLowerCase()]
   return declared && declared !== mime ? `${target.slice(0, -ext.length)}${actual}` : target
 }
-
-/** 远端任务记录的后缀。记录与产物位于同一目录，在文件树中可见。 */
-export const TASK_SUFFIX = '.task.json'
 
 /** 默认文件名的时间戳：`YYYYMMDD-HHmmss`，本地时间。 */
 function stamp(now = new Date()): string {

@@ -12,12 +12,12 @@ import { join, relative } from 'node:path'
 import { findMediaModel } from '@qywork/ai'
 import {
   type AgentEvent,
-  ART_MENTION,
   ART_SIZE_PARAM,
   applyCanvasOps,
   type CanvasDoc,
   type CanvasGenerateNode,
   type CanvasOp,
+  CHAT_MENTION,
   canvasRunLabel,
   emptyCanvas,
   parseCanvas,
@@ -786,7 +786,7 @@ describe('画布运行：Art', () => {
     const svc = new CanvasService({
       publish: () => {},
       paramSpecsOf: (o) => (o === 'art' ? [ART_SIZE_PARAM] : undefined),
-      mentionStyleOf: (o) => (o === 'art' ? ART_MENTION : undefined),
+      mentionStyleOf: (o) => (o === 'art' ? CHAT_MENTION : undefined),
     })
     const fake = fakePort()
     const first = await svc.runs.run(ws, PATH, ids.$g!, { media: fake.port })
@@ -868,6 +868,56 @@ describe('画布运行：Art', () => {
       [ids.$a!, 'reference'],
       [b!.id, 'reference'],
     ])
+  })
+})
+
+/** 原始需求：生成的文本接到图片生成。文本生成卡的结果为 .md 版本，下游卡片运行时把引用展开为该版本的全文。 */
+describe('画布运行：文本生成', () => {
+  test('文本生成卡的结果为 .md 版本；同一批中下游卡片在它落盘后运行，提示词展开为其全文，文本不作为素材发送', async () => {
+    const { ws, svc, ids } = await setup([
+      { op: 'add_file', ref: '$a', path: 'a.png', name: '小满' },
+      { op: 'add_generate', ref: '$t', output: 'text', name: '分镜', prompt: '按 @[$a] 写画面' },
+      { op: 'add_generate', ref: '$p', output: 'image', prompt: '画出：@[$t]' },
+    ])
+    const fake = fakePort()
+    const batch = svc.runs.runBatch(ws, PATH, [ids.$p!, ids.$t!], { media: fake.port })
+    const text = await fake.next()
+    expect(text.call.type).toBe('text')
+    expect(text.call.inputs.map((i) => i.mime)).toEqual(['image/png'])
+    expect(fake.calls).toHaveLength(1)
+    text.finish({
+      ok: true,
+      provider: 'relay',
+      model: 'chat',
+      files: [{ bytes: new TextEncoder().encode('小满站在雨里。\n'), mime: 'text/markdown' }],
+    })
+    const image = await fake.next()
+    expect(image.call.type).toBe('image')
+    expect(image.call.prompt).toStartWith('画出：小满站在雨里。')
+    expect(image.call.inputs).toEqual([])
+    image.finish({
+      ok: true,
+      provider: 'q',
+      model: 'm',
+      files: [{ bytes: PNG, mime: 'image/png' }],
+    })
+    expect((await batch).map((r) => r.result.ok)).toEqual([true, true])
+    const version = (await node(ws.root, ids.$t!)).versions[0]!
+    expect(version.path).toMatch(/^generated\/\d{8}-\d{6}(-\d+)?\.md$/)
+    expect(await readFile(join(ws.root, version.path), 'utf8')).toBe('小满站在雨里。\n')
+  })
+
+  test('引用的文本生成卡尚无结果时不提交生成；读取画布时不标为引用失效', async () => {
+    const { ws, svc, ids } = await setup([
+      { op: 'add_generate', ref: '$t', output: 'text', name: '分镜', prompt: '写一句' },
+      { op: 'add_generate', ref: '$p', output: 'image', prompt: '画出：@[$t]' },
+    ])
+    const fake = fakePort()
+    expect((await failure(svc.runs.run(ws, PATH, ids.$p!, { media: fake.port }))).message).toBe(
+      '「分镜」尚无结果',
+    )
+    expect(fake.calls).toHaveLength(0)
+    expect((await svc.docs.read(ws.root, PATH)).references).toBeUndefined()
   })
 })
 

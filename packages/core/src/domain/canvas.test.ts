@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { ART_MENTION } from './art.ts'
+import { CHAT_MENTION } from './art.ts'
 import {
   addVersions,
   applyCanvasOps,
@@ -8,11 +8,13 @@ import {
   type CanvasOp,
   type CanvasVersion,
   canvasFileKind,
+  canvasMediaOf,
   compilePrompt,
   copyOps,
   emptyCanvas,
   excerptOf,
   frameLabel,
+  isTextCard,
   modeOf,
   parseCanvas,
   parseCanvasOps,
@@ -22,6 +24,7 @@ import {
   relabelInputs,
   serializeCanvas,
   settleVersion,
+  textPathOf,
   textReferenceProblems,
 } from './canvas.ts'
 import { shotRows } from './canvas-arrange.ts'
@@ -2102,7 +2105,73 @@ describe('画布：Art', () => {
       { op: 'add_generate', ref: '$art', output: 'art', prompt: '按 @[$b] 的构图，@[$a] 的配色' },
     ])
     expect(doc.edges.map((e) => e.from)).toEqual(['a2', 'a1'])
-    expect(compilePrompt(doc, 'a3', ART_MENTION)).toBe('按 图1 的构图，图2 的配色')
+    expect(compilePrompt(doc, 'a3', CHAT_MENTION)).toBe('按 图1 的构图，图2 的配色')
+  })
+})
+
+/**
+ * 原始需求：画布没有文本生成，「文本 → 文本」「文本 + 图片 → 文本」与「生成的文本 → 图片」都无法在画布上完成。
+ * 文本生成卡使用对话模型，接受参考图；结果是 .md 版本，被其他生成卡引用时与文本卡相同，展开为当前版本的全文。
+ */
+describe('画布：文本生成卡', () => {
+  /** 一张大纲文本卡、一张参考图、一张文本生成卡（引用大纲与参考图）、一张图像生成卡。 */
+  function chain(): CanvasDoc {
+    return apply(emptyCanvas(), [
+      { op: 'add_file', ref: '$md', path: '作品/大纲.md', name: '大纲' },
+      { op: 'add_file', ref: '$img', path: '角色/小满.png', name: '小满' },
+      {
+        op: 'add_generate',
+        ref: '$t',
+        output: 'text',
+        prompt: '按 @[$md] 写分镜，人物参照 @[$img]',
+      },
+      { op: 'add_generate', ref: '$pic', output: 'image', name: '分镜图' },
+    ])
+  }
+
+  test('新建文本生成卡与文本卡的框相同，默认名称按「文本」计数；参考图以 reference 连接，文本卡以 text 连接', () => {
+    const doc = chain()
+    expect([gen(doc, 'a3').name, gen(doc, 'a3').w, gen(doc, 'a3').h]).toEqual(['文本1', 300, 169])
+    expect(doc.edges.map((e) => [e.from, e.to, e.role])).toEqual([
+      ['a1', 'a3', 'text'],
+      ['a2', 'a3', 'reference'],
+    ])
+    expect(compilePrompt(doc, 'a3', CHAT_MENTION, new Map([['a1', '第一幕：雨夜。']]))).toBe(
+      '按 第一幕：雨夜。 写分镜，人物参照 图1',
+    )
+    expect(
+      rejects(doc, [
+        { op: 'add_file', ref: '$mov', path: '参考/走位.mp4' },
+        { op: 'connect', from: '$mov', to: 'a3', role: 'video' },
+      ]),
+    ).toContain('只接受参考图')
+  })
+
+  test('其他生成卡引用文本生成卡时以 text 连接，展开为当前版本的全文；尚无结果或结果仍待取回时没有正文路径', () => {
+    const doc = apply(chain(), [{ op: 'update', id: '分镜图', prompt: '画出：@[文本1]' }])
+    expect(doc.edges.filter((e) => e.to === 'a4').map((e) => [e.from, e.role])).toEqual([
+      ['a3', 'text'],
+    ])
+    expect(isTextCard(gen(doc, 'a3'))).toBe(true)
+    expect(canvasMediaOf(gen(doc, 'a3'))).toBeNull()
+    expect(textPathOf(gen(doc, 'a3'))).toBeNull()
+    expect(
+      rejects(doc, [
+        { op: 'add_generate', ref: '$p2', output: 'image' },
+        { op: 'connect', from: '文本1', to: '$p2', role: 'reference' },
+      ]),
+    ).toContain('是文本，只能被提示词引用')
+
+    const pending = addVersions(doc, 'a3', [version('t1', 'generated/1.task.json')])
+    if (!pending.ok) throw new Error(pending.error)
+    expect(textPathOf(gen(pending.doc, 'a3'))).toBeNull()
+    const settled = settleVersion(pending.doc, 'a3', 't1', 'generated/1.md')
+    if (!settled.ok) throw new Error(settled.error)
+    expect(textPathOf(gen(settled.doc, 'a3'))).toBe('generated/1.md')
+    const shots = '1. 小满推门。\n2. 雨落下。'
+    expect(compilePrompt(settled.doc, 'a4', {}, new Map([['a3', shots]]))).toBe(`画出：${shots}`)
+    // 尚无结果不是引用失效：与媒体上游相同，只在运行时拒绝。
+    expect(textReferenceProblems(doc, 'a4', new Map())).toEqual([])
   })
 })
 
@@ -2168,7 +2237,7 @@ describe('画布：文本卡引用', () => {
       rejects(doc, [{ op: 'connect', from: '制作脚本', to: '1-2 入梦', role: 'reference' }]),
     ).toBe('「制作脚本」 是文本，只能被提示词引用')
     expect(rejects(doc, [{ op: 'connect', from: '小满', to: '1-2 入梦', role: 'text' }])).toBe(
-      '「小满」 不是文本卡（.md / .txt），不能以 text 连接',
+      '「小满」 不是文本卡（.md / .txt）或文本生成卡，不能以 text 连接',
     )
     const frames = apply(doc, [
       { op: 'connect', from: '小满', to: '1-2 入梦', role: 'first_frame' },
