@@ -3,10 +3,12 @@
  * 执行后确定的对象写入结果的 `subject`。
  *
  * 原始失败形状：历史记录只有 `objectLabel`，新界面按 `head` 与 `verb` 显示，转换缺失时历史中的工具行标题为空。
+ * 另覆盖迁移 82（`082-interrupted-steps.ts`）：停止时被收尾的历史工具行补写中断类别。
  */
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
 import { migration081 } from './migrations/081-tool-action-heads.ts'
+import { migration082 } from './migrations/082-interrupted-steps.ts'
 
 /** 在只含 steps 表的内存库中插入一行，执行迁移 81 的全部批次，返回转换后的 payload；未改写时返回 null。 */
 function convertToolAction(
@@ -184,5 +186,40 @@ test('分批执行：逐批推进，全部处理完返回 null，原字段 objec
     object: 'npm test',
     target: 'npm test',
   })
+  db.close()
+})
+
+/** 覆盖迁移 82：历史中停止时被收尾的工具行补写中断类别，界面显示「已中断」「结果不明」而不是「失败」。 */
+test('迁移 82：两种中断回执补写错误类别，其余失败行不变', () => {
+  const db = new Database(':memory:')
+  db.run(
+    'CREATE TABLE steps (id TEXT PRIMARY KEY, kind TEXT, tool_name TEXT, status TEXT, payload TEXT)',
+  )
+  const insert = db.query(
+    "INSERT INTO steps (id, kind, tool_name, status, payload) VALUES (?, 'tool_action', 'run_command', 'failure', ?)",
+  )
+  const failure = (message: string, executed: boolean) =>
+    JSON.stringify({ kind: 'tool_result', outcome: { status: 'failure', executed, message } })
+  insert.run('a', failure('执行期间被中断，结果未知', true))
+  insert.run('b', failure('未开始执行即被中断', false))
+  insert.run('c', failure('命令退出码 1，进程被中断', true))
+  let after = 0
+  for (;;) {
+    const next = migration082.background!(db, {} as never, after)
+    if (next === null) break
+    after = next
+  }
+  const outcome = (id: string) =>
+    (
+      JSON.parse(
+        (db.query('SELECT payload FROM steps WHERE id = ?').get(id) as { payload: string }).payload,
+      ) as {
+        outcome: Record<string, unknown>
+      }
+    ).outcome
+  expect(outcome('a')).toMatchObject({ errorKind: 'interrupted', resultState: 'unknown' })
+  expect(outcome('b')).toMatchObject({ errorKind: 'interrupted' })
+  expect(outcome('b').resultState).toBeUndefined()
+  expect(outcome('c').errorKind).toBeUndefined()
   db.close()
 })

@@ -97,6 +97,7 @@ import { migration078 } from './078-compaction-summary-blocks.ts'
 import { migration079 } from './079-run-provider.ts'
 import { migration080 } from './080-workspace-panel.ts'
 import { migration081 } from './081-tool-action-heads.ts'
+import { migration082 } from './082-interrupted-steps.ts'
 import type { Migration } from './shared.ts'
 
 export const MIGRATIONS: Migration[] = [
@@ -181,6 +182,7 @@ export const MIGRATIONS: Migration[] = [
   migration079,
   migration080,
   migration081,
+  migration082,
 ]
 
 /**
