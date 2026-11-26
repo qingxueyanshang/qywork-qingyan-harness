@@ -70,6 +70,7 @@ const {
   openSettings,
   activateWorkspace,
   applyEvent,
+  extensionsRevision,
   applyRejected,
   discardPace,
   client,
@@ -3970,6 +3971,47 @@ describe('工具卡按 stepId 认领实时输出', () => {
    * 原始失败形状：用户要求「打开画布」，工具层没有能打开面板的工具，模型操作 qywork 自身的窗口，共执行 14 次桌面调用。
    * 界面在当前会话的 open_in_panel 成功时打开该文件；其他会话的与失败的不打开。
    */
+  /** 原始失败形状：模型启用 MCP 服务或创建角色之后，打开着的 MCP 设置页与智能体设置页显示旧状态。 */
+  test('修改扩展的工具执行完毕后设置页重新读取：含启用 MCP 服务与创建角色', () => {
+    setState({ activeConversation: 'cv_ext' })
+    freshView('cv_ext')
+    for (const [i, toolName] of ['enable_mcp_server', 'define_role'].entries()) {
+      const before = extensionsRevision()
+      applyEvent({
+        seq: 1,
+        at: 0,
+        conversationId: 'cv_ext',
+        event: {
+          type: 'tool.started',
+          runId: 'run_1',
+          stepId: `st_ext_${i}`,
+          toolCallId: `st_ext_${i}`,
+          toolName,
+          batchId: 'b_1',
+          callIndex: 0,
+          waveIndex: 0,
+          args: {},
+          action: { kind: 'edit', head: 'MCP 管理', verb: '启用', object: 'x', target: 'x' },
+        },
+      } as never)
+      applyEvent({
+        seq: 2,
+        at: 0,
+        conversationId: 'cv_ext',
+        event: {
+          type: 'tool.finished',
+          runId: 'run_1',
+          stepId: `st_ext_${i}`,
+          toolCallId: `st_ext_${i}`,
+          status: 'success',
+          outcome: { status: 'success', executed: true, message: 'ok' },
+          durationMs: 1,
+        },
+      } as never)
+      expect(extensionsRevision()).toBe(before + 1)
+    }
+  })
+
   test('当前会话的 open_in_panel 成功时在右侧面板打开该文件', () => {
     setWorkspace(WS_A)
     setOpenFile(null)

@@ -34,6 +34,9 @@ const PKG_VERSION: string = pkg.version
 
 export type { HttpServerSpec, McpServerSpec, StdioServerSpec } from './transport.ts'
 
+/** 请求超过时限仍未收到应答。工具结果据此写错误类别 `timeout`，工具行显示「超时」。 */
+export class McpTimeoutError extends Error {}
+
 /**
  * 客户端声明的协议版本。
  *
@@ -387,7 +390,7 @@ export class McpClient {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        reject(new Error(`MCP 请求超时（${timeoutMs}ms）：${method}`))
+        reject(new McpTimeoutError(`MCP 请求超时（${timeoutMs}ms）：${method}`))
       }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
 

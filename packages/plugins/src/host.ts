@@ -49,6 +49,9 @@ import { createLineFramer } from '@qywork/core'
 import type { PluginManifest, PluginPermission } from './manifest.ts'
 import { type PluginRuntime, resolvePluginRuntime } from './runtime.ts'
 
+/** 插件调用超过时限仍未返回。工具结果据此写错误类别 `timeout`，工具行显示「超时」。 */
+export class PluginTimeoutError extends Error {}
+
 /** 单次插件调用的超时。插件阻塞不得阻塞整轮 agent。 */
 export const CALL_TIMEOUT_MS = 60_000
 /** 启动握手超时。 */
@@ -339,7 +342,7 @@ export class PluginHost {
       // 先到期的一处会使另一处的期限永远不生效。
       const timeoutMs = Math.max(1, Math.min(CALL_TIMEOUT_MS, context.deadline - Date.now()))
       const timer = setTimeout(() => {
-        this.settle(id)?.reject(new Error(`插件调用超时（${timeoutMs}ms）：${method}`))
+        this.settle(id)?.reject(new PluginTimeoutError(`插件调用超时（${timeoutMs}ms）：${method}`))
       }, timeoutMs)
       this.pending.set(id, {
         resolve,

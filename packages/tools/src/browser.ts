@@ -60,6 +60,7 @@ import {
 // 参数判定与电脑控制共用一份（`given` 的理由见文件头第 3 条）：两份判据会逐渐不一致，同一个填充值在两类工具中结论不同。
 import { ArgError, blank, given, oneOf, str } from './desktop/shared/args.ts'
 import { resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
+import { backgroundable, endsOnMessage } from './shell/detach.ts'
 
 /** 单次等待的上限。超过该值的请求按上限截断，不接受任意时长。 */
 const MAX_WAIT_MS = 60_000
@@ -1166,90 +1167,93 @@ export const browserActTool: ToolSpec = {
     }),
 }
 
-export const browserWaitTool: ToolSpec = {
-  ...BASE,
-  name: 'browser_wait',
-  description:
-    '等待当前主文档里一个 CSS 选择器达到指定状态，用于替代反复 observe 轮询。' +
-    'state 按选择器命中的第一个元素判定：visible（默认）有尺寸且可见；attached 存在于文档中即可；' +
-    'hidden 未命中或不可见；enabled 可见且未禁用；' +
-    'text / value 是文本（空白归一）或控件值与 expected 完全相等，这两种必须提供 expected。' +
-    '不提供 selector 时等待 timeoutMs 后再观察，用于等待页面中的动画、计时或脚本运行一段时间。' +
-    `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒。` +
-    '取得新观察时结果中直接返回元素表，据此继续下一步，不必再调用 browser_observe；' +
-    '未取得观察时先 browser_observe 确认页面状态。' +
-    '选择器只查询主文档，iframe 中的元素用 browser_observe 的 frame 参数。',
-  parameters: {
-    type: 'object',
-    properties: {
-      tabId: { type: 'string' },
-      selector: { type: 'string' },
-      state: { type: 'string', enum: WAIT_STATES },
-      expected: { type: 'string', description: 'state 为 text 或 value 时等待的目标值' },
-      timeoutMs: { type: 'integer' },
+export const browserWaitTool: ToolSpec = endsOnMessage(
+  {
+    ...BASE,
+    name: 'browser_wait',
+    description:
+      '等待当前主文档里一个 CSS 选择器达到指定状态，用于替代反复 observe 轮询。' +
+      'state 按选择器命中的第一个元素判定：visible（默认）有尺寸且可见；attached 存在于文档中即可；' +
+      'hidden 未命中或不可见；enabled 可见且未禁用；' +
+      'text / value 是文本（空白归一）或控件值与 expected 完全相等，这两种必须提供 expected。' +
+      '不提供 selector 时等待 timeoutMs 后再观察，用于等待页面中的动画、计时或脚本运行一段时间。' +
+      `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒。` +
+      '取得新观察时结果中直接返回元素表，据此继续下一步，不必再调用 browser_observe；' +
+      '未取得观察时先 browser_observe 确认页面状态。' +
+      '选择器只查询主文档，iframe 中的元素用 browser_observe 的 frame 参数。',
+    parameters: {
+      type: 'object',
+      properties: {
+        tabId: { type: 'string' },
+        selector: { type: 'string' },
+        state: { type: 'string', enum: WAIT_STATES },
+        expected: { type: 'string', description: 'state 为 text 或 value 时等待的目标值' },
+        timeoutMs: { type: 'integer' },
+      },
+      required: ['tabId'],
+      additionalProperties: false,
     },
-    required: ['tabId'],
-    additionalProperties: false,
-  },
-  verb: '等待',
-  object: (args) => (typeof args.selector === 'string' && args.selector ? args.selector : '网页'),
-  summary: '等待一个 CSS 选择器达到指定状态，或等待指定时长',
-  targetExtractor: tabTarget,
+    verb: '等待',
+    object: (args) => (typeof args.selector === 'string' && args.selector ? args.selector : '网页'),
+    summary: '等待一个 CSS 选择器达到指定状态，或等待指定时长',
+    targetExtractor: tabTarget,
 
-  fn: (args, ctx) =>
-    onBrowser(ctx, async (browser, send) => {
-      const tabId = str(args.tabId, 'tabId')
-      const timeoutMs = given(args.timeoutMs)
-        ? Math.min(MAX_WAIT_MS, Math.max(MIN_WAIT_MS, finite(args.timeoutMs, 'timeoutMs')))
-        : DEFAULT_WAIT_MS
-      if (!given(args.selector)) {
-        if (given(args.state) || given(args.expected)) {
-          throw new ArgError('state 与 expected 须与 selector 一起提供')
+    fn: (args, ctx) =>
+      onBrowser(ctx, async (browser, send) => {
+        const tabId = str(args.tabId, 'tabId')
+        const timeoutMs = given(args.timeoutMs)
+          ? Math.min(MAX_WAIT_MS, Math.max(MIN_WAIT_MS, finite(args.timeoutMs, 'timeoutMs')))
+          : DEFAULT_WAIT_MS
+        if (!given(args.selector)) {
+          if (given(args.state) || given(args.expected)) {
+            throw new ArgError('state 与 expected 须与 selector 一起提供')
+          }
+          if (!(await pause(timeoutMs, ctx.signal))) return STOPPED
+          const r = await send(() => browser.observe({ tabId }))
+          return {
+            status: 'success',
+            ...browserResult({
+              ctx,
+              toolName: 'browser_wait',
+              page: r,
+              receipt: { waitedMs: timeoutMs },
+              lead: `已等待 ${timeoutMs} 毫秒。${isOptionsPage(r) ? optionsLine(r) : observationLine(r)}`,
+            }),
+          }
         }
-        if (!(await pause(timeoutMs, ctx.signal))) return STOPPED
-        const r = await send(() => browser.observe({ tabId }))
-        return {
-          status: 'success',
-          ...browserResult({
-            ctx,
-            toolName: 'browser_wait',
-            page: r,
-            receipt: { waitedMs: timeoutMs },
-            lead: `已等待 ${timeoutMs} 毫秒。${isOptionsPage(r) ? optionsLine(r) : observationLine(r)}`,
-          }),
+        const selector = str(args.selector, 'selector')
+        const state = given(args.state) ? oneOf(args.state, WAIT_STATES, 'state') : 'visible'
+        const wantsValue = state === 'text' || state === 'value'
+        // expected 为空串表示等待文本或值为空，只有 null 视为未提供。
+        const expected =
+          args.expected === undefined || args.expected === null ? undefined : String(args.expected)
+        if (wantsValue && expected === undefined)
+          throw new ArgError(`state=${state} 必须提供 expected`)
+        if (!wantsValue && given(expected)) throw new ArgError(`state=${state} 不接受 expected`)
+        const input = {
+          tabId,
+          selector,
+          state,
+          ...(wantsValue && expected !== undefined ? { expected } : {}),
+          timeoutMs,
         }
-      }
-      const selector = str(args.selector, 'selector')
-      const state = given(args.state) ? oneOf(args.state, WAIT_STATES, 'state') : 'visible'
-      const wantsValue = state === 'text' || state === 'value'
-      // expected 为空串表示等待文本或值为空，只有 null 视为未提供。
-      const expected =
-        args.expected === undefined || args.expected === null ? undefined : String(args.expected)
-      if (wantsValue && expected === undefined)
-        throw new ArgError(`state=${state} 必须提供 expected`)
-      if (!wantsValue && given(expected)) throw new ArgError(`state=${state} 不接受 expected`)
-      const input = {
-        tabId,
-        selector,
-        state,
-        ...(wantsValue && expected !== undefined ? { expected } : {}),
-        timeoutMs,
-      }
-      const r = await send(() => browser.wait(input))
-      const target = `${selector} ${stateText(state, expected)}`
-      return withFollowUp(
-        ctx,
-        'browser_wait',
-        { met: r.met, state, ...(r.reason ? { reason: r.reason } : {}) },
-        r,
-        {
-          lead: r.met ? `${target}，已达到。` : `未等到 ${target}（${r.reason ?? 'timeout'}）。`,
-          ok: r.met,
-          advice: '先 browser_observe 确认页面状态。',
-        },
-      )
-    }),
-}
+        const r = await send(() => browser.wait(input))
+        const target = `${selector} ${stateText(state, expected)}`
+        return withFollowUp(
+          ctx,
+          'browser_wait',
+          { met: r.met, state, ...(r.reason ? { reason: r.reason } : {}) },
+          r,
+          {
+            lead: r.met ? `${target}，已达到。` : `未等到 ${target}（${r.reason ?? 'timeout'}）。`,
+            ok: r.met,
+            advice: '先 browser_observe 确认页面状态。',
+          },
+        )
+      }),
+  },
+  '先用 browser_observe 确认页面状态',
+)
 
 export const browserUploadTool: ToolSpec = {
   ...BASE,
@@ -1309,51 +1313,54 @@ export const browserUploadTool: ToolSpec = {
     }),
 }
 
-export const browserDownloadTool: ToolSpec = {
-  ...BASE,
-  name: 'browser_download',
-  description:
-    '点击下载链接或按钮，把文件保存到工作区内的指定路径。目标文件已存在时拒绝。' +
-    '结果含 blocked 表示下载被宿主拦截，原因随结果返回。' +
-    '结果不附带观察，需要读取页面状态时再调用 browser_observe。',
-  parameters: {
-    type: 'object',
-    properties: {
-      tabId: { type: 'string' },
-      ref: { type: 'string', description: '触发下载的元素编号' },
-      path: { type: 'string', description: '工作区内的目标路径' },
+export const browserDownloadTool: ToolSpec = backgroundable(
+  {
+    ...BASE,
+    name: 'browser_download',
+    description:
+      '点击下载链接或按钮，把文件保存到工作区内的指定路径。目标文件已存在时拒绝。' +
+      '结果含 blocked 表示下载被宿主拦截，原因随结果返回。' +
+      '结果不附带观察，需要读取页面状态时再调用 browser_observe。',
+    parameters: {
+      type: 'object',
+      properties: {
+        tabId: { type: 'string' },
+        ref: { type: 'string', description: '触发下载的元素编号' },
+        path: { type: 'string', description: '工作区内的目标路径' },
+      },
+      required: ['tabId', 'ref', 'path'],
+      additionalProperties: false,
     },
-    required: ['tabId', 'ref', 'path'],
-    additionalProperties: false,
-  },
-  verb: '下载',
-  object: (args) => (typeof args.path === 'string' ? args.path : '文件'),
-  summary: '触发下载并保存到工作区路径',
-  targetExtractor: tabTarget,
+    verb: '下载',
+    object: (args) => (typeof args.path === 'string' ? args.path : '文件'),
+    summary: '触发下载并保存到工作区路径',
+    targetExtractor: tabTarget,
 
-  fn: (args, ctx) =>
-    onBrowser(ctx, async (browser, send) => {
-      // 先裁决路径再触发：授权按该绝对路径登记；顺序颠倒时，网站会先开始下载，
-      // 之后才判断能否写入磁盘。
-      const absolutePath = await resolveWritablePath(rootsOf(ctx), str(args.path, 'path'))
-      const input = {
-        tabId: str(args.tabId, 'tabId'),
-        ref: str(args.ref, 'ref'),
-        absolutePath,
-        timeoutMs: DOWNLOAD_TIMEOUT_MS,
-      }
-      const r = await send(() => browser.download(input))
-      if (r.blocked) {
-        return {
-          status: 'failure',
-          message: `下载被拦截：${r.blocked}${r.suggestedName ? `（${r.suggestedName}）` : ''}`,
-          data: { ...r },
-          errorKind: 'download_blocked',
+    fn: (args, ctx) =>
+      onBrowser(ctx, async (browser, send) => {
+        // 先裁决路径再触发：授权按该绝对路径登记；顺序颠倒时，网站会先开始下载，
+        // 之后才判断能否写入磁盘。
+        const absolutePath = await resolveWritablePath(rootsOf(ctx), str(args.path, 'path'))
+        const input = {
+          tabId: str(args.tabId, 'tabId'),
+          ref: str(args.ref, 'ref'),
+          absolutePath,
+          timeoutMs: DOWNLOAD_TIMEOUT_MS,
         }
-      }
-      return { status: 'success', message: `已保存到 ${r.path}，${r.bytes} 字节`, data: { ...r } }
-    }),
-}
+        const r = await send(() => browser.download(input))
+        if (r.blocked) {
+          return {
+            status: 'failure',
+            message: `下载被拦截：${r.blocked}${r.suggestedName ? `（${r.suggestedName}）` : ''}`,
+            data: { ...r },
+            errorKind: 'download_blocked',
+          }
+        }
+        return { status: 'success', message: `已保存到 ${r.path}，${r.bytes} 字节`, data: { ...r } }
+      }),
+  },
+  (args) => `下载${typeof args.path === 'string' ? ` ${args.path}` : '文件'}`,
+)
 
 /** 注册顺序在此处确定。七个工具声明同一个端口，整组注册或整组不注册。 */
 export const browserTools: ToolSpec[] = [

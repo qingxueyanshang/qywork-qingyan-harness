@@ -19,7 +19,7 @@
  */
 
 import { boundExecutedOutcome, sanitizeToolName, type ToolSpec } from '@qywork/agent'
-import type { McpCallResult, McpClient, McpToolDef } from './client.ts'
+import { type McpCallResult, type McpClient, McpTimeoutError, type McpToolDef } from './client.ts'
 
 /**
  * 注册名。必须经过清洗：server 名来自用户配置、工具名来自第三方 server，
@@ -120,7 +120,7 @@ export function specFor(client: McpClient, def: McpToolDef): ToolSpec {
           // 保守取 true：崩溃恢复与重试都依赖该字段，判定必须偏保守。
           executed: true,
           message: `MCP 调用失败（${server}/${def.name}）：${err instanceof Error ? err.message : String(err)}`,
-          errorKind: 'mcp_transport_error',
+          errorKind: err instanceof McpTimeoutError ? 'timeout' : 'mcp_transport_error',
         }
       }
     },

@@ -33,6 +33,7 @@ import {
   writableRoots,
 } from './paths.ts'
 import { redactSecrets } from './secrets.ts'
+import { backgroundable } from './shell/detach.ts'
 import { deliverReadable } from './sink.ts'
 
 /** `write` 执行模型脚本并渲染整份文件，大文档导出需要数十秒；其余动作只读。 */
@@ -369,131 +370,140 @@ export const readOfficeGuideTool: ToolSpec = {
   fn: withOffice(guide),
 }
 
-export const readOfficeTool: ToolSpec = {
-  name: 'read_office',
-  deferred: { brief: '读取 Word / PPT / Excel 文件的结构与文字，修改已有文件前先读取' },
-  description:
-    '读取 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）的结构与文字。' +
-    '修改已有文件前必须先读取，用于写入时的版本冲突检查。查看页面使用 view_office。',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '文件的工作区相对路径' },
-      range: {
-        type: 'string',
-        description: '可选。docx 段落区间如 P1-P80；pptx 幻灯片区间如 2-5；xlsx 工作表名',
-      },
-    },
-    required: ['path'],
-    additionalProperties: false,
-  },
-  verb: '读取',
-  category: 'office',
-  facet: '文档',
-  summary: '读取 Word / PPT / Excel 的结构与文字',
-  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
-  permissionEffect: 'read',
-  parallelSafe: true,
-  resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
-  requires: [OfficePort],
-  fn: withOffice(read),
-}
-
-export const writeOfficeTool: ToolSpec = {
-  name: 'write_office',
-  deferred: { brief: '执行工作区中的 Python 脚本，制作或修改 Word / PPT / Excel 文件' },
-  description:
-    '执行工作区中的 Python 脚本，制作或修改 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）。' +
-    '先用 read_office_guide 获取该格式的操作说明；修改已有文件前先用 read_office 读取。' +
-    '完成后用 view_office 检查页面，有问题时修改脚本再执行。' +
-    '技能中描述的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）仅作操作方法参考，执行一律使用本工具。',
-  parameters: {
-    type: 'object',
-    properties: {
-      script: { type: 'string', description: '制作脚本（.py）的工作区相对路径' },
-      inputs: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '脚本读取的文件（模板、素材、数据）',
-      },
-      outputs: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '要生成或修改的 Office 文件；脚本用 office.output(路径) 获取工作副本',
-      },
-      update_toc: { type: 'boolean', description: 'docx 按页面渲染结果回填目录页码' },
-      export_pdf: { type: 'boolean', description: '同时在每个输出旁导出同名 PDF' },
-    },
-    required: ['script', 'outputs'],
-    additionalProperties: false,
-  },
-  verb: '制作',
-  category: 'office',
-  facet: '文档',
-  summary: '执行脚本制作或修改 Word / PPT / Excel',
-  targetExtractor: (a) => stringList(a.outputs)[0] ?? null,
-  permissionEffect: 'execute',
-  parallelSafe: false,
-  resourceKeys: (a) => stringList(a.outputs).map((p) => `file:${p}`),
-  requires: [OfficePort],
-  fn: withOffice(write),
-}
-
-export const viewOfficeTool: ToolSpec = {
-  name: 'view_office',
-  deferred: { brief: '把 Word / PPT / Excel / PDF 的指定页面渲染为图片，检查版式、图表与扫描件' },
-  description:
-    '将 Word / PPT / Excel / PDF 文件的指定页面渲染为图片，用于检查版式、图表和扫描件。' +
-    '交付文档前应查看页面，当前模型须支持图片输入。读取结构与文字使用 read_office。' +
-    '页面要作为参考图使用时（如画布生成卡片的输入），用 save_to 把页面原图保存到工作区。',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: {
-        type: 'string',
-        description: '文件的工作区相对路径，支持 .docx / .pptx / .xlsx / .pdf',
-      },
-      pages: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '页码，可一次提供多页，默认第 1 页；xlsx 写「工作表名:页码」',
-      },
-      region: {
-        type: 'object',
-        properties: {
-          left: { type: 'number' },
-          top: { type: 'number' },
-          width: { type: 'number' },
-          height: { type: 'number' },
+export const readOfficeTool: ToolSpec = backgroundable(
+  {
+    name: 'read_office',
+    deferred: { brief: '读取 Word / PPT / Excel 文件的结构与文字，修改已有文件前先读取' },
+    description:
+      '读取 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）的结构与文字。' +
+      '修改已有文件前必须先读取，用于写入时的版本冲突检查。查看页面使用 view_office。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '文件的工作区相对路径' },
+        range: {
+          type: 'string',
+          description: '可选。docx 段落区间如 P1-P80；pptx 幻灯片区间如 2-5；xlsx 工作表名',
         },
-        required: ['left', 'top', 'width', 'height'],
-        additionalProperties: false,
-        description:
-          '可选，按页面比例（0 到 1）指定局部区域，从原始渲染图裁剪并放大到长边 1568（至多 4 倍）。' +
-          '整页图缩小发送，细线、描边、残影、小字要用它放大后再判断',
       },
-      save_to: {
-        type: 'string',
-        description:
-          '可选，把渲染出的页面原图（PNG，渲染分辨率，不缩放；给出 region 时为局部原图）保存到工作区。' +
-          '一页时可写 .png 文件路径；写目录时每页保存为「文件名-p页码.png」，多页时必须写目录。' +
-          '已存在的文件不覆盖，改名追加 -2、-3，回执写明保存位置',
-      },
+      required: ['path'],
+      additionalProperties: false,
     },
-    required: ['path'],
-    additionalProperties: false,
+    verb: '读取',
+    category: 'office',
+    facet: '文档',
+    summary: '读取 Word / PPT / Excel 的结构与文字',
+    targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+    permissionEffect: 'read',
+    parallelSafe: true,
+    resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+    requires: [OfficePort],
+    fn: withOffice(read),
   },
-  verb: '查看',
-  category: 'office',
-  facet: '文档',
-  summary: '查看 Word / PPT / Excel / PDF 页面',
-  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
-  // 给出 save_to 时向工作区写入页面图；权限效果须固定（工具清单按此列显示边界），因此声明为 write。
-  permissionEffect: 'write',
-  parallelSafe: false,
-  resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
-  requires: [OfficePort],
-  fn: withOffice(view),
-}
+  (args) => `读取文档${typeof args.path === 'string' ? ` ${args.path}` : ''}`,
+)
+
+export const writeOfficeTool: ToolSpec = backgroundable(
+  {
+    name: 'write_office',
+    deferred: { brief: '执行工作区中的 Python 脚本，制作或修改 Word / PPT / Excel 文件' },
+    description:
+      '执行工作区中的 Python 脚本，制作或修改 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）。' +
+      '先用 read_office_guide 获取该格式的操作说明；修改已有文件前先用 read_office 读取。' +
+      '完成后用 view_office 检查页面，有问题时修改脚本再执行。' +
+      '技能中描述的其他产品的执行方式（artifact-tool、soffice、shell 导出脚本等）仅作操作方法参考，执行一律使用本工具。',
+    parameters: {
+      type: 'object',
+      properties: {
+        script: { type: 'string', description: '制作脚本（.py）的工作区相对路径' },
+        inputs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '脚本读取的文件（模板、素材、数据）',
+        },
+        outputs: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '要生成或修改的 Office 文件；脚本用 office.output(路径) 获取工作副本',
+        },
+        update_toc: { type: 'boolean', description: 'docx 按页面渲染结果回填目录页码' },
+        export_pdf: { type: 'boolean', description: '同时在每个输出旁导出同名 PDF' },
+      },
+      required: ['script', 'outputs'],
+      additionalProperties: false,
+    },
+    verb: '制作',
+    category: 'office',
+    facet: '文档',
+    summary: '执行脚本制作或修改 Word / PPT / Excel',
+    targetExtractor: (a) => stringList(a.outputs)[0] ?? null,
+    permissionEffect: 'execute',
+    parallelSafe: false,
+    resourceKeys: (a) => stringList(a.outputs).map((p) => `file:${p}`),
+    requires: [OfficePort],
+    fn: withOffice(write),
+  },
+  (args) => `制作文档${stringList(args.outputs)[0] ? ` ${stringList(args.outputs)[0]}` : ''}`,
+)
+
+export const viewOfficeTool: ToolSpec = backgroundable(
+  {
+    name: 'view_office',
+    deferred: { brief: '把 Word / PPT / Excel / PDF 的指定页面渲染为图片，检查版式、图表与扫描件' },
+    description:
+      '将 Word / PPT / Excel / PDF 文件的指定页面渲染为图片，用于检查版式、图表和扫描件。' +
+      '交付文档前应查看页面，当前模型须支持图片输入。读取结构与文字使用 read_office。' +
+      '页面要作为参考图使用时（如画布生成卡片的输入），用 save_to 把页面原图保存到工作区。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: '文件的工作区相对路径，支持 .docx / .pptx / .xlsx / .pdf',
+        },
+        pages: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '页码，可一次提供多页，默认第 1 页；xlsx 写「工作表名:页码」',
+        },
+        region: {
+          type: 'object',
+          properties: {
+            left: { type: 'number' },
+            top: { type: 'number' },
+            width: { type: 'number' },
+            height: { type: 'number' },
+          },
+          required: ['left', 'top', 'width', 'height'],
+          additionalProperties: false,
+          description:
+            '可选，按页面比例（0 到 1）指定局部区域，从原始渲染图裁剪并放大到长边 1568（至多 4 倍）。' +
+            '整页图缩小发送，细线、描边、残影、小字要用它放大后再判断',
+        },
+        save_to: {
+          type: 'string',
+          description:
+            '可选，把渲染出的页面原图（PNG，渲染分辨率，不缩放；给出 region 时为局部原图）保存到工作区。' +
+            '一页时可写 .png 文件路径；写目录时每页保存为「文件名-p页码.png」，多页时必须写目录。' +
+            '已存在的文件不覆盖，改名追加 -2、-3，回执写明保存位置',
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    verb: '查看',
+    category: 'office',
+    facet: '文档',
+    summary: '查看 Word / PPT / Excel / PDF 页面',
+    targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+    // 给出 save_to 时向工作区写入页面图；权限效果须固定（工具清单按此列显示边界），因此声明为 write。
+    permissionEffect: 'write',
+    parallelSafe: false,
+    resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+    requires: [OfficePort],
+    fn: withOffice(view),
+  },
+  (args) => `查看文档${typeof args.path === 'string' ? ` ${args.path}` : ''}`,
+)
 
 export const officeTools = [readOfficeGuideTool, readOfficeTool, writeOfficeTool, viewOfficeTool]

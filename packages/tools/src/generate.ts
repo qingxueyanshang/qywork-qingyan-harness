@@ -53,6 +53,7 @@ import {
   rootsOf,
 } from './paths.ts'
 import { renameWithRetry, retryWhileBusy } from './rename.ts'
+import { backgroundable } from './shell/detach.ts'
 
 /** 未提供输出路径时写入该工作区目录。 */
 const DEFAULT_DIR = 'generated'
@@ -915,271 +916,286 @@ const DISPLAY_NOTE =
   '回复中以 Markdown 链接写出生成文件的工作区路径，链接文字与地址均为该路径，例如 [generated/cover.png](generated/cover.png)，' +
   '用户点击链接即可在右侧面板预览；每个文件只引用一次，不得以 Markdown 图片形式嵌入。'
 
-export const generateImageTool: ToolSpec = {
-  name: 'generate_image',
-  deferred: deferredMedia('image', '用已配置的图像模型生成或修改图片'),
-  description:
-    '调用已配置的图像生成模型执行文生图或图像编辑，生成的文件写入工作区，结果仅返回文件路径。' +
-    '未提供 images 时按提示词生成；提供 images（工作区内的图片路径）时以这些图片为基础进行编辑或参考生成，编辑的部位与方式在 prompt 中说明。' +
-    PARAMS_NOTE +
-    '生成按次计费；结果未知时停止自动重新生成，下载失败时使用恢复记录取回，不能通过修改提示词或参数重发生成。' +
-    DISPLAY_NOTE,
-  parameters: {
-    type: 'object',
-    properties: {
-      prompt: { type: 'string', description: '生成内容的描述；编辑时说明修改的部位与方式' },
-      images: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '参考图或待编辑图片的工作区路径',
+export const generateImageTool: ToolSpec = backgroundable(
+  {
+    name: 'generate_image',
+    deferred: deferredMedia('image', '用已配置的图像模型生成或修改图片'),
+    description:
+      '调用已配置的图像生成模型执行文生图或图像编辑，生成的文件写入工作区，结果仅返回文件路径。' +
+      '未提供 images 时按提示词生成；提供 images（工作区内的图片路径）时以这些图片为基础进行编辑或参考生成，编辑的部位与方式在 prompt 中说明。' +
+      PARAMS_NOTE +
+      '生成按次计费；结果未知时停止自动重新生成，下载失败时使用恢复记录取回，不能通过修改提示词或参数重发生成。' +
+      DISPLAY_NOTE,
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: '生成内容的描述；编辑时说明修改的部位与方式' },
+        images: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '参考图或待编辑图片的工作区路径',
+        },
+        params_json: {
+          type: 'string',
+          description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
+        },
+        provider: { type: 'string', description: '接口名' },
+        model: { type: 'string', description: '模型 id' },
+        output: {
+          type: 'string',
+          description: `输出文件的工作区路径；生成多张时自第二张起追加 -2、-3 后缀；省略时写入 ${DEFAULT_DIR}/`,
+        },
       },
-      params_json: {
-        type: 'string',
-        description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
-      },
-      provider: { type: 'string', description: '接口名' },
-      model: { type: 'string', description: '模型 id' },
-      output: {
-        type: 'string',
-        description: `输出文件的工作区路径；生成多张时自第二张起追加 -2、-3 后缀；省略时写入 ${DEFAULT_DIR}/`,
-      },
+      required: ['prompt'],
+      additionalProperties: false,
     },
-    required: ['prompt'],
-    additionalProperties: false,
+    verb: '生成',
+    object: (args) => (typeof args.output === 'string' ? args.output : '图片'),
+    category: 'generate',
+    facet: '生成',
+    summary: '用图像生成模型生成或编辑图片',
+    targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
+    permissionEffect: 'write',
+    async fn(args, ctx) {
+      const media = ctx.port(MediaPort)
+      if (!media) return failure('本次执行没有生成通道')
+      const common = commonArgs(args)
+      if ('status' in common) return common
+      const outcome = await generateMedia({
+        roots: rootsOf(ctx),
+        media,
+        signal: ctx.signal,
+        type: 'image',
+        prompt: common.prompt,
+        inputs: pathList(args.images).map((path) => ({ role: 'reference' as const, path })),
+        params: common.params,
+        ...(common.pick ? { pick: common.pick } : {}),
+        ...(common.output ? { output: common.output } : {}),
+        ...progressOf(ctx),
+        logFields: callFields(ctx, 'generate_image'),
+      })
+      return receipt(outcome, (n) => ` ${n} 张`, rootsOf(ctx), media)
+    },
   },
-  verb: '生成',
-  object: (args) => (typeof args.output === 'string' ? args.output : '图片'),
-  category: 'generate',
-  facet: '生成',
-  summary: '用图像生成模型生成或编辑图片',
-  targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
-  permissionEffect: 'write',
-  async fn(args, ctx) {
-    const media = ctx.port(MediaPort)
-    if (!media) return failure('本次执行没有生成通道')
-    const common = commonArgs(args)
-    if ('status' in common) return common
-    const outcome = await generateMedia({
-      roots: rootsOf(ctx),
-      media,
-      signal: ctx.signal,
-      type: 'image',
-      prompt: common.prompt,
-      inputs: pathList(args.images).map((path) => ({ role: 'reference' as const, path })),
-      params: common.params,
-      ...(common.pick ? { pick: common.pick } : {}),
-      ...(common.output ? { output: common.output } : {}),
-      ...progressOf(ctx),
-      logFields: callFields(ctx, 'generate_image'),
-    })
-    return receipt(outcome, (n) => ` ${n} 张`, rootsOf(ctx), media)
-  },
-}
+  (args) => `生成图片${typeof args.output === 'string' ? ` ${args.output}` : ''}`,
+)
 
-export const generateVideoTool: ToolSpec = {
-  name: 'generate_video',
-  deferred: deferredMedia('video', '用已配置的视频模型生成视频'),
-  description:
-    '调用已配置的视频生成模型生成视频，生成的文件写入工作区，结果仅返回文件路径。远端任务需排队处理，通常耗时数分钟。' +
-    '任务类型由提供的输入决定：均未提供时为文生视频；提供 first_frame 为首帧生视频；同时提供 last_frame 为首尾帧生视频；' +
-    '提供 images 为参考图生视频；提供 videos 表示以参考视频为输入，编辑、延长或参考由该模型参数表中的对应字段指定，无对应字段时在 prompt 中说明。' +
-    '提供 audios 为参考音频，须与 images 或 videos 同时提供。' +
-    'first_frame、last_frame 不能与 images、videos、audios 同时提供。' +
-    PARAMS_NOTE +
-    '提交后在输出位置旁写入 .task.json 任务记录；等待中断后（停止、查询被拒绝或进程退出），用 retrieve_media 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
-    DISPLAY_NOTE,
-  parameters: {
-    type: 'object',
-    properties: {
-      prompt: { type: 'string', description: '视频内容的描述；编辑或延长时说明修改内容或延长方向' },
-      first_frame: { type: 'string', description: '首帧图片的工作区路径' },
-      last_frame: {
-        type: 'string',
-        description: '尾帧图片的工作区路径，须与 first_frame 同时提供',
+export const generateVideoTool: ToolSpec = backgroundable(
+  {
+    name: 'generate_video',
+    deferred: deferredMedia('video', '用已配置的视频模型生成视频'),
+    description:
+      '调用已配置的视频生成模型生成视频，生成的文件写入工作区，结果仅返回文件路径。远端任务需排队处理，通常耗时数分钟。' +
+      '任务类型由提供的输入决定：均未提供时为文生视频；提供 first_frame 为首帧生视频；同时提供 last_frame 为首尾帧生视频；' +
+      '提供 images 为参考图生视频；提供 videos 表示以参考视频为输入，编辑、延长或参考由该模型参数表中的对应字段指定，无对应字段时在 prompt 中说明。' +
+      '提供 audios 为参考音频，须与 images 或 videos 同时提供。' +
+      'first_frame、last_frame 不能与 images、videos、audios 同时提供。' +
+      PARAMS_NOTE +
+      '提交后在输出位置旁写入 .task.json 任务记录；等待中断后（停止、查询被拒绝或进程退出），用 retrieve_media 传入该记录路径取回结果，不会重新提交，也不会重复计费。' +
+      DISPLAY_NOTE,
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: '视频内容的描述；编辑或延长时说明修改内容或延长方向',
+        },
+        first_frame: { type: 'string', description: '首帧图片的工作区路径' },
+        last_frame: {
+          type: 'string',
+          description: '尾帧图片的工作区路径，须与 first_frame 同时提供',
+        },
+        images: { type: 'array', items: { type: 'string' }, description: '参考图的工作区路径' },
+        videos: { type: 'array', items: { type: 'string' }, description: '参考视频的工作区路径' },
+        audios: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '参考音频（wav / mp3）的工作区路径',
+        },
+        params_json: {
+          type: 'string',
+          description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
+        },
+        provider: { type: 'string', description: '接口名' },
+        model: { type: 'string', description: '模型 id' },
+        output: {
+          type: 'string',
+          description: `输出文件的工作区路径；省略时写入 ${DEFAULT_DIR}/`,
+        },
       },
-      images: { type: 'array', items: { type: 'string' }, description: '参考图的工作区路径' },
-      videos: { type: 'array', items: { type: 'string' }, description: '参考视频的工作区路径' },
-      audios: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '参考音频（wav / mp3）的工作区路径',
-      },
-      params_json: {
-        type: 'string',
-        description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
-      },
-      provider: { type: 'string', description: '接口名' },
-      model: { type: 'string', description: '模型 id' },
-      output: {
-        type: 'string',
-        description: `输出文件的工作区路径；省略时写入 ${DEFAULT_DIR}/`,
-      },
+      required: ['prompt'],
+      additionalProperties: false,
     },
-    required: ['prompt'],
-    additionalProperties: false,
+    verb: '生成',
+    object: (args) => (typeof args.output === 'string' ? args.output : '视频'),
+    category: 'generate',
+    facet: '生成',
+    summary: '用视频生成模型生成、编辑或延长视频',
+    targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
+    permissionEffect: 'write',
+    async fn(args, ctx) {
+      const media = ctx.port(MediaPort)
+      if (!media) return failure('本次执行没有生成通道')
+      const common = commonArgs(args)
+      if ('status' in common) return common
+      const inputs = (
+        [
+          ['first_frame', 'first_frame'],
+          ['last_frame', 'last_frame'],
+          ['images', 'reference'],
+          ['videos', 'video'],
+          ['audios', 'audio'],
+        ] as const
+      ).flatMap(([key, role]) => pathList(args[key]).map((path) => ({ role, path })))
+      const outcome = await generateMedia({
+        roots: rootsOf(ctx),
+        media,
+        signal: ctx.signal,
+        type: 'video',
+        prompt: common.prompt,
+        inputs,
+        params: common.params,
+        ...(common.pick ? { pick: common.pick } : {}),
+        ...(common.output ? { output: common.output } : {}),
+        onTask: ({ taskId, record }) =>
+          ctx.emit('progress', `已提交远端任务 ${taskId}，记录位于 ${record}\n`),
+        ...progressOf(ctx),
+        logFields: callFields(ctx, 'generate_video'),
+      })
+      return receipt(outcome, () => '视频', rootsOf(ctx), media)
+    },
   },
-  verb: '生成',
-  object: (args) => (typeof args.output === 'string' ? args.output : '视频'),
-  category: 'generate',
-  facet: '生成',
-  summary: '用视频生成模型生成、编辑或延长视频',
-  targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
-  permissionEffect: 'write',
-  async fn(args, ctx) {
-    const media = ctx.port(MediaPort)
-    if (!media) return failure('本次执行没有生成通道')
-    const common = commonArgs(args)
-    if ('status' in common) return common
-    const inputs = (
-      [
-        ['first_frame', 'first_frame'],
-        ['last_frame', 'last_frame'],
-        ['images', 'reference'],
-        ['videos', 'video'],
-        ['audios', 'audio'],
-      ] as const
-    ).flatMap(([key, role]) => pathList(args[key]).map((path) => ({ role, path })))
-    const outcome = await generateMedia({
-      roots: rootsOf(ctx),
-      media,
-      signal: ctx.signal,
-      type: 'video',
-      prompt: common.prompt,
-      inputs,
-      params: common.params,
-      ...(common.pick ? { pick: common.pick } : {}),
-      ...(common.output ? { output: common.output } : {}),
-      onTask: ({ taskId, record }) =>
-        ctx.emit('progress', `已提交远端任务 ${taskId}，记录位于 ${record}\n`),
-      ...progressOf(ctx),
-      logFields: callFields(ctx, 'generate_video'),
-    })
-    return receipt(outcome, () => '视频', rootsOf(ctx), media)
-  },
-}
+  (args) => `生成视频${typeof args.output === 'string' ? ` ${args.output}` : ''}`,
+)
 
-export const retrieveMediaTool: ToolSpec = {
-  name: 'retrieve_media',
-  description:
-    '取回已提交生成任务的原结果，只查询与下载，不重新提交、不重复计费。' +
-    `两种用法二选一：path 为 generate_image、generate_video 或 generate_audio 返回的 ${TASK_SUFFIX} 记录；` +
-    '或给出 task（远端任务号）、type、provider 与 model，用于本地没有记录的任务（如画布版本已删除），' +
-    '任务号与提交时的接口、型号取自 read_canvas 的生成记录。用户问远端任务的状态时用本工具查询，以回执为准；' +
-    '未调用时不得声称已查询远端。任务仍在生成时等待结果，等待结束后记录保留，可用返回的记录路径再次取回。' +
-    '结果写入新文件，不写回画布；画布中的待取回版本使用 retrieve_canvas。' +
-    DISPLAY_NOTE,
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: `待取回任务的记录文件路径（${TASK_SUFFIX}）` },
-      task: { type: 'string', description: '远端任务号；与 path 二选一' },
-      type: {
-        type: 'string',
-        enum: ['image', 'video', 'audio'],
-        description: '任务的生成类别；给出 task 时必填',
+export const retrieveMediaTool: ToolSpec = backgroundable(
+  {
+    name: 'retrieve_media',
+    description:
+      '取回已提交生成任务的原结果，只查询与下载，不重新提交、不重复计费。' +
+      `两种用法二选一：path 为 generate_image、generate_video 或 generate_audio 返回的 ${TASK_SUFFIX} 记录；` +
+      '或给出 task（远端任务号）、type、provider 与 model，用于本地没有记录的任务（如画布版本已删除），' +
+      '任务号与提交时的接口、型号取自 read_canvas 的生成记录。用户问远端任务的状态时用本工具查询，以回执为准；' +
+      '未调用时不得声称已查询远端。任务仍在生成时等待结果，等待结束后记录保留，可用返回的记录路径再次取回。' +
+      '结果写入新文件，不写回画布；画布中的待取回版本使用 retrieve_canvas。' +
+      DISPLAY_NOTE,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: `待取回任务的记录文件路径（${TASK_SUFFIX}）` },
+        task: { type: 'string', description: '远端任务号；与 path 二选一' },
+        type: {
+          type: 'string',
+          enum: ['image', 'video', 'audio'],
+          description: '任务的生成类别；给出 task 时必填',
+        },
+        provider: { type: 'string', description: '提交该任务的接口名；给出 task 时必填' },
+        model: { type: 'string', description: '提交该任务的模型 id；给出 task 时必填' },
       },
-      provider: { type: 'string', description: '提交该任务的接口名；给出 task 时必填' },
-      model: { type: 'string', description: '提交该任务的模型 id；给出 task 时必填' },
+      additionalProperties: false,
     },
-    additionalProperties: false,
+    verb: '取回',
+    category: 'generate',
+    facet: '生成',
+    summary: '取回已有的图片、视频或音频结果',
+    targetExtractor: (a) => text(a.path) ?? text(a.task) ?? null,
+    permissionEffect: 'write',
+    async fn(args, ctx) {
+      const media = ctx.port(MediaPort)
+      if (!media) return failure('本次执行没有生成通道')
+      const path = text(args.path)
+      const taskId = text(args.task)
+      if (!path === !taskId) return failure('path 与 task 须给出其中一项', 'invalid_tool_arguments')
+      let record = path
+      if (taskId) {
+        const type = text(args.type)
+        const provider = text(args.provider)
+        const model = text(args.model)
+        if ((type !== 'image' && type !== 'video' && type !== 'audio') || !provider || !model)
+          return failure('给出 task 时须同时给出 type、provider 与 model', 'invalid_tool_arguments')
+        record = await recordTask(rootsOf(ctx), { type, provider, model, taskId })
+        ctx.emit('progress', `已登记任务 ${taskId}，记录位于 ${record}\n`)
+      }
+      const outcome = await resumeMedia({
+        roots: rootsOf(ctx),
+        media,
+        signal: ctx.signal,
+        record: record!,
+        ...progressOf(ctx),
+        logFields: callFields(ctx, 'retrieve_media'),
+      })
+      return receipt(outcome, () => '产物', rootsOf(ctx), media)
+    },
   },
-  verb: '取回',
-  category: 'generate',
-  facet: '生成',
-  summary: '取回已有的图片、视频或音频结果',
-  targetExtractor: (a) => text(a.path) ?? text(a.task) ?? null,
-  permissionEffect: 'write',
-  async fn(args, ctx) {
-    const media = ctx.port(MediaPort)
-    if (!media) return failure('本次执行没有生成通道')
-    const path = text(args.path)
-    const taskId = text(args.task)
-    if (!path === !taskId) return failure('path 与 task 须给出其中一项', 'invalid_tool_arguments')
-    let record = path
-    if (taskId) {
-      const type = text(args.type)
-      const provider = text(args.provider)
-      const model = text(args.model)
-      if ((type !== 'image' && type !== 'video' && type !== 'audio') || !provider || !model)
-        return failure('给出 task 时须同时给出 type、provider 与 model', 'invalid_tool_arguments')
-      record = await recordTask(rootsOf(ctx), { type, provider, model, taskId })
-      ctx.emit('progress', `已登记任务 ${taskId}，记录位于 ${record}\n`)
-    }
-    const outcome = await resumeMedia({
-      roots: rootsOf(ctx),
-      media,
-      signal: ctx.signal,
-      record: record!,
-      ...progressOf(ctx),
-      logFields: callFields(ctx, 'retrieve_media'),
-    })
-    return receipt(outcome, () => '产物', rootsOf(ctx), media)
-  },
-}
+  (args) => `取回生成结果${text(args.path) ? ` ${text(args.path)}` : ''}`,
+)
 
-export const generateAudioTool: ToolSpec = {
-  name: 'generate_audio',
-  deferred: deferredMedia('audio', '用已配置的音频模型生成语音、音乐等音频'),
-  description:
-    '调用已配置的音频模型生成语音、对话或音效，生成的文件写入工作区，结果仅返回文件路径。' +
-    '音色、语种、语气等在 params_json 中设置；支持参考音频的模型可通过 audios 提供素材，按该模型声明的写法引用。' +
-    PARAMS_NOTE +
-    DISPLAY_NOTE,
-  parameters: {
-    type: 'object',
-    properties: {
-      text: {
-        type: 'string',
-        description:
-          '待合成的文本或音频描述；Next 可用 @voice1、@voice2、@voice3 引用按顺序传入的音频',
+export const generateAudioTool: ToolSpec = backgroundable(
+  {
+    name: 'generate_audio',
+    deferred: deferredMedia('audio', '用已配置的音频模型生成语音、音乐等音频'),
+    description:
+      '调用已配置的音频模型生成语音、对话或音效，生成的文件写入工作区，结果仅返回文件路径。' +
+      '音色、语种、语气等在 params_json 中设置；支持参考音频的模型可通过 audios 提供素材，按该模型声明的写法引用。' +
+      PARAMS_NOTE +
+      DISPLAY_NOTE,
+    parameters: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description:
+            '待合成的文本或音频描述；Next 可用 @voice1、@voice2、@voice3 引用按顺序传入的音频',
+        },
+        audios: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '参考音频的工作区路径；数量与格式以模型限制为准',
+        },
+        params_json: {
+          type: 'string',
+          description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
+        },
+        provider: { type: 'string', description: '接口名' },
+        model: { type: 'string', description: '模型 id' },
+        output: {
+          type: 'string',
+          description: `输出文件的工作区路径；省略时写入 ${DEFAULT_DIR}/`,
+        },
       },
-      audios: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '参考音频的工作区路径；数量与格式以模型限制为准',
-      },
-      params_json: {
-        type: 'string',
-        description: '该模型的参数，JSON 对象，字段与取值见读取本工具定义时一并返回的参数表',
-      },
-      provider: { type: 'string', description: '接口名' },
-      model: { type: 'string', description: '模型 id' },
-      output: {
-        type: 'string',
-        description: `输出文件的工作区路径；省略时写入 ${DEFAULT_DIR}/`,
-      },
+      required: ['text'],
+      additionalProperties: false,
     },
-    required: ['text'],
-    additionalProperties: false,
+    verb: '生成',
+    object: (args) => (typeof args.output === 'string' ? args.output : '音频'),
+    category: 'generate',
+    facet: '生成',
+    summary: '用音频模型生成语音、对话或音效',
+    targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
+    permissionEffect: 'write',
+    async fn(args, ctx) {
+      const media = ctx.port(MediaPort)
+      if (!media) return failure('本次执行没有生成通道')
+      const common = commonArgs({ ...args, prompt: args.text })
+      if ('status' in common) return common
+      const outcome = await generateMedia({
+        roots: rootsOf(ctx),
+        media,
+        signal: ctx.signal,
+        type: 'audio',
+        prompt: common.prompt,
+        inputs: pathList(args.audios).map((path) => ({ role: 'audio' as const, path })),
+        params: common.params,
+        ...(common.pick ? { pick: common.pick } : {}),
+        ...(common.output ? { output: common.output } : {}),
+        ...progressOf(ctx),
+        logFields: callFields(ctx, 'generate_audio'),
+      })
+      return receipt(outcome, () => '音频', rootsOf(ctx), media)
+    },
   },
-  verb: '生成',
-  object: (args) => (typeof args.output === 'string' ? args.output : '音频'),
-  category: 'generate',
-  facet: '生成',
-  summary: '用音频模型生成语音、对话或音效',
-  targetExtractor: (a) => (typeof a.output === 'string' ? a.output : null),
-  permissionEffect: 'write',
-  async fn(args, ctx) {
-    const media = ctx.port(MediaPort)
-    if (!media) return failure('本次执行没有生成通道')
-    const common = commonArgs({ ...args, prompt: args.text })
-    if ('status' in common) return common
-    const outcome = await generateMedia({
-      roots: rootsOf(ctx),
-      media,
-      signal: ctx.signal,
-      type: 'audio',
-      prompt: common.prompt,
-      inputs: pathList(args.audios).map((path) => ({ role: 'audio' as const, path })),
-      params: common.params,
-      ...(common.pick ? { pick: common.pick } : {}),
-      ...(common.output ? { output: common.output } : {}),
-      ...progressOf(ctx),
-      logFields: callFields(ctx, 'generate_audio'),
-    })
-    return receipt(outcome, () => '音频', rootsOf(ctx), media)
-  },
-}
+  (args) => `生成音频${typeof args.output === 'string' ? ` ${args.output}` : ''}`,
+)
 
 /** 每个生成类别对应的工具。注册、本轮快照与会话中判断某一类别是否有工具均查询本表。 */
 export const MEDIA_TOOLS: Record<MediaOutput, ToolSpec> = {

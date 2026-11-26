@@ -3,6 +3,7 @@ import { createResource, createSignal, For, Show } from 'solid-js'
 import { loaded, suspendUntil } from '../../lib/resource.ts'
 import {
   askInChat,
+  extensionsRevision,
   loadTeam,
   loadTeamClis,
   loadTeamRaw,
@@ -47,9 +48,10 @@ interface TeamJson {
 }
 
 export default function AgentsSettings() {
-  const [team, { refetch: refetchTeam }] = createResource(loadTeam)
+  // 会话中的 `define_role` 写入角色后 `extensionsRevision` 递增，角色与配置原文随之重新读取。
+  const [team, { refetch: refetchTeam }] = createResource(extensionsRevision, loadTeam)
   const [clis, { refetch: refetchClis }] = createResource(loadTeamClis)
-  const [file, { refetch: refetchRaw }] = createResource(loadTeamRaw)
+  const [file, { refetch: refetchRaw }] = createResource(extensionsRevision, loadTeamRaw)
   suspendUntil(() => !team.loading && !clis.loading && !file.loading)
   const [error, setError] = createSignal<string | null>(null)
   const [busy, setBusy] = createSignal(false)

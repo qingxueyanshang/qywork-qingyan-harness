@@ -40,6 +40,7 @@ import { shrinkImage } from './image.ts'
 import { OfficePort } from './office/port.ts'
 import { grabVideoFrame } from './office-worker.ts'
 import { resolveInWorkspace, rootsOf } from './paths.ts'
+import { backgroundable } from './shell/detach.ts'
 
 function failure(message: string, errorKind?: string): ToolOutcome {
   return { status: 'failure', executed: false, message, ...(errorKind ? { errorKind } : {}) }
@@ -814,122 +815,128 @@ function batchReceipt(results: CanvasBatchRunResult): ToolOutcome {
   }
 }
 
-export const runCanvasTool: ToolSpec = {
-  name: 'run_canvas',
-  deferred: { brief: '运行画布上的生成卡并等待结果' },
-  description:
-    '运行画布上 node 指定的生成卡并等待结果；node 是生成卡名称的数组，单张卡写成一个元素的数组。' +
-    '批量时只运行指定的卡（重复的只运行一次），批内上游完成后才运行下游。' +
-    '上游失败或待取回时跳过下游；未指定的上游只使用已有结果，不自动运行。按节点返回成功、失败与未运行原因，勿整批重新运行。' +
-    '指定的卡正在生成（由界面或上一轮发起）时不重复提交、不计费，等待该次生成结束并返回其结果；等待生成结果用本工具。' +
-    '回执列出每个产物的宽高、时长与实际发送的参数。运行后核对结果：先核对回执中的宽高、时长与参数是否符合要求，' +
-    '再用 read_file 查看图片与视频的画面是否符合提示词；不符合时查明原因，用 edit_canvas 修改提示词或参数，再运行该节点。' +
-    '同一张卡片的图片最多重新运行 3 次，视频最多 2 次；用尽后把最接近要求的版本设为当前版本，继续其余节点，该节点按系统提示中的 retry_limit 记为失败。回复中的分辨率、时长与参数以回执为准。' +
-    '每次运行提交新的生成任务，按次计费，结果符合要求时不重复运行。' +
-    '用户要求更换模型或参数重新生成而未指定卡片时，只运行尚无可用结果的卡，在最终回复中列出未重新生成的卡。' +
-    '已有待取回版本使用 retrieve_canvas，不重新运行。修改提示词、参数与连线使用 edit_canvas。',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '画布文件的工作区路径' },
-      // 只用数组一种类型：写成「字符串或数组」时，Claude 把数组编码为 JSON 字符串传入，整个字符串被当作一个 id。
-      node: {
-        type: 'array',
-        items: { type: 'string' },
-        minItems: 1,
-        description: '要运行的生成卡名称数组；单张卡写成一个元素的数组',
+export const runCanvasTool: ToolSpec = backgroundable(
+  {
+    name: 'run_canvas',
+    deferred: { brief: '运行画布上的生成卡并等待结果' },
+    description:
+      '运行画布上 node 指定的生成卡并等待结果；node 是生成卡名称的数组，单张卡写成一个元素的数组。' +
+      '批量时只运行指定的卡（重复的只运行一次），批内上游完成后才运行下游。' +
+      '上游失败或待取回时跳过下游；未指定的上游只使用已有结果，不自动运行。按节点返回成功、失败与未运行原因，勿整批重新运行。' +
+      '指定的卡正在生成（由界面或上一轮发起）时不重复提交、不计费，等待该次生成结束并返回其结果；等待生成结果用本工具。' +
+      '回执列出每个产物的宽高、时长与实际发送的参数。运行后核对结果：先核对回执中的宽高、时长与参数是否符合要求，' +
+      '再用 read_file 查看图片与视频的画面是否符合提示词；不符合时查明原因，用 edit_canvas 修改提示词或参数，再运行该节点。' +
+      '同一张卡片的图片最多重新运行 3 次，视频最多 2 次；用尽后把最接近要求的版本设为当前版本，继续其余节点，该节点按系统提示中的 retry_limit 记为失败。回复中的分辨率、时长与参数以回执为准。' +
+      '每次运行提交新的生成任务，按次计费，结果符合要求时不重复运行。' +
+      '用户要求更换模型或参数重新生成而未指定卡片时，只运行尚无可用结果的卡，在最终回复中列出未重新生成的卡。' +
+      '已有待取回版本使用 retrieve_canvas，不重新运行。修改提示词、参数与连线使用 edit_canvas。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '画布文件的工作区路径' },
+        // 只用数组一种类型：写成「字符串或数组」时，Claude 把数组编码为 JSON 字符串传入，整个字符串被当作一个 id。
+        node: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          description: '要运行的生成卡名称数组；单张卡写成一个元素的数组',
+        },
       },
+      required: ['path', 'node'],
+      additionalProperties: false,
     },
-    required: ['path', 'node'],
-    additionalProperties: false,
+    verb: '运行',
+    object: (args) => {
+      const names = Array.isArray(args.node)
+        ? args.node.filter((n): n is string => typeof n === 'string' && n.trim() !== '')
+        : []
+      return names.length ? names.join('、') : (text(args.path) ?? null)
+    },
+    category: 'canvas',
+    facet: '生成',
+    summary: '运行画布中的一个或多个生成节点',
+    targetExtractor: (a) => text(a.path) ?? null,
+    permissionEffect: 'write',
+    requires: [CanvasPort],
+    async fn(args, ctx) {
+      const canvas = ctx.port(CanvasPort)
+      if (!canvas) return failure('本次执行没有画布通道')
+      const path = text(args.path)
+      if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+      const refs = args.node
+      if (!Array.isArray(refs) || !refs.length || refs.some((ref) => !text(ref)))
+        return failure(
+          'node 必须是生成卡名称的数组（不是 JSON 字符串），单张卡写成一个元素的数组',
+          'invalid_tool_arguments',
+        )
+      const media = ctx.port(MediaPort)
+      if (!media) return failure('本次执行没有生成通道')
+      try {
+        const ids = await idsOf(
+          canvas,
+          path,
+          refs.map((ref) => text(ref)!),
+        )
+        if (typeof ids === 'string') return failure(ids, 'invalid_tool_arguments')
+        const nodes = [...new Set(ids)]
+        return nodes.length > 1
+          ? batchReceipt(await canvas.runBatch(path, nodes, media, ctx.signal))
+          : generationReceipt(await canvas.run(path, nodes[0]!, media, ctx.signal))
+      } catch (err) {
+        return { status: 'failure', executed: true, message: (err as Error).message }
+      }
+    },
   },
-  verb: '运行',
-  object: (args) => {
-    const names = Array.isArray(args.node)
-      ? args.node.filter((n): n is string => typeof n === 'string' && n.trim() !== '')
-      : []
-    return names.length ? names.join('、') : (text(args.path) ?? null)
-  },
-  category: 'canvas',
-  facet: '生成',
-  summary: '运行画布中的一个或多个生成节点',
-  targetExtractor: (a) => text(a.path) ?? null,
-  permissionEffect: 'write',
-  requires: [CanvasPort],
-  async fn(args, ctx) {
-    const canvas = ctx.port(CanvasPort)
-    if (!canvas) return failure('本次执行没有画布通道')
-    const path = text(args.path)
-    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
-    const refs = args.node
-    if (!Array.isArray(refs) || !refs.length || refs.some((ref) => !text(ref)))
-      return failure(
-        'node 必须是生成卡名称的数组（不是 JSON 字符串），单张卡写成一个元素的数组',
-        'invalid_tool_arguments',
-      )
-    const media = ctx.port(MediaPort)
-    if (!media) return failure('本次执行没有生成通道')
-    try {
-      const ids = await idsOf(
-        canvas,
-        path,
-        refs.map((ref) => text(ref)!),
-      )
-      if (typeof ids === 'string') return failure(ids, 'invalid_tool_arguments')
-      const nodes = [...new Set(ids)]
-      return nodes.length > 1
-        ? batchReceipt(await canvas.runBatch(path, nodes, media, ctx.signal))
-        : generationReceipt(await canvas.run(path, nodes[0]!, media, ctx.signal))
-    } catch (err) {
-      return { status: 'failure', executed: true, message: (err as Error).message }
-    }
-  },
-}
+  (args) => `运行生成卡${Array.isArray(args.node) ? `「${args.node.join('、')}」` : ''}`,
+)
 
-export const retrieveCanvasTool: ToolSpec = {
-  name: 'retrieve_canvas',
-  deferred: { brief: '取回画布上生成卡已在远端完成的视频结果' },
-  description:
-    '取回画布上 node 指定生成卡仍在远端的视频结果，不重新提交、不重复计费。' +
-    '先用 read_canvas 查看待取回的节点与版本；version 省略时取当前版或最新的待取回版。',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '画布文件的工作区路径' },
-      node: { type: 'string', description: '待取回结果的生成卡名称' },
-      version: { type: 'string', description: '取回的版本；省略时取当前版或最新的待取回版' },
+export const retrieveCanvasTool: ToolSpec = backgroundable(
+  {
+    name: 'retrieve_canvas',
+    deferred: { brief: '取回画布上生成卡已在远端完成的视频结果' },
+    description:
+      '取回画布上 node 指定生成卡仍在远端的视频结果，不重新提交、不重复计费。' +
+      '先用 read_canvas 查看待取回的节点与版本；version 省略时取当前版或最新的待取回版。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '画布文件的工作区路径' },
+        node: { type: 'string', description: '待取回结果的生成卡名称' },
+        version: { type: 'string', description: '取回的版本；省略时取当前版或最新的待取回版' },
+      },
+      required: ['path', 'node'],
+      additionalProperties: false,
     },
-    required: ['path', 'node'],
-    additionalProperties: false,
+    verb: '取回',
+    object: (args) => text(args.node) ?? text(args.path) ?? null,
+    category: 'canvas',
+    facet: '生成',
+    summary: '取回画布视频并更新节点',
+    targetExtractor: (a) => text(a.path) ?? null,
+    permissionEffect: 'write',
+    requires: [CanvasPort],
+    async fn(args, ctx) {
+      const canvas = ctx.port(CanvasPort)
+      if (!canvas) return failure('本次执行没有画布通道')
+      const path = text(args.path)
+      if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+      const ref = text(args.node)
+      if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
+      const media = ctx.port(MediaPort)
+      if (!media) return failure('本次执行没有生成通道')
+      try {
+        const ids = await idsOf(canvas, path, [ref])
+        if (typeof ids === 'string') return failure(ids, 'invalid_tool_arguments')
+        return generationReceipt(
+          await canvas.retrieve(path, ids[0]!, text(args.version), media, ctx.signal),
+        )
+      } catch (err) {
+        return { status: 'failure', executed: true, message: (err as Error).message }
+      }
+    },
   },
-  verb: '取回',
-  object: (args) => text(args.node) ?? text(args.path) ?? null,
-  category: 'canvas',
-  facet: '生成',
-  summary: '取回画布视频并更新节点',
-  targetExtractor: (a) => text(a.path) ?? null,
-  permissionEffect: 'write',
-  requires: [CanvasPort],
-  async fn(args, ctx) {
-    const canvas = ctx.port(CanvasPort)
-    if (!canvas) return failure('本次执行没有画布通道')
-    const path = text(args.path)
-    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
-    const ref = text(args.node)
-    if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
-    const media = ctx.port(MediaPort)
-    if (!media) return failure('本次执行没有生成通道')
-    try {
-      const ids = await idsOf(canvas, path, [ref])
-      if (typeof ids === 'string') return failure(ids, 'invalid_tool_arguments')
-      return generationReceipt(
-        await canvas.retrieve(path, ids[0]!, text(args.version), media, ctx.signal),
-      )
-    } catch (err) {
-      return { status: 'failure', executed: true, message: (err as Error).message }
-    }
-  },
-}
+  (args) => `取回${text(args.node) ? `「${text(args.node)}」` : ''}的结果`,
+)
 
 /**
  * 取消的回执。`stopped` 按收尾后的卡片状态区分：任务记录保留时可取回，否则远端结果未知。
@@ -1105,58 +1112,61 @@ export const captureCanvasFrameTool: ToolSpec = {
   },
 }
 
-export const exportTimelineTool: ToolSpec = {
-  name: 'export_timeline',
-  deferred: { brief: '把画布上的时间线导出为成片视频' },
-  description:
-    '把画布上的一条时间线导出为成片并等待完成：由界面执行与「导出」按钮相同的编码（界面会打开该画布并显示进度），' +
-    '成片保存为 generated/<时间线名称>.mp4（重名时加 -2），时间线右侧新增引用它的视频卡。' +
-    '片段按 clips 的顺序与入点、出点拼接；先用 edit_canvas 整理好片段再导出。qywork 界面未打开该项目时无法导出。',
-  parameters: {
-    type: 'object',
-    properties: {
-      path: { type: 'string', description: '画布文件的工作区路径' },
-      node: { type: 'string', description: '时间线的名称或 id' },
+export const exportTimelineTool: ToolSpec = backgroundable(
+  {
+    name: 'export_timeline',
+    deferred: { brief: '把画布上的时间线导出为成片视频' },
+    description:
+      '把画布上的一条时间线导出为成片并等待完成：由界面执行与「导出」按钮相同的编码（界面会打开该画布并显示进度），' +
+      '成片保存为 generated/<时间线名称>.mp4（重名时加 -2），时间线右侧新增引用它的视频卡。' +
+      '片段按 clips 的顺序与入点、出点拼接；先用 edit_canvas 整理好片段再导出。qywork 界面未打开该项目时无法导出。',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '画布文件的工作区路径' },
+        node: { type: 'string', description: '时间线的名称或 id' },
+      },
+      required: ['path', 'node'],
+      additionalProperties: false,
     },
-    required: ['path', 'node'],
-    additionalProperties: false,
-  },
-  verb: '导出',
-  object: (args) => text(args.node) ?? text(args.path) ?? null,
-  category: 'canvas',
-  facet: '生成',
-  summary: '导出画布时间线的成片',
-  targetExtractor: (a) => text(a.path) ?? null,
-  permissionEffect: 'write',
-  requires: [CanvasPort],
-  async fn(args, ctx) {
-    const canvas = ctx.port(CanvasPort)
-    if (!canvas) return failure('本次执行没有画布通道')
-    const path = text(args.path)
-    if (!path) return failure('缺少 path', 'invalid_tool_arguments')
-    const ref = text(args.node)
-    if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
-    try {
-      const { doc } = await canvas.read(path)
-      const found = cardIdOf(doc, ref)
-      if (!found.ok) return failure(found.error, 'invalid_tool_arguments')
-      const source = doc.nodes.find((n) => n.id === found.id)!
-      if (source.type !== 'timeline') {
-        return failure(`「${displayNameOf(source)}」不是时间线`, 'invalid_tool_arguments')
+    verb: '导出',
+    object: (args) => text(args.node) ?? text(args.path) ?? null,
+    category: 'canvas',
+    facet: '生成',
+    summary: '导出画布时间线的成片',
+    targetExtractor: (a) => text(a.path) ?? null,
+    permissionEffect: 'write',
+    requires: [CanvasPort],
+    async fn(args, ctx) {
+      const canvas = ctx.port(CanvasPort)
+      if (!canvas) return failure('本次执行没有画布通道')
+      const path = text(args.path)
+      if (!path) return failure('缺少 path', 'invalid_tool_arguments')
+      const ref = text(args.node)
+      if (!ref) return failure('缺少 node', 'invalid_tool_arguments')
+      try {
+        const { doc } = await canvas.read(path)
+        const found = cardIdOf(doc, ref)
+        if (!found.ok) return failure(found.error, 'invalid_tool_arguments')
+        const source = doc.nodes.find((n) => n.id === found.id)!
+        if (source.type !== 'timeline') {
+          return failure(`「${displayNameOf(source)}」不是时间线`, 'invalid_tool_arguments')
+        }
+        const landed = await canvas.exportTimeline(path, source.id, ctx.signal)
+        const card = (await canvas.read(path)).doc.nodes.find((n) => n.id === landed.nodeId)
+        const seconds = source.clips.reduce((sum, c) => sum + (c.out - c.in), 0)
+        return {
+          status: 'success',
+          message:
+            `已导出「${displayNameOf(source)}」（${source.clips.length} 段，共 ${Math.round(seconds * 100) / 100} 秒），` +
+            `成片保存为 ${landed.path}；新卡「${card ? displayNameOf(card) : landed.nodeId}」位于该时间线右侧。`,
+          data: { nodeId: landed.nodeId, path: landed.path },
+          fileChanges: [{ path: landed.path, changeType: 'created' }],
+        }
+      } catch (err) {
+        return { status: 'failure', executed: true, message: (err as Error).message }
       }
-      const landed = await canvas.exportTimeline(path, source.id, ctx.signal)
-      const card = (await canvas.read(path)).doc.nodes.find((n) => n.id === landed.nodeId)
-      const seconds = source.clips.reduce((sum, c) => sum + (c.out - c.in), 0)
-      return {
-        status: 'success',
-        message:
-          `已导出「${displayNameOf(source)}」（${source.clips.length} 段，共 ${Math.round(seconds * 100) / 100} 秒），` +
-          `成片保存为 ${landed.path}；新卡「${card ? displayNameOf(card) : landed.nodeId}」位于该时间线右侧。`,
-        data: { nodeId: landed.nodeId, path: landed.path },
-        fileChanges: [{ path: landed.path, changeType: 'created' }],
-      }
-    } catch (err) {
-      return { status: 'failure', executed: true, message: (err as Error).message }
-    }
+    },
   },
-}
+  (args) => `导出${text(args.node) ? `「${text(args.node)}」` : ''}的成片`,
+)

@@ -21,7 +21,13 @@ import {
   type ToolContext,
   type ToolSpec,
 } from '@qywork/agent'
-import { CALL_TIMEOUT_MS, checkPermission, type HostCallContext, PluginHost } from './host.ts'
+import {
+  CALL_TIMEOUT_MS,
+  checkPermission,
+  type HostCallContext,
+  PluginHost,
+  PluginTimeoutError,
+} from './host.ts'
 import {
   ManifestError,
   type PluginManifest,
@@ -241,7 +247,7 @@ function register(plugin: LoadedPlugin, registry: PluginRegistry): void {
             status: 'failure' as const,
             executed: true,
             message: `插件工具 ${name} 执行失败：${err instanceof Error ? err.message : String(err)}`,
-            errorKind: 'plugin_error',
+            errorKind: err instanceof PluginTimeoutError ? 'timeout' : 'plugin_error',
           }
         }
       },

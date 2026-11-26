@@ -2,15 +2,16 @@ import { definePort } from '@qywork/agent'
 import type { FileChange } from '@qywork/core'
 
 /**
- * 后台命令端口：`run_command` 结束等待而命令仍在运行时，命令交给装配方的进程级任务表持有。
+ * 后台任务端口：`run_command` 结束等待而命令仍在运行时，或可转入后台的工具（`shell/detach.ts`）在执行期间
+ * 收到用户消息时，这次执行交给装配方的进程级任务表持有。
  *
  * 任务表跨越多轮存在，回执经由会话的投递入口送达，二者都在 server，因此实现由 server 注入。
  * 端口按会话绑定，方法不带会话参数：其他会话的后台命令在此不可见。只注入顶层会话：
  * 回执须能发起该会话的一轮。
  *
- * 命令的启动、等待与收尾只在 `run_command` 中执行，任务表只持有转入后台之后的句柄：
- * 命令结束时先把转入后台之后的文件改动追加到 `stepId` 的 `outcome.fileChanges`，再投递回执；
- * 被停止的命令同样追加改动，不投递回执。
+ * 任务的启动、等待与收尾只在发起它的工具中执行，任务表只持有转入后台之后的句柄：
+ * 任务结束时先把转入后台之后的文件改动追加到 `stepId` 的 `outcome.fileChanges`，再投递回执；
+ * 被停止的任务同样追加改动，不投递回执。
  *
  * 未注入时 `run_command` 没有 `background` 与 `wait_seconds` 参数，前台等待只在命令退出时结束，`background_command` 不注册。
  */
@@ -20,10 +21,11 @@ export interface CommandPort {
    * 调用之后新到达的「排队」消息为 `queue`。`signal` 中止时以中止原因拒绝。信号来源与 `DelegatePort.awaitReceipt` 相同。
    */
   steered(signal: AbortSignal): Promise<'steer' | 'queue'>
-  /** 登记一条转入后台的命令，返回任务编号。登记之后本轮停止不再影响该命令。 */
+  /** 登记一条转入后台的任务，返回任务编号。登记之后本轮停止不再影响该任务。 */
   adopt(task: {
+    /** 任务说明：命令原文，或工具写明的说明（如「运行生成卡「封面」」）。显示在任务列表、回执与工具行中。 */
     command: string
-    /** 发起该命令的 `run_command` 调用的 step。转入后台之后的文件改动归属它。 */
+    /** 发起该任务的工具调用的 step。转入后台之后的文件改动归属它。 */
     stepId: string
     output(): CommandOutput
     /**

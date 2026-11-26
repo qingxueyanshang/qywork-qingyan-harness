@@ -68,6 +68,8 @@ export const toolEvents = handlers({
           'move_skill',
           'write_mcp_server',
           'move_mcp_server',
+          'enable_mcp_server',
+          'define_role',
           'write_memory',
           'delete_memory',
           'move_memory',
