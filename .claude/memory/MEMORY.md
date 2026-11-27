@@ -23,7 +23,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [云端仓库格式化须指定 biome 配置](cloud-biome-config-path.md) — 云端仓库没有 biome.json，不加 `--config-path ../qywork/biome.json` 会按默认配置重排整个文件，且无法再格式化恢复
 - [商业化云服务使用独立账号](commercial-cloud-standalone-accounts.md) — 邮箱加密码注册登录，不接第三方登录；后台录入模型接口并查看用户数据
 - [前一版本未发布时不升版本号](version-bump-only-after-publish.md) — v0.1.20 未公开时新改动并入 0.1.20，本地打包安装使用同一版本号，版本说明修改当前版本的那一份
-- [正式发布经接口脚本完成](publish-release-via-api.md) — `.tmp/scratch/release-api.ps1` 用凭据管理器的令牌触发三个发布工作流并公开草稿，不需要 gh；Git Bash 中设置 `MSYS_NO_PATHCONV=1`
+- [正式发布经接口脚本完成](publish-release-via-api.md) — `.tmp/scratch/release-api.ps1` 用凭据管理器的令牌触发三个发布工作流并公开草稿，公开后 `bun run install:release` 装到本机；不需要 gh；Git Bash 中设置 `MSYS_NO_PATHCONV=1`
 - [执行 qy 必须隔离数据目录](qy-needs-isolated-home.md) — 同一条命令中设置 `QYWORK_HOME` 指向 .tmp；钩子 `scripts/guard-real-home.ts` 拦截未设置的命令；单个测试文件用 `bun run test <文件>`，不要进入包目录再 `bun test`（不加载预载）；误用过三次用户真实数据
 - [Git Bash 的 /tmp 指向已删除的测试目录](git-bash-tmp-points-at-deleted-test-dir.md) — bash 先输出「could not find /tmp」、shell 工具测试报「投递额度未开账」；用 `mount` 查看指向并重建该目录，不结束其他会话的 sh
 - [与并行会话修改了同一批文件时只提交本会话的段](partial-commit-shared-files.md) — 按内容判定归属、从 HEAD 构造内容写入索引、临时工作树自检、按索引提交；带 pathspec 会把对方的段一并提交

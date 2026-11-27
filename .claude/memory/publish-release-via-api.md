@@ -1,9 +1,9 @@
 ---
 name: publish-release-via-api
-description: 正式发布经 .tmp/scratch/release-api.ps1 调用 GitHub 接口触发三个发布工作流并公开草稿，本机没有 gh；Git Bash 中须设置 MSYS_NO_PATHCONV=1
+description: 正式发布经 .tmp/scratch/release-api.ps1 调用 GitHub 接口触发三个发布工作流并公开草稿，公开后执行 bun run install:release 装到本机；本机没有 gh；Git Bash 中须设置 MSYS_NO_PATHCONV=1
 metadata:
   type: reference
-  modified: 2026-11-26
+  modified: 2026-11-27
 ---
 
 正式发布不需要 `gh`：`.tmp/scratch/release-api.ps1` 从 Git 凭据管理器（`git credential fill`）取得已保存的
@@ -18,6 +18,8 @@ GitHub 令牌，直接调用仓库接口。该脚本在 `.tmp/` 下、不入库�
    `POST /actions/workflows/<文件>/dispatches`，请求体 `{"ref":"master"}`；工作流只接受 master。
 4. 三端成功后各自上传到同一个草稿 Release（18 个附件，含 `latest.json`）。核对附件与 `latest.json` 的版本后，
    `PATCH /releases/<id>`，请求体 `{"draft":false,"make_latest":"true"}`；公开时 GitHub 按草稿的提交创建标签。
+5. 公开约 10 分钟后官网同步完成，执行 `bun run install:release` 把同一版本装到本机（安装版须已退出）。
+   开发版与安装版共用 `~/.qywork`，不安装时安装版因数据库的结构版本更高而无法启动。这一步是发版的一部分，不等用户提出。
 
 整个过程约 40 分钟，macOS 常排队 15 分钟以上。
 
