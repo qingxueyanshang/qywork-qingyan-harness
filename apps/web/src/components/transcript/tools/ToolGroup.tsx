@@ -1,6 +1,6 @@
 import { For, Show } from 'solid-js'
 import { groupTitle } from '../../../lib/render-items.ts'
-import { fileDelta, statusWord } from '../../../lib/step-view.ts'
+import { statusWord } from '../../../lib/step-view.ts'
 import { foldOpen, seedFoldOpen, type TranscriptItem } from '../../../lib/store/index.ts'
 import { Fold, foldKey } from '../Fold.tsx'
 import { ThinkingFold } from '../ThinkingFold.tsx'
@@ -35,15 +35,10 @@ export function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
     ),
   )
 
-  // 组内文件改动的合计行数：标题按开头计数，无法表明是否修改过文件，行尾的增删行数补充这一事实。
-  const changes = () =>
-    fileDelta(
-      props.members.flatMap((m) => (m.kind === 'tool' ? (m.outcome?.fileChanges ?? []) : [])),
-    )
+  // 标题行不显示组内合计的增删行数：增删行数只在展开后的各文件行显示。
   return (
     <Fold
       id={foldKey('group', props.id)}
-      {...(changes() ? { changes: changes()! } : {})}
       label={
         <>
           {groupTitle(props.members)}

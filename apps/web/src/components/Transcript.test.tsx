@@ -3244,6 +3244,43 @@ describe('检查点节点', () => {
   })
 })
 
+/** 原始失败形状：收起的工具组标题行尾显示组内合计的「+311 −0」。增删行数只在展开后的各文件行显示。 */
+test('工具组收起时标题行不显示增删行数，展开后文件行显示', async () => {
+  const { render } = await import('solid-js/web')
+  const { TranscriptRows } = await import('./transcript/TranscriptRows.tsx')
+  const tool = (id: string, verb: string, fileChanges: unknown[]) => ({
+    id,
+    kind: 'tool',
+    text: '',
+    toolName: verb === '创建' ? 'write_file' : 'read_file',
+    status: 'success',
+    action: { kind: 'write', head: '文件读写', verb, object: `${id}.html`, target: `${id}.html` },
+    outcome: { status: 'success', executed: true, message: `${verb} ${id}.html`, fileChanges },
+  })
+  const items = [
+    tool('a', '读取', []),
+    tool('b', '创建', [{ path: 'b.html', changeType: 'created', additions: 311, deletions: 0 }]),
+  ]
+  const host = document.createElement('div')
+  const dispose = render(
+    () => <TranscriptRows items={items as never} />,
+    host as unknown as HTMLElement,
+  )
+  try {
+    const group = host.querySelector<HTMLDetailsElement>('details.fold')!
+    expect(group.querySelector(':scope > summary .fold-delta')).toBeNull()
+    group.open = true
+    group.dispatchEvent(new Event('toggle'))
+    await Promise.resolve()
+    const rows = [...host.querySelectorAll('.fold-group > details.fold')]
+    expect(rows).toHaveLength(2)
+    expect(rows[1]!.querySelector(':scope > summary .fold-delta')?.textContent).toBe('+311−0')
+    expect(group.querySelector(':scope > summary .fold-delta')).toBeNull()
+  } finally {
+    dispose()
+  }
+})
+
 /**
  * 行的 DOM 挂载在按 id 固定的外壳上，不挂载在每轮新建的投影包装上。锁定两种原始失败形状：
  * 运行中展开的组卡片在下一个工具启动时收起；workflow 卡每收到一个进度事件即整张重建，
