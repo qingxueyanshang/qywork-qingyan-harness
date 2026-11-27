@@ -4,9 +4,8 @@ import type { ActionKind } from '../../protocol/events.ts'
  * 工具行的动词与它所属的动作。
  *
  * 工具只声明动词，动作由本表得出，二者不会不一致。每个动词只属于一个动作：同一个动词在所有类目下含义相同。
- * 动作仍决定展开内容的分支与上下文压缩的「涉及的文件」（`read` / `write` / `edit` 的目标计入）。
- * 目标不是文件路径的工具选用这三类动作下的动词时，其目标（标签页、窗口、任务编号）同样计入该清单；
- * 目标只用于显示时不要写入 `targetExtractor`，只写 `object`。
+ * 动作仍决定展开内容的分支；上下文压缩的「涉及的文件」收录读写动作的目标，另按类目筛选（`FILE_TARGET_CATEGORIES`），
+ * 标签页、窗口与任务编号不进入。文件类目中目标只用于显示的工具不要写入 `targetExtractor`，只写 `object`。
  */
 export const VERB_KINDS = {
   列出: 'query',

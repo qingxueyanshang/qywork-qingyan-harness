@@ -164,6 +164,8 @@ interface Server {
   exports: string[]
   /** 为真时开始导出返回 409：该时间线的导出已由另一个界面认领。 */
   exportClaimed: boolean
+  /** 为真时写入返回 404：导出会话已被服务端结束（大模型停止了导出）。 */
+  exportGone: boolean
   /** 停止请求的节点 id，按请求顺序记录；返回结果取 `cancelOutcome`。 */
   cancels: string[]
   retrievals: { nodeId: string; version?: string }[]
@@ -247,6 +249,7 @@ async function mount(
     restores: [],
     exports: [],
     exportClaimed: false,
+    exportGone: false,
   }
   const original = store.client.api
   ;(
@@ -381,6 +384,14 @@ async function mount(
         )
       }
       if (path.startsWith('/api/canvas/export/start')) return { upload: 'u1' }
+      if (path.startsWith('/api/canvas/export/write') && server.exportGone) {
+        const { ApiError } = await import('../../lib/client.ts')
+        throw new ApiError(
+          404,
+          path,
+          JSON.stringify({ error: 'not_found', message: '本次导出已结束或超时，请重新导出' }),
+        )
+      }
       if (path.startsWith('/api/canvas/export/abort')) return { ok: true }
       throw new Error('测试中不写入磁盘')
     }
@@ -6039,6 +6050,37 @@ describe('画布：时间线', () => {
       () => host.querySelector('.canvas-fault')?.textContent === '该时间线正在由另一个界面导出',
       () => host.querySelector('.canvas-fault')?.textContent ?? '',
     )
+  })
+
+  /** 大模型停止了它请求的导出：服务端结束导出会话，界面的下一次写入得到 404。这是停止，不是本界面的错误。 */
+  test('请求的导出被停止：写入被拒绝时不显示错误；用户点击导出时照常显示', async () => {
+    const renderer = await import('./render.ts')
+    const render = spyOn(renderer, 'renderTimeline').mockImplementation(
+      async (_clips, _muted, _progress, _signal, write) => {
+        await write(new Uint8Array(8), 0)
+      },
+    )
+    try {
+      const store = await import('../../lib/store/index.ts')
+      const { host, server, refs } = await mount(TIMELINE)
+      server.exportGone = true
+      store.setExportRequests([{ path: 'board.canvas.json', nodeId: refs.$t! }])
+      await waitFor(
+        () => server.exports.includes('abort'),
+        () => JSON.stringify(server.exports),
+      )
+      await nextTurn()
+      expect(host.querySelector('.canvas-fault')).toBeNull()
+
+      node(host, refs.$t!).querySelector<HTMLButtonElement>('.canvas-tl-export')!.click()
+      await waitFor(
+        () =>
+          host.querySelector('.canvas-fault')?.textContent === '本次导出已结束或超时，请重新导出',
+        () => host.querySelector('.canvas-fault')?.textContent ?? '',
+      )
+    } finally {
+      render.mockRestore()
+    }
   })
 })
 

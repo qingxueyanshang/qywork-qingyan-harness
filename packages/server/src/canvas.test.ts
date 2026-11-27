@@ -737,7 +737,7 @@ describe('画布服务：时间线导出', () => {
     await svc.exports.exportAbort(root, await svc.exports.exportStart(root, PATH, refs.$t!))
   })
 
-  test('大模型请求导出：没有界面开始导出时超时失败；界面放弃导出时失败；中止只结束等待，导出照常完成', async () => {
+  test('大模型请求导出：没有界面开始导出时超时失败；界面放弃导出时失败；停止时结束界面的导出', async () => {
     const root = await workspace()
     const svc = new CanvasService({ publish: () => {}, exportClaimMs: 30 })
     await mkdir(join(root, 'generated'), { recursive: true })
@@ -774,14 +774,56 @@ describe('画布服务：时间线导出', () => {
     )
     expect((await dropped).message).toContain('导出失败或被取消')
 
+    /*
+     * 原始失败形状：停止只结束等待，界面中的导出照常完成。转入后台的导出被停止后任务表已移除该任务，
+     * 成片仍出现在画布上，且没有回执。
+     */
     const stop = new AbortController()
     const left = failure(claiming.exports.requestExport(ws, PATH, refs.$t!, stop.signal))
     await asked(2)
-    const id = await claiming.exports.exportStart(root, PATH, refs.$t!)
+    const id = await claiming.exports.exportStart(root, PATH, refs.$t!, true)
     stop.abort()
-    expect((await left).message).toContain('界面中的导出照常进行')
-    await claiming.exports.exportWrite(root, id, 0, MP4)
-    expect((await claiming.exports.exportFinish(root, id)).path).toBe('generated/粗剪.mp4')
+    expect((await left).message).toBe('已停止导出')
+    expect((await failure(claiming.exports.exportWrite(root, id, 0, MP4))).status).toBe(404)
+    await until(async () => (await parts(root)).length === 0, '导出临时文件被删除')
+
+    // 界面开始之前停止：请求撤销，界面随后按请求开始时被拒绝，不另导出一份。
+    const early = new AbortController()
+    const withdrawn = failure(claiming.exports.requestExport(ws, PATH, refs.$t!, early.signal))
+    await asked(3)
+    early.abort()
+    expect((await withdrawn).message).toBe('已停止导出')
+    expect((await failure(claiming.exports.exportStart(root, PATH, refs.$t!, true))).status).toBe(
+      409,
+    )
+    expect(await parts(root)).toEqual([])
+  })
+
+  /** 原始失败形状：一个界面完成导出之后，另一个界面才按同一请求开始导出，同一条时间线另导出一份「粗剪-2.mp4」。 */
+  test('请求已由另一界面完成后，按该请求开始导出被拒绝；用户自行导出不受影响', async () => {
+    const root = await workspace()
+    const events: AgentEvent[] = []
+    const svc = new CanvasService({ publish: (e) => events.push(e) })
+    await mkdir(join(root, 'generated'), { recursive: true })
+    await writeFile(join(root, 'generated', 'a.mp4'), MP4)
+    const { refs } = await svc.docs.apply(root, PATH, [
+      {
+        op: 'add_timeline',
+        ref: '$t',
+        name: '粗剪',
+        x: 0,
+        y: 400,
+        clips: [{ path: 'generated/a.mp4', in: 0, out: 2 }],
+      },
+    ])
+    const asked = svc.exports.requestExport({ id: 'w1', root }, PATH, refs.$t!)
+    await until(() => events.some((e) => e.type === 'canvas.export'), '向界面发出导出请求')
+    const id = await svc.exports.exportStart(root, PATH, refs.$t!, true)
+    await svc.exports.exportWrite(root, id, 0, MP4)
+    await svc.exports.exportFinish(root, id)
+    await asked
+    expect((await failure(svc.exports.exportStart(root, PATH, refs.$t!, true))).status).toBe(409)
+    await svc.exports.exportAbort(root, await svc.exports.exportStart(root, PATH, refs.$t!))
   })
 
   test('启动时删除上一个进程被结束时遗留的导出临时文件；进行中会话的与生成落盘的 .part 保留', async () => {

@@ -76,7 +76,8 @@ export class CanvasExports {
    * 成片与用户点击导出得到的完全相同。
    *
    * `exportClaimMs` 内没有界面开始导出（界面未打开该项目、命令行运行）时失败；界面导出失败或被取消时以其原因失败。
-   * `signal` 中止只结束等待，已开始的导出照常完成。同一时间线已有进行中的请求时等待同一次导出。
+   * `signal` 中止即停止这次导出（`cancelRequest`）：界面已开始导出时结束其导出会话，界面的下一次写入被拒绝；
+   * 未开始时撤销请求，界面随后以请求开始导出时被拒绝。同一时间线已有进行中的请求时等待同一次导出，停止对等待它的各方都生效。
    */
   async requestExport(
     ws: CanvasWorkspace,
@@ -123,10 +124,15 @@ export class CanvasExports {
     }
     const waiting = request.done
     if (!signal) return waiting
-    if (signal.aborted) throw new CanvasFailure('已停止等待导出', 409)
+    if (signal.aborted) {
+      await this.cancelRequest(key)
+      throw new CanvasFailure('已停止导出', 409)
+    }
     return new Promise((resolve, reject) => {
-      const stop = () =>
-        reject(new CanvasFailure('已停止等待；界面中的导出照常进行，完成后成片出现在画布上', 409))
+      const stop = () => {
+        void this.cancelRequest(key)
+        reject(new CanvasFailure('已停止导出', 409))
+      }
       signal.addEventListener('abort', stop, { once: true })
       waiting.then(
         (r) => {
@@ -139,6 +145,14 @@ export class CanvasExports {
         },
       )
     })
+  }
+
+  /** 停止大模型发起的一次导出：界面已开始时结束其导出会话（同时结束该请求），未开始时撤销请求。 */
+  private async cancelRequest(key: string): Promise<void> {
+    const request = this.exportRequests.get(key)
+    if (!request) return
+    if (request.claimed) await this.dropExport(request.claimed)
+    else this.settleExport(key, new CanvasFailure('已停止导出', 409))
   }
 
   /** 结束一次大模型发起的导出：给出结果或失败原因。 */
@@ -161,11 +175,18 @@ export class CanvasExports {
    * 时间线导出成片、Art 节点录制视频：浏览器在编码的同时将字节按位置写入 `generated/.<会话号>.part`（`exportWrite`），
    * 完成时（`exportFinish`）核对 mp4 文件头、保存为 `generated/<节点名>.mp4`（重名时加 `-2`），并在来源节点右侧添加节点。
    * 返回会话号。该节点有大模型发起、尚未认领的导出时由本会话认领，已被另一会话认领时拒绝（多个界面同时收到请求）。
+   * `requested` 表示界面按大模型的请求开始导出：请求已结束（已由另一界面完成、已停止、已超时）时拒绝，
+   * 不拒绝时该界面会把同一条时间线再导出一份。
    *
    * 临时文件的终态：完成时改名；失败、放弃、停止服务或 `EXPORT_IDLE_MS` 内无写入时删除（标签页关闭、网络断开时不会有调用方
    * 调用 `exportAbort`）；进程被结束时遗留的临时文件由下次启动的 `CanvasRuns.recover` 删除。
    */
-  async exportStart(workspaceRoot: string, path: string, nodeId: string): Promise<string> {
+  async exportStart(
+    workspaceRoot: string,
+    path: string,
+    nodeId: string,
+    requested = false,
+  ): Promise<string> {
     const canvas = await this.docs.locate(workspaceRoot, path)
     const node = (await this.docs.load(canvas)).nodes.find((n) => n.id === nodeId)
     if (!node) throw new CanvasFailure(`目标已不存在：${nodeId}`, 404)
@@ -175,6 +196,9 @@ export class CanvasExports {
     const key = `${keyOf(workspaceRoot, path)}#${nodeId}`
     if (this.exportRequests.get(key)?.claimed) {
       throw new CanvasFailure('该时间线正在由另一个界面导出', 409)
+    }
+    if (requested && !this.exportRequests.has(key)) {
+      throw new CanvasFailure('该导出请求已结束', 409)
     }
     const target = `${EXPORT_DIR}/${displayNameOf(node).replace(/[\\/:*?"<>|]/g, '_')}.mp4`
     // 临时文件与成片同目录：完成时改名不跨卷。
@@ -201,6 +225,10 @@ export class CanvasExports {
     }
     // 创建文件期间另一个界面可能已经认领，认领以此刻为准。
     const request = this.exportRequests.get(key)
+    if (!request && requested) {
+      await this.dropExport(id)
+      throw new CanvasFailure('该导出请求已结束', 409)
+    }
     if (request) {
       if (request.claimed) {
         await this.dropExport(id)

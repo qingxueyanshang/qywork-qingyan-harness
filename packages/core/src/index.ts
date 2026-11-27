@@ -382,6 +382,8 @@ export {
   type ScheduleView,
 } from './domain/schedule.ts'
 export {
+  categoryOfHead,
+  FILE_TARGET_CATEGORIES,
   TOOL_CATEGORIES,
   TOOL_CATEGORY_HEADS,
   type ToolCategory,

@@ -47,6 +47,7 @@ const actions: CompactionAction[] = [
     tool: 'read_file',
     status: 'success',
     actionKind: 'read',
+    category: 'files',
     target: 'src/auth/token.ts',
     summary: '读取 120 行',
   },
@@ -55,6 +56,7 @@ const actions: CompactionAction[] = [
     tool: 'edit_file',
     status: 'success',
     actionKind: 'edit',
+    category: 'files',
     target: 'src/auth/token.ts',
     summary: '替换 3 处',
   },
@@ -63,6 +65,7 @@ const actions: CompactionAction[] = [
     tool: 'run_command',
     status: 'failure',
     actionKind: 'run',
+    category: 'code',
     target: 'npm test -- --reporter=verbose src/**/*.test.ts',
     summary: '2 个用例失败',
     errorCode: 'exit_1',
@@ -838,6 +841,51 @@ describe('事实包必须逐字保留，不经过模型', () => {
     expect(r.manifest.facts.filesTouched.join('')).not.toContain('npm test')
   })
 
+  /** 原始失败形状：只按动作类别收录时，查看网页的标签页编号与读取后台任务的任务编号进入「涉及的文件」。 */
+  test('只收录文件类工具的目标：标签页、窗口与任务编号不进入清单', async () => {
+    const extra: CompactionAction[] = [
+      {
+        stepId: 'rn_1:4',
+        tool: 'browser_observe',
+        status: 'success',
+        actionKind: 'read',
+        category: 'browser',
+        target: 'bt_3',
+        summary: '',
+      },
+      {
+        stepId: 'rn_1:5',
+        tool: 'desktop_wait',
+        status: 'success',
+        actionKind: 'read',
+        category: 'desktop',
+        target: 'w_17',
+        summary: '',
+      },
+      {
+        stepId: 'rn_1:6',
+        tool: 'background_command',
+        status: 'success',
+        actionKind: 'read',
+        category: 'code',
+        target: 'cmd_1a2b',
+        summary: '',
+      },
+      {
+        stepId: 'rn_1:7',
+        tool: 'write_office',
+        status: 'success',
+        actionKind: 'write',
+        category: 'office',
+        target: 'report.docx',
+        summary: '',
+      },
+    ]
+    const r = await compact(input({ actions: [...actions, ...extra] }), ok)
+    if (r.status !== 'compacted') throw new Error('应当压缩成功')
+    expect(r.manifest.facts.filesTouched).toEqual(['src/auth/token.ts', 'report.docx'])
+  })
+
   test('全部用户消息逐字进入事实包，约束排在前面', async () => {
     const r = await compact(
       input({
@@ -870,6 +918,7 @@ describe('事实包必须逐字保留，不经过模型', () => {
       tool: 'read_file',
       status,
       actionKind: 'read',
+      category: 'files',
       target: 'big.txt',
       summary: `读取 big.txt 第 ${from}–${to} 行`,
       lines: { from, to, total: 500 },
@@ -1019,6 +1068,7 @@ describe('事实包必须逐字保留，不经过模型', () => {
       tool: 'read_file',
       status,
       actionKind: 'read' as const,
+      category: 'files' as const,
       target,
       summary: '',
       ...(status === 'failure' ? { errorCode: 'path_not_found' } : {}),
@@ -1059,6 +1109,7 @@ describe('事实包必须逐字保留，不经过模型', () => {
             tool: 'read_file',
             status: 'success',
             actionKind: 'read',
+            category: 'files',
             target: 'a.ts',
             summary: '',
           },

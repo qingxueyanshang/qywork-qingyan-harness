@@ -262,7 +262,8 @@ describe('迁移 70：已有执行记录中的图像字节移入正文库', () =
   test('打开账本时不执行；没有待迁移的行时每个分批迁移第一批即完成并登记', () => {
     const store = new Store({ path: ':memory:' })
     const done = (id: number) => !!store.db.query('SELECT 1 FROM _migrations WHERE id = ?').get(id)
-    expect([done(70), done(72), done(81), done(82), done(83), done(84)]).toEqual([
+    expect([done(70), done(72), done(81), done(82), done(83), done(84), done(85)]).toEqual([
+      false,
       false,
       false,
       false,
@@ -271,6 +272,7 @@ describe('迁移 70：已有执行记录中的图像字节移入正文库', () =
       false,
     ])
     const content = new ContentStore(':memory:')
+    expect(store.migrateInBackground(content)).toBe(true)
     expect(store.migrateInBackground(content)).toBe(true)
     expect(store.migrateInBackground(content)).toBe(true)
     expect(store.migrateInBackground(content)).toBe(true)

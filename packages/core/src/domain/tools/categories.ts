@@ -38,5 +38,22 @@ export const TOOL_CATEGORY_HEADS = {
 
 export type ToolCategory = keyof typeof TOOL_CATEGORY_HEADS
 
+/**
+ * 目标是工作区文件路径的类目。上下文压缩的「涉及的文件」只收录这些类目中读写动作的目标：
+ * 其余类目的目标是标签页、窗口、任务编号或权限范围，不是文件。
+ */
+export const FILE_TARGET_CATEGORIES: ReadonlySet<ToolCategory> = new Set<ToolCategory>([
+  'files',
+  'office',
+  'canvas',
+  'generate',
+])
+
+/** 由开头查出类目；没有对应类目时为 null。账本中历史工具行的开头已由迁移改写为当前名称。 */
+export function categoryOfHead(head: string | null | undefined): ToolCategory | null {
+  const hit = Object.entries(TOOL_CATEGORY_HEADS).find(([, h]) => h === head)
+  return hit ? (hit[0] as ToolCategory) : null
+}
+
 /** 全部类目，顺序即界面顺序。注册期校验需要运行时取值，由开头表的键得出。 */
 export const TOOL_CATEGORIES = Object.keys(TOOL_CATEGORY_HEADS) as ToolCategory[]

@@ -119,7 +119,14 @@ export const handleCanvasApi: ApiHandler = async (url, req, d) => {
       const path = text(b?.path)
       const nodeId = text(b?.nodeId)
       if (!path || !nodeId) return invalid('缺少画布路径或节点 id')
-      return json({ upload: await d.canvas.exports.exportStart(d.workspaceRoot, path, nodeId) })
+      return json({
+        upload: await d.canvas.exports.exportStart(
+          d.workspaceRoot,
+          path,
+          nodeId,
+          b?.requested === true,
+        ),
+      })
     }
     if (p === '/api/canvas/export/write') {
       const q = url.searchParams

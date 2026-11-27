@@ -123,7 +123,8 @@ export const addClips = async (
  * `encode` 把字节交给 `write`，进度经 `progress` 报告。返回新节点的 id；取消或失败时为 `null`。
  *
  * `requested` 表示执行的是大模型请求的导出（`canvas.export`）。该请求发给打开该项目的每个界面，由先开始导出的界面认领，
- * 其余界面开始导出时得到 409：这次导出由另一个界面执行，不是本界面的错误，不显示。用户点击导出时的 409 照常显示。
+ * 其余界面开始导出时得到 409（已由另一界面认领或完成）；大模型停止导出时，未开始的界面同样得到 409，已开始的界面
+ * 在下一次写入时得到 404（导出会话已结束）。这些都不是本界面的错误，不显示。用户点击导出时的 409、404 照常显示。
  */
 export const exportVideo = async (
   canvas: CanvasController,
@@ -142,7 +143,7 @@ export const exportVideo = async (
   canvas.setExports((x) => ({ ...x, [id]: 0 }))
   let upload: string | null = null
   try {
-    const session = await exportStart(canvas.props.path, id)
+    const session = await exportStart(canvas.props.path, id, requested)
     upload = session
     await encode(
       (bytes, at) => exportWrite(session, at, bytes),
@@ -157,9 +158,11 @@ export const exportVideo = async (
   } catch (e) {
     // 未完成的文件由服务端删除；该请求失败时，服务端在空闲超时后同样会删除。
     if (upload) void exportAbort(upload).catch(() => {})
-    const claimedElsewhere =
-      requested && upload === null && e instanceof ApiError && e.status === 409
-    if ((e as Error).name !== 'AbortError' && !claimedElsewhere) {
+    const notThisUi =
+      requested &&
+      e instanceof ApiError &&
+      (e.status === 409 || (upload !== null && e.status === 404))
+    if ((e as Error).name !== 'AbortError' && !notThisUi) {
       canvas.setFault(explainApiError(e, failText))
     }
     return null

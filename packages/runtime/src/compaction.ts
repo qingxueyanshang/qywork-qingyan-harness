@@ -44,6 +44,7 @@ import type {
   TodoItem,
 } from '@qywork/core'
 import {
+  categoryOfHead,
   type ImageSize,
   imageSizeOf,
   isInlineImage,
@@ -767,7 +768,7 @@ function foldIndexOf(units: Unit[], retain: number, latestUnitSeen: boolean): nu
 
 function actionOf(runId: string, step: Step): CompactionAction {
   const payload = step.payload as {
-    action?: { kind?: ActionKind; target?: string | null }
+    action?: { kind?: ActionKind; head?: string; target?: string | null }
     outcome?: {
       message?: string
       errorKind?: string
@@ -780,6 +781,7 @@ function actionOf(runId: string, step: Step): CompactionAction {
     tool: step.toolName ?? 'unknown',
     status: step.status,
     actionKind: payload?.action?.kind ?? null,
+    category: categoryOfHead(payload?.action?.head),
     target: payload?.action?.target ?? null,
     summary: payload?.outcome?.message ?? '',
     errorCode: payload?.outcome?.errorKind ?? null,

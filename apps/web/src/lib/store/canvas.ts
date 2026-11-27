@@ -141,11 +141,16 @@ export async function captureFrame(
 /**
  * 时间线导出的上传会话：开始时取得会话号，编码得到的字节块按位置写入服务端，完成后服务端重命名并落盘，在时间线右侧添加节点。
  * 中途失败或取消时须调用 `exportAbort`，否则服务端要到空闲超时才删除不完整的文件。
+ * `requested` 表示按大模型的请求导出：请求已结束时服务端返回 409。
  */
-export async function exportStart(path: string, nodeId: string): Promise<string> {
+export async function exportStart(
+  path: string,
+  nodeId: string,
+  requested = false,
+): Promise<string> {
   const r = await client.api<{ upload: string }>('/api/canvas/export/start', {
     method: 'POST',
-    body: JSON.stringify({ path, nodeId }),
+    body: JSON.stringify({ path, nodeId, ...(requested ? { requested: true } : {}) }),
   })
   return r.upload
 }

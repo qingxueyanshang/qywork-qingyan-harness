@@ -41,7 +41,9 @@ import type {
   CompactionSummaryBlock,
   FileReadProgress,
   ProviderHedge,
+  ToolCategory,
 } from '@qywork/core'
+import { FILE_TARGET_CATEGORIES } from '@qywork/core'
 
 /**
  * 摘录长度上限：segment、事实条目、被折叠的调用参数共用该长度。
@@ -282,8 +284,10 @@ export interface CompactionAction {
   stepId: string
   tool: string
   status: string
-  /** 动作类别，决定 target 是否为文件路径。 */
+  /** 动作类别。与 `category` 共同决定 target 是否计入「涉及的文件」。 */
   actionKind: ActionKind | null
+  /** 工具类目，由工具行的开头得出（`categoryOfHead`）；未知时为 null。 */
+  category: ToolCategory | null
   target: string | null
   summary: string
   errorCode?: string | null
@@ -660,10 +664,19 @@ function extractFacts(
   previous: CompactionFacts | undefined,
 ): CompactionFacts {
   const filesTouched = new Set(previous?.filesTouched ?? [])
-  // 按动作类别收录，不要按 target 是否形似路径收录：`run_command` 的 target 是整条命令串，
-  // 用正则判定时整串命令都会被收录，实测清单增长到摘要的十余倍。
+  // 按动作类别与工具类目收录，不要按 target 是否形似路径收录：`run_command` 的 target 是整条命令串，
+  // 用正则判定时整串命令都会被收录，实测清单增长到摘要的十余倍。只按动作类别收录时，查看网页、等待窗口、
+  // 读取后台任务的标签页、窗口与任务编号同样进入清单。
   for (const a of actions) {
-    if (a.target && a.actionKind && FILE_ACTION_KINDS.has(a.actionKind)) filesTouched.add(a.target)
+    if (
+      a.target &&
+      a.actionKind &&
+      FILE_ACTION_KINDS.has(a.actionKind) &&
+      a.category &&
+      FILE_TARGET_CATEGORIES.has(a.category)
+    ) {
+      filesTouched.add(a.target)
+    }
   }
 
   // 落盘产物的定位符。合并而不是替换：较早落盘的正文在压缩后仍须可以读取。
