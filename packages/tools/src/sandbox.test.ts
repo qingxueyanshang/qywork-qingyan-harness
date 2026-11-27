@@ -11,7 +11,7 @@ import {
   resolveBashPath,
   resolveCommandShell,
 } from './process/command-shell.ts'
-import { makeOutputDecoder } from './process/decode.ts'
+import { decoderFor, localCharset, makeOutputDecoder } from './process/decode.ts'
 import {
   buildBwrapArgv,
   buildSeatbeltArgv,
@@ -717,6 +717,8 @@ describe('子进程输出解码', () => {
 
   const LF = new Uint8Array([0x0a])
   const bytes = (...parts: Uint8Array[]) => new Uint8Array(parts.flatMap((p) => [...p]))
+  /** GBK 字节按本机代码页解码的结果：代码页为 936 时是「首页」，为 1252（CI 的 Windows）时是另一串字符。 */
+  const gbkByLocalPage = () => decoderFor(localCharset()).decode(GBK)
 
   test('UTF-8 流原样解码', () => {
     const decoder = makeOutputDecoder()
@@ -733,8 +735,8 @@ describe('子进程输出解码', () => {
     const decoder = makeOutputDecoder()
     const got = decoder.write(bytes(GBK, LF)) + decoder.end()
     expect(got.length).toBeGreaterThan(0)
-    // Windows 上按代码页可解出实际字符；其他平台回退为 U+FFFD，不断言字形。
-    if (process.platform === 'win32') expect(got).toBe('首页\n')
+    // Windows 上按代码页解码；其他平台回退为 U+FFFD，不断言字形。
+    if (process.platform === 'win32') expect(got).toBe(`${gbkByLocalPage()}\n`)
   })
 
   test('按字节截断的一行只影响该行：前后各行与同一行中的其余中文仍按 UTF-8 解码', () => {
@@ -750,8 +752,9 @@ describe('子进程输出解码', () => {
   test('GBK 行与 UTF-8 行交替时各自解码', () => {
     if (process.platform !== 'win32') return
     const decoder = makeOutputDecoder()
+    const local = gbkByLocalPage()
     expect(decoder.write(bytes(GBK, LF, UTF8, LF, GBK, LF)) + decoder.end()).toBe(
-      '首页\n首页\n首页\n',
+      `${local}\n首页\n${local}\n`,
     )
   })
 

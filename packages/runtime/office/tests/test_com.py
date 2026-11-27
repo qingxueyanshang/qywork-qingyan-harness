@@ -154,9 +154,10 @@ class UnregisteredCleanupTest(unittest.TestCase):
         """worker 被结束后、清理取得锁之前，其他调用持锁启动的进程晚于 worker 结束的时刻，不补登记、不结束。"""
         started_at = time.time()
         own = self.spawn("wps.exe /prometheus /wps /Automation -Embedding")
-        ended_at = time.time()
-        time.sleep(0.05)
         other = self.spawn("wps.exe /prometheus /wps /Automation -Embedding")
+        # ended_at 取两个进程启动时刻的中点，与被比较的 create_time 使用同一时钟：Linux 上 psutil 的 create_time
+        # 由取整到秒的开机时刻推算，可比 time.time() 早至多 1 秒，按 time.time() 取 ended_at 时 other 被判为更早启动。
+        ended_at = (self.procs[own.pid]["create_time"] + self.procs[other.pid]["create_time"]) / 2
         try:
             with TempDir() as d:
                 util.write_json(d / "instances.json", [self.marker("end", started_at, [])])
