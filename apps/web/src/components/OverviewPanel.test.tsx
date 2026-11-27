@@ -1,8 +1,8 @@
 /**
- * 右侧面板的看板。
+ * 右侧面板的概要页。
  *
  * 覆盖范围（B6）：`OverviewPanel.tsx`；`store/events/session.ts` 对 `commands.changed` 的折叠；
- * `store/actions.ts` 的 `stopBackgroundCommand`；看板读取的 `/api/conversations/:id/board`。
+ * `store/actions.ts` 的 `stopBackgroundCommand`；概要页读取的 `/api/conversations/:id/board`。
  */
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -49,7 +49,7 @@ async function waitFor(done: () => boolean, detail: () => string) {
   throw new Error(`界面未在时限内更新：${detail()}`)
 }
 
-/** 渲染看板。`board` 为 `/board` 接口的响应，记录每次请求的路径。 */
+/** 渲染概要页。`board` 为 `/board` 接口的响应，记录每次请求的路径。 */
 async function mount(board: unknown) {
   const { render } = await import('solid-js/web')
   const store = await import('../lib/store/index.ts')

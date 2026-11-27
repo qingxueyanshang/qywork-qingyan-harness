@@ -624,7 +624,7 @@ export function Composer(props: { empty: boolean }) {
         </Show>
 
         {/* Goal 与等待队列共用输入框顶部的状态栏堆叠区：目标固定在上方，队列排在下方。
-            同时出现时也只有一个外框和一套纵向次序，不互相覆盖。后台任务显示在右侧面板的看板中。 */}
+            同时出现时也只有一个外框和一套纵向次序，不互相覆盖。后台任务显示在右侧面板的概要页中。 */}
         <div class="composer-rails">
           <GoalChip />
           <FollowUpCards onEdit={editFollowUp} thumbProps={thumbProps} />

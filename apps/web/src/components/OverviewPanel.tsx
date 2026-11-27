@@ -19,7 +19,7 @@ import { TodoList } from './TodoList.tsx'
 type Subagent = ConversationBoardResponse['subagents'][number]
 
 /**
- * 右侧面板的看板：当前会话的待办、后台任务、子 agent 与画布，四组纵向排列，空组不显示，全部为空时空白。
+ * 右侧面板的概要页：当前会话的待办、后台任务、子 agent 与画布，四组纵向排列，空组不显示，全部为空时空白。
  *
  * 待办与后台任务读取实时快照（`state.todos`、`state.backgroundCommands`）；子 agent 与画布由
  * `/api/conversations/:id/board` 从账本读取。后两者没有推送：账本进度、本会话中已结束的工具调用数或

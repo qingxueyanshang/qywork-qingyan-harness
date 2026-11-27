@@ -80,16 +80,16 @@ const RunDetails = lazy(() => import('./RunDetails.tsx'))
  * 写成清单而不是多段 JSX：分别书写时，修改页签外观需改动每一处，遗漏一处会使
  * 某个页签的外观不一致，而 CSS 不会为此报错。
  *
- * **它们回答「本轮正在执行什么」**：看板、文件、变更、费用。配置类页面（角色编排、
+ * **它们回答「本轮正在执行什么」**：概要、文件、变更、费用。配置类页面（角色编排、
  * 逐项能力开关）不放入此处：它们与当前执行进度无关。
  *
  * 终端与浏览器不在此处：它们是**可多开、可关闭**的页，由 `+` 新开、页签上带 ×，
  * 清单在 `panelTabs`。
  */
 const VIEWS: { readonly [K in PanelView]: { label: string; pane: Component } } = {
-  // 看板排在最前：它回答「本轮正在执行什么」，优先于「有哪些文件」。
+  // 概要排在最前：它回答「本轮正在执行什么」，优先于「有哪些文件」。
   // 键仍为 `todos`：面板记录（含当前页）保存在 localStorage，改键后已保存的记录无法恢复到该页。
-  todos: { label: '看板', pane: OverviewPanel },
+  todos: { label: '概要', pane: OverviewPanel },
   files: { label: '文件', pane: FileBrowser },
   changes: { label: '变更', pane: ChangeRecord },
   // 运行排在末位：查看费用是事后操作，优先级低于当前执行状态。
@@ -217,7 +217,7 @@ const boardRows = () => PREVIEW_SOURCES.filter((s) => s.show?.() ?? true)
  * 右侧面板容器。固定页签（`VIEWS`）与可多开的页（`panelTabs`）共用同一区域，
  * 互斥显示。
  *
- * 默认导出供 `App.tsx` 的 `lazy()` 使用：面板及其静态引入的文件树、看板与变更记录不进入首屏，
+ * 默认导出供 `App.tsx` 的 `lazy()` 使用：面板及其静态引入的文件树、概要与变更记录不进入首屏，
  * 只使用对话的用户不承担它们的加载成本。CodeMirror 不在本模块的静态依赖中，由文件页懒加载
  * （`FileBrowser` 中的 `FileView`）。
  */

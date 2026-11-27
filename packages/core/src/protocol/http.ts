@@ -409,7 +409,7 @@ export interface ConversationUsageResponse {
 }
 
 /**
- * 右侧看板中由服务端提供的两组。待办与后台任务另有实时快照（`todos`、`commands.changed`），不在此处。
+ * 右侧面板概要页中由服务端提供的两组。待办与后台任务另有实时快照（`todos`、`commands.changed`），不在此处。
  *
  * - `subagents`：该会话派发的子会话，按创建顺序。运行状态不在此处：取 `conversation.busy`，派发方占用子会话时发布。
  * - `canvases`：该会话及其子会话中画布工具的目标，工作区相对路径，最近使用的在前；只含工作区中仍存在的画布文件。

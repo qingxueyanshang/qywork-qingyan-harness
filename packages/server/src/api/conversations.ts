@@ -366,7 +366,7 @@ function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSn
 }
 
 /**
- * 看板的画布清单：按画布服务的同一判定（`CanvasDocs.locate`）保留工作区中仍存在的画布文件，转为工作区相对路径后去重。
+ * 概要页的画布清单：按画布服务的同一判定（`CanvasDocs.locate`）保留工作区中仍存在的画布文件，转为工作区相对路径后去重。
  * 不要只按后缀筛选：已删除或位于工作区之外的画布列出后，点击打开的是一个报错页。
  */
 async function boardCanvases(d: ApiRequestDeps, targets: string[]): Promise<string[]> {
