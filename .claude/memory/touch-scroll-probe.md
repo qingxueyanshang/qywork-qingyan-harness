@@ -13,8 +13,11 @@ metadata:
   视口 390×800 并开启 `hasTouch` 与 `isMobile`。隔离实例首屏是账号登录页，点击「使用自己的 API key」后再关闭设置页。
 - 触摸用 CDP 的 `Input.dispatchTouchEvent` 逐点发送。`Input.synthesizeScrollGesture` 在无头模式下不派发 `touchmove`，
   也不滚动，不能据它判断事件顺序。
-- 对照旧版本时不切换工作区：把旧版本文件写到 `components/` 下的临时文件名，用 `page.route` 把 `transcript/conversation-scroll.ts` 的请求
-  替换为该文件，实测后删除。
+- 对照旧版本时不修改工作区文件：`.tmp/probe/touch-static-ab.mjs` 用 `send-pull/patch-route.mjs` 在 vite 返回的
+  `transcript/conversation-scroll.ts` 中替换一段文本（`OLD_TOUCH=1` 把触摸方向判定换回旧语义）。两个脚本第 3 个参数的
+  `Transcript.tsx` 替换已不适用：跟随逻辑已移入 `conversation-scroll.ts`，不传该参数。
+- `touch-static.mjs` 在向上回看到顶部时报告 3 次反向位移（2026-11-27，`.tmp/probe/send-pull/home` 中的长会话），
+  修改触摸判定前后相同，是加载更早一页历史时的位置补偿，不作为失败计数。
 - 用户用 iPhone 访问远程界面，Chromium 的结果不能代表它。WebKit 用 `.tmp/probe/webkit-shift.mjs`
   （`<base> <token> webkit|chromium`，滚轮从底部回看到顶部，报告 scrollTop 不变而视口条目位移的帧）。
   内核用 `node_modules/.bin/playwright install webkit` 安装；WebKit 的手机模拟不支持滚轮，脚本不开启 `isMobile`。
