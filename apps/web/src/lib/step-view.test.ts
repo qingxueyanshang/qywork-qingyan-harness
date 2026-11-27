@@ -315,6 +315,28 @@ describe('读数格式', () => {
     expect(statusWord('failure', { executed: true, errorKind: 'timeout' })).toBe('超时')
     expect(statusWord('success', { resultState: 'partial' })).toBe('部分完成')
   })
+
+  /**
+   * 原始失败形状：读取凭证文件、路径越界、网络安全策略拦截显示「失败」而不是「已拒绝」；电脑等待超时显示「失败」；
+   * 网页与电脑控制的动作已发出而结果无法确认时显示「失败」而不是「结果不明」。
+   */
+  test('路径边界、凭证文件与安全策略的拒绝为「已拒绝」，动作已发出而无法确认的为「结果不明」', () => {
+    for (const kind of [
+      'path_out_of_workspace',
+      'credential_path',
+      'protected_path',
+      'blocked_by_policy',
+    ]) {
+      expect(statusWord('failure', { executed: false, errorKind: kind })).toBe('已拒绝')
+    }
+    expect(statusWord('failure', { executed: true, errorKind: 'desktop_wait_timeout' })).toBe(
+      '超时',
+    )
+    for (const kind of ['browser_unknown', 'browser_partial', 'desktop_unknown']) {
+      expect(statusWord('failure', { executed: true, errorKind: kind })).toBe('结果不明')
+    }
+    expect(statusWord('failure', { executed: true, errorKind: 'network_error' })).toBe('失败')
+  })
 })
 
 describe('结果取值', () => {

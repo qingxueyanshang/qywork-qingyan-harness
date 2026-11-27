@@ -60,10 +60,10 @@ export class CommandTaskTable {
       .then(
         (end) => {
           this.record(conversationId, task.stepId, end.fileChanges)
-          return end.receipt === null ? null : `[后台命令回执] 任务 ${id} 已结束：${end.receipt}`
+          return end.receipt === null ? null : `[后台任务回执] 任务 ${id} 已结束：${end.receipt}`
         },
         (err: unknown) =>
-          `[后台命令回执] 任务 ${id} 已结束，结果无法读取：${err instanceof Error ? err.message : String(err)}\n命令：${task.command}`,
+          `[后台任务回执] 任务 ${id} 已结束，结果无法读取：${err instanceof Error ? err.message : String(err)}\n任务：${task.command}`,
       )
       .then((content) => {
         this.remove(conversationId, id)

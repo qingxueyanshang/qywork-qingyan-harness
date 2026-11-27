@@ -104,6 +104,25 @@ export function sanitizeTarget(target: string): string {
 }
 
 /**
+ * 失败时按错误类别取的状态词，未列出的类别为「失败」。新增一个会改变状态词的错误类别时在此登记一行。
+ * - 已拒绝：权限裁决拒绝，以及路径边界、凭证文件、受保护目录与网络安全策略拒绝，均未执行。
+ * - 结果不明：网页与电脑控制的动作已发出（或部分发出），无法确认执行结果。
+ */
+const FAILURE_WORDS: Record<string, string> = {
+  interrupted: '已中断',
+  timeout: '超时',
+  desktop_wait_timeout: '超时',
+  permission_denied: '已拒绝',
+  path_out_of_workspace: '已拒绝',
+  credential_path: '已拒绝',
+  protected_path: '已拒绝',
+  blocked_by_policy: '已拒绝',
+  browser_unknown: '结果不明',
+  browser_partial: '结果不明',
+  desktop_unknown: '结果不明',
+}
+
+/**
  * 工具行行尾的状态词。成功与运行中为空字符串：一屏数十行都显示「成功」不提供任何信息，
  * 运行中由读数条显示「正在执行…」。用词与读数条一致：用户停止为「已中断」，请求已发出而结果不明为「结果不明」。
  *
@@ -116,10 +135,7 @@ export function statusWord(
 ): string {
   if (status === 'failure') {
     if (outcome?.resultState === 'unknown') return '结果不明'
-    if (outcome?.errorKind === 'interrupted') return '已中断'
-    if (outcome?.errorKind === 'permission_denied') return '已拒绝'
-    if (outcome?.errorKind === 'timeout') return '超时'
-    return '失败'
+    return (outcome?.errorKind && FAILURE_WORDS[outcome.errorKind]) || '失败'
   }
   if (status === 'success') {
     if (outcome?.resultState === 'partial') return '部分完成'

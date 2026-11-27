@@ -981,6 +981,18 @@ describe('观察的投递', () => {
     expect(r.executed).toBe(true)
     expect(data(r)).toMatchObject({ met: false, reason: 'timeout' })
     expect(r.message).toContain('未等到 #x')
+    expect(r.errorKind).toBe('timeout')
+
+    // 文档已更换不是超时：不写错误类别，工具行显示「失败」。
+    const gone = fakeBrowser({
+      wait: async () => ({ met: false, reason: 'gone', observation: OB }),
+    })
+    const left = await browserWaitTool.fn(
+      { tabId: 'bt_1', selector: '#x' },
+      ctxWith('/w', gone.port),
+    )
+    expect(left.status).toBe('failure')
+    expect(left.errorKind).toBeUndefined()
   })
 
   test('wait 的状态缺省为可见；text / value 必须提供 expected，空字符串是合法的期望值', async () => {

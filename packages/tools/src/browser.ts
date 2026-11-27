@@ -535,7 +535,14 @@ function withFollowUp(
   toolName: string,
   receipt: Record<string, unknown>,
   follow: FollowUpObservation,
-  opts: { lead: string; ok: boolean; advice: string; activity?: BrowserActivity },
+  opts: {
+    lead: string
+    ok: boolean
+    advice: string
+    activity?: BrowserActivity
+    /** 未达成（`ok` 为假）且取得了观察时写入的错误类别。 */
+    errorKind?: string
+  },
 ): ToolOutcome {
   if (follow.observation) {
     const ob = follow.observation
@@ -554,6 +561,7 @@ function withFollowUp(
     return {
       status: opts.ok ? 'success' : 'failure',
       ...(opts.ok ? {} : { executed: true }),
+      ...(!opts.ok && opts.errorKind ? { errorKind: opts.errorKind } : {}),
       ...parts,
       ...(none
         ? { message: `${parts.message}。这次动作没有产生可观察的效果`, noEffect: true }
@@ -1248,6 +1256,7 @@ export const browserWaitTool: ToolSpec = endsOnMessage(
             lead: r.met ? `${target}，已达到。` : `未等到 ${target}（${r.reason ?? 'timeout'}）。`,
             ok: r.met,
             advice: '先 browser_observe 确认页面状态。',
+            ...(!r.met && (r.reason ?? 'timeout') === 'timeout' ? { errorKind: 'timeout' } : {}),
           },
         )
       }),

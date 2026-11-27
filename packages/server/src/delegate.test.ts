@@ -1265,7 +1265,7 @@ describe('运行表按会话管理', () => {
       runs.takeNext(cid)
     })
 
-    test('等待期间用户插入消息即返回 message，排在本轮之后的消息返回 queued，两者都不经由本方法投递', async () => {
+    test('等待期间「调整方向」的消息即返回 message，不经由本方法投递；「排队」的消息不结束等待', async () => {
       const cid = conversation()
       const slow = gate()
       router = () => slow.respond()
@@ -1281,7 +1281,7 @@ describe('运行表按会话管理', () => {
       expect(await waiting).toBe('message')
       expect(runs.takeSteered(cid).map((f) => f.content)).toEqual(['先停一下'])
       runs.enqueue(cid, { id: 'u2', content: '做完再看这个', steer: false })
-      expect(await port.awaitReceipt(10_000, new AbortController().signal)).toBe('queued')
+      expect(await port.awaitReceipt(300, new AbortController().signal)).toBe('timeout')
       runs.takeNext(cid)
       subagents.interruptConversation(cid)
       await until(() => !runs.isBusy(cid), '子 agent 结束')

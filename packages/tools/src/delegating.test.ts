@@ -175,7 +175,7 @@ describe('按 id 或名称引用子 agent', () => {
 })
 
 describe('在本轮内等待回执', () => {
-  const waiting = (result: 'received' | 'message' | 'queued' | 'timeout' | 'idle') => {
+  const waiting = (result: 'received' | 'message' | 'timeout' | 'idle') => {
     const asked: number[] = []
     const { port } = stub(sent())
     port.awaitReceipt = async (ms) => {
@@ -193,12 +193,9 @@ describe('在本轮内等待回执', () => {
     expect(asked).toEqual([600_000])
   })
 
-  test('用户发来消息时结束等待：插入本轮的见下一条消息，排在本轮之后的说明等待会推迟它', async () => {
+  test('用户发来调整方向的消息时结束等待，消息内容见下一条消息', async () => {
     expect((await waitSubagentsTool.fn({}, ctx(waiting('message').port))).message).toBe(
       '用户发来消息，内容见下一条消息',
-    )
-    expect((await waitSubagentsTool.fn({}, ctx(waiting('queued').port))).message).toBe(
-      '用户有一条排在本轮之后的消息，本轮结束后才会送达；继续等待会推迟它',
     )
   })
 

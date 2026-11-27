@@ -1021,7 +1021,6 @@ export function makeDelegate(ctx: {
         const queue = deps.runs.queueOf(conversationId)
         if (queue.some((f) => f.origin)) return 'received'
         if (queue.some((f) => f.steer)) return 'message'
-        if (queue.length) return 'queued'
         if (!deps.subagents.listOf(conversationId).length) return 'idle'
         const left = deadline - Date.now()
         if (left <= 0 || !(await deps.runs.changed(conversationId, left, signal))) return 'timeout'

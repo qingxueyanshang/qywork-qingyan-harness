@@ -531,13 +531,13 @@ describe('前台命令超过等待上限转入后台', () => {
 
     await writeFile(join(dir, 'Q2.go'), '')
     await until(() => bodies.length === 3, 'Q2 的回执发起的一轮')
-    expect(bodies[2]).toContain(`[后台命令回执] 任务 ${ids.Q2} 已结束：命令执行成功`)
+    expect(bodies[2]).toContain(`[后台任务回执] 任务 ${ids.Q2} 已结束：命令执行成功`)
     expect(alive(pidQ2)).toBe(false)
     await idle(cv)
 
     await writeFile(join(dir, 'Q3.idle'), '')
     await until(() => bodies.length === 4, 'Q3 被判定停滞后的回执')
-    expect(bodies[3]).toContain(`[后台命令回执] 任务 ${ids.Q3} 已结束：命令连续 1 秒没有输出`)
+    expect(bodies[3]).toContain(`[后台任务回执] 任务 ${ids.Q3} 已结束：命令连续 1 秒没有输出`)
     expect(bodies[3]).toContain('判定为停滞，已终止')
     await until(() => !alive(pidQ3), 'Q3 的进程结束')
     await idle(cv)
@@ -584,7 +584,7 @@ describe('子 agent 会话中的后台命令', () => {
     expect(bodies.length).toBe(3)
     await writeFile(join(dir, 'M1.go'), '')
     await until(() => bodies.length >= 4, '回执发起的子 agent 下一轮')
-    expect(bodies[3]).toContain('[后台命令回执] 任务 cmd_')
+    expect(bodies[3]).toContain('[后台任务回执] 任务 cmd_')
     expect(bodies[3]).toContain('已结束：命令执行成功')
     await until(() => bodies.length === 5, '父会话收到子 agent 回执后的请求')
     expect(bodies[4]).toContain('[子 agent 回执]')
@@ -651,7 +651,7 @@ describe('后台命令结束时的回执', () => {
     await writeFile(join(dir, 'B.go'), '')
     await until(() => bodies.length === 3, '回执发起的一轮')
     const third = bodies[2]!
-    expect(third).toContain(`[后台命令回执] 任务 ${task!.id} 已结束：命令执行成功`)
+    expect(third).toContain(`[后台任务回执] 任务 ${task!.id} 已结束：命令执行成功`)
     expect(third).toContain('B finished')
     await idle(cv)
     expect(commands.listOf(cv)).toEqual([])
@@ -695,7 +695,7 @@ describe('在本轮内等待后台命令', () => {
     await until(() => bodies.length === 3, '等待结束后的请求')
     const third = bodies[2]!
     expect(third).toContain(`后台命令 ${task!.id} 已结束，结果见下一条回执消息`)
-    expect(third).toContain(`[后台命令回执] 任务 ${task!.id} 已结束：命令执行成功`)
+    expect(third).toContain(`[后台任务回执] 任务 ${task!.id} 已结束：命令执行成功`)
     expect(third).toContain('W finished')
     await idle(cv)
     expect(commands.listOf(cv)).toEqual([])
@@ -739,7 +739,7 @@ describe('与后台命令交互', () => {
     await until(() => bodies.length === 4, '关闭输入之后的请求')
     expect(bodies[2]).toContain('答:HELLO')
     expect(bodies[3]).toContain(`后台命令 ${task!.id} 随后结束`)
-    expect(bodies[3]).toContain(`[后台命令回执] 任务 ${task!.id} 已结束`)
+    expect(bodies[3]).toContain(`[后台任务回执] 任务 ${task!.id} 已结束`)
     expect(bodies[3]).toContain('再见')
     await idle(cv)
     expect(commands.listOf(cv)).toEqual([])
@@ -927,9 +927,83 @@ describe('后台命令的输出上限', () => {
     await writeFile(join(dir, '.tmp', 'F.go'), '')
     await until(() => bodies.length === 3, '回执发起的一轮')
     const receipt = bodies[2]!
-    expect(receipt).toContain(`[后台命令回执] 任务 ${task!.id} 已结束：命令执行成功`)
+    expect(receipt).toContain(`[后台任务回执] 任务 ${task!.id} 已结束：命令执行成功`)
     expect(receipt).toMatch(/stdout 已丢弃最早的 \d+ 个字符/)
     expect(receipt).toContain('F finished')
     await idle(cv)
+  }, 30_000)
+})
+
+/**
+ * 原始失败形状：生成工具不读取用户消息的信号，执行期间「调整方向」的消息要等生成结束才送达；
+ * 只验证包装函数时无法确认本轮结束之后生成仍在进行、结果仍写入工作区并以回执送达。
+ * 生成经真实的会话装配与生成端口，图像接口由本地服务模拟，收到请求后保持不应答，由用例决定何时返回图片。
+ */
+describe('生成工具在执行期间转入后台', () => {
+  const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 1])
+  let release: () => void = () => {}
+  let arrived = false
+  const images = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      await req.text()
+      arrived = true
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return Response.json({ data: [{ b64_json: Buffer.from(JPEG).toString('base64') }] })
+    },
+  })
+  afterAll(() => images.stop(true))
+
+  const mediaDeps = () => ({
+    ...deps(),
+    config: {
+      ...config,
+      providers: {
+        ...config.providers,
+        native: {
+          kind: 'openai_chat_completions' as const,
+          apiKey: 'test-key',
+          baseUrl: `http://127.0.0.1:${images.port}/v1`,
+          models: {},
+          media: { 'grok-imagine-image-2.0': { kind: 'xai_images' as const } },
+        },
+      },
+      mediaDefaults: { image: { provider: 'native', model: 'grok-imagine-image-2.0' } },
+    } satisfies QyConfig,
+  })
+
+  test('收到「调整方向」消息时转入后台；本轮结束之后生成照常完成，文件写入工作区并以回执送达', async () => {
+    const cv = conversation()
+    const output = 'generated/cat.jpg'
+    script.push(
+      callsTurn([{ id: 'call_img', name: 'generate_image', args: { prompt: '一只猫', output } }]),
+      textTurn('已改为查看文档。'),
+      textTurn('图片已生成。'),
+    )
+
+    void startRun(cv, '生成一张猫的图片', undefined, mediaDeps())
+    await until(() => arrived, '图像请求已发出')
+    await submitMessage(cv, { id: 'steer_img', content: '先看文档', steer: true }, mediaDeps())
+    await until(() => bodies.length === 2, '工具结束后的第二次请求')
+    expect(bodies[1]).toContain(
+      '执行期间用户发来调整方向的消息，已转入后台继续运行（生成图片 generated/cat.jpg）',
+    )
+    expect(bodies[1]).toContain('先看文档')
+    const [task] = commands.listOf(cv)
+    expect(task?.command).toBe(`生成图片 ${output}`)
+    await idle(cv)
+    expect(existsSync(join(dir, output))).toBe(false)
+
+    release()
+    await until(() => bodies.length === 3, '回执发起的一轮')
+    expect(bodies[2]).toContain(
+      `[后台任务回执] 任务 ${task!.id} 已结束：生成图片 ${output}：已生成 1 张`,
+    )
+    expect(readFileSync(join(dir, output))).toEqual(Buffer.from(JPEG))
+    expect(changeOwner(cv, output)?.stepId).toBe(stepOf('call_img'))
+    await idle(cv)
+    expect(commands.listOf(cv)).toEqual([])
   }, 30_000)
 })

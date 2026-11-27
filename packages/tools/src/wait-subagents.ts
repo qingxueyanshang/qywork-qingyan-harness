@@ -58,12 +58,6 @@ export const waitSubagentsTool: ToolSpec = {
     if (result === 'message') {
       return { status: 'success' as const, message: '用户发来消息，内容见下一条消息' }
     }
-    if (result === 'queued') {
-      return {
-        status: 'success' as const,
-        message: '用户有一条排在本轮之后的消息，本轮结束后才会送达；继续等待会推迟它',
-      }
-    }
     if (result === 'idle') {
       return {
         status: 'success' as const,

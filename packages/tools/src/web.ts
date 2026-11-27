@@ -52,7 +52,7 @@ export const webFetchTool: ToolSpec = {
       return {
         status: 'failure',
         message: `请求失败：${err instanceof Error ? err.message : String(err)}`,
-        errorKind: 'network_error',
+        errorKind: fetchErrorKind(err),
       }
     }
 
@@ -230,7 +230,7 @@ export const webSearchTool: ToolSpec = {
       return {
         status: 'failure',
         message: `搜索请求失败：${err instanceof Error ? err.message : String(err)}`,
-        errorKind: 'network_error',
+        errorKind: fetchErrorKind(err),
       }
     }
     if (res.blocked || !res.ok) {
@@ -313,4 +313,9 @@ function decodeRedirect(href: string): string {
   }
   if (decoded.startsWith('//')) return `https:${decoded}`
   return decoded.startsWith('http') ? decoded : ''
+}
+
+/** `safeFetch` 的请求超时（`AbortSignal.timeout`）以 `TimeoutError` 拒绝，记为 `timeout`；其余网络错误为 `network_error`。 */
+function fetchErrorKind(err: unknown): 'timeout' | 'network_error' {
+  return err instanceof Error && err.name === 'TimeoutError' ? 'timeout' : 'network_error'
 }

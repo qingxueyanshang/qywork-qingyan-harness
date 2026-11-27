@@ -370,38 +370,38 @@ export const readOfficeGuideTool: ToolSpec = {
   fn: withOffice(guide),
 }
 
-export const readOfficeTool: ToolSpec = backgroundable(
-  {
-    name: 'read_office',
-    deferred: { brief: '读取 Word / PPT / Excel 文件的结构与文字，修改已有文件前先读取' },
-    description:
-      '读取 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）的结构与文字。' +
-      '修改已有文件前必须先读取，用于写入时的版本冲突检查。查看页面使用 view_office。',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: '文件的工作区相对路径' },
-        range: {
-          type: 'string',
-          description: '可选。docx 段落区间如 P1-P80；pptx 幻灯片区间如 2-5；xlsx 工作表名',
-        },
+/**
+ * 读取与查看不转入后台：结果是文字与页面图片，供当前这一步使用；回执只能送达文字，页面图片与完整内容的资源引用会丢失。
+ */
+export const readOfficeTool: ToolSpec = {
+  name: 'read_office',
+  deferred: { brief: '读取 Word / PPT / Excel 文件的结构与文字，修改已有文件前先读取' },
+  description:
+    '读取 Word / PPT / Excel 文件（.docx / .pptx / .xlsx）的结构与文字。' +
+    '修改已有文件前必须先读取，用于写入时的版本冲突检查。查看页面使用 view_office。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '文件的工作区相对路径' },
+      range: {
+        type: 'string',
+        description: '可选。docx 段落区间如 P1-P80；pptx 幻灯片区间如 2-5；xlsx 工作表名',
       },
-      required: ['path'],
-      additionalProperties: false,
     },
-    verb: '读取',
-    category: 'office',
-    facet: '文档',
-    summary: '读取 Word / PPT / Excel 的结构与文字',
-    targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
-    permissionEffect: 'read',
-    parallelSafe: true,
-    resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
-    requires: [OfficePort],
-    fn: withOffice(read),
+    required: ['path'],
+    additionalProperties: false,
   },
-  (args) => `读取文档${typeof args.path === 'string' ? ` ${args.path}` : ''}`,
-)
+  verb: '读取',
+  category: 'office',
+  facet: '文档',
+  summary: '读取 Word / PPT / Excel 的结构与文字',
+  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+  permissionEffect: 'read',
+  parallelSafe: true,
+  resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+  requires: [OfficePort],
+  fn: withOffice(read),
+}
 
 export const writeOfficeTool: ToolSpec = backgroundable(
   {
@@ -446,64 +446,61 @@ export const writeOfficeTool: ToolSpec = backgroundable(
   (args) => `制作文档${stringList(args.outputs)[0] ? ` ${stringList(args.outputs)[0]}` : ''}`,
 )
 
-export const viewOfficeTool: ToolSpec = backgroundable(
-  {
-    name: 'view_office',
-    deferred: { brief: '把 Word / PPT / Excel / PDF 的指定页面渲染为图片，检查版式、图表与扫描件' },
-    description:
-      '将 Word / PPT / Excel / PDF 文件的指定页面渲染为图片，用于检查版式、图表和扫描件。' +
-      '交付文档前应查看页面，当前模型须支持图片输入。读取结构与文字使用 read_office。' +
-      '页面要作为参考图使用时（如画布生成卡片的输入），用 save_to 把页面原图保存到工作区。',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: '文件的工作区相对路径，支持 .docx / .pptx / .xlsx / .pdf',
-        },
-        pages: {
-          type: 'array',
-          items: { type: 'string' },
-          description: '页码，可一次提供多页，默认第 1 页；xlsx 写「工作表名:页码」',
-        },
-        region: {
-          type: 'object',
-          properties: {
-            left: { type: 'number' },
-            top: { type: 'number' },
-            width: { type: 'number' },
-            height: { type: 'number' },
-          },
-          required: ['left', 'top', 'width', 'height'],
-          additionalProperties: false,
-          description:
-            '可选，按页面比例（0 到 1）指定局部区域，从原始渲染图裁剪并放大到长边 1568（至多 4 倍）。' +
-            '整页图缩小发送，细线、描边、残影、小字要用它放大后再判断',
-        },
-        save_to: {
-          type: 'string',
-          description:
-            '可选，把渲染出的页面原图（PNG，渲染分辨率，不缩放；给出 region 时为局部原图）保存到工作区。' +
-            '一页时可写 .png 文件路径；写目录时每页保存为「文件名-p页码.png」，多页时必须写目录。' +
-            '已存在的文件不覆盖，改名追加 -2、-3，回执写明保存位置',
-        },
+export const viewOfficeTool: ToolSpec = {
+  name: 'view_office',
+  deferred: { brief: '把 Word / PPT / Excel / PDF 的指定页面渲染为图片，检查版式、图表与扫描件' },
+  description:
+    '将 Word / PPT / Excel / PDF 文件的指定页面渲染为图片，用于检查版式、图表和扫描件。' +
+    '交付文档前应查看页面，当前模型须支持图片输入。读取结构与文字使用 read_office。' +
+    '页面要作为参考图使用时（如画布生成卡片的输入），用 save_to 把页面原图保存到工作区。',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: '文件的工作区相对路径，支持 .docx / .pptx / .xlsx / .pdf',
       },
-      required: ['path'],
-      additionalProperties: false,
+      pages: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '页码，可一次提供多页，默认第 1 页；xlsx 写「工作表名:页码」',
+      },
+      region: {
+        type: 'object',
+        properties: {
+          left: { type: 'number' },
+          top: { type: 'number' },
+          width: { type: 'number' },
+          height: { type: 'number' },
+        },
+        required: ['left', 'top', 'width', 'height'],
+        additionalProperties: false,
+        description:
+          '可选，按页面比例（0 到 1）指定局部区域，从原始渲染图裁剪并放大到长边 1568（至多 4 倍）。' +
+          '整页图缩小发送，细线、描边、残影、小字要用它放大后再判断',
+      },
+      save_to: {
+        type: 'string',
+        description:
+          '可选，把渲染出的页面原图（PNG，渲染分辨率，不缩放；给出 region 时为局部原图）保存到工作区。' +
+          '一页时可写 .png 文件路径；写目录时每页保存为「文件名-p页码.png」，多页时必须写目录。' +
+          '已存在的文件不覆盖，改名追加 -2、-3，回执写明保存位置',
+      },
     },
-    verb: '查看',
-    category: 'office',
-    facet: '文档',
-    summary: '查看 Word / PPT / Excel / PDF 页面',
-    targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
-    // 给出 save_to 时向工作区写入页面图；权限效果须固定（工具清单按此列显示边界），因此声明为 write。
-    permissionEffect: 'write',
-    parallelSafe: false,
-    resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
-    requires: [OfficePort],
-    fn: withOffice(view),
+    required: ['path'],
+    additionalProperties: false,
   },
-  (args) => `查看文档${typeof args.path === 'string' ? ` ${args.path}` : ''}`,
-)
+  verb: '查看',
+  category: 'office',
+  facet: '文档',
+  summary: '查看 Word / PPT / Excel / PDF 页面',
+  targetExtractor: (a) => (typeof a.path === 'string' ? a.path : null),
+  // 给出 save_to 时向工作区写入页面图；权限效果须固定（工具清单按此列显示边界），因此声明为 write。
+  permissionEffect: 'write',
+  parallelSafe: false,
+  resourceKeys: (a) => (typeof a.path === 'string' ? [`file:${a.path}`] : []),
+  requires: [OfficePort],
+  fn: withOffice(view),
+}
 
 export const officeTools = [readOfficeGuideTool, readOfficeTool, writeOfficeTool, viewOfficeTool]

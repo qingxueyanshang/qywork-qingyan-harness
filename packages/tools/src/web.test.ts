@@ -9,11 +9,17 @@ import { htmlToText, parseDuckDuckGo, webFetchTool } from './web.ts'
  * 只在 `loopback` 包裹的调用期间放行，其余用例照常经过默认策略。
  */
 let allowLoopback = false
+/** 非空时替换请求超时，供超时用例在毫秒级内触发。 */
+let timeoutMs: number | undefined
 const realSafeFetch = netSafety.safeFetch
 mock.module('./net-safety.ts', () => ({
   ...netSafety,
   safeFetch: (raw: string, opts: Parameters<typeof realSafeFetch>[1] = {}) =>
-    realSafeFetch(raw, allowLoopback ? { ...opts, allowHosts: ['127.0.0.1'] } : opts),
+    realSafeFetch(raw, {
+      ...opts,
+      ...(allowLoopback ? { allowHosts: ['127.0.0.1'] } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    }),
 }))
 
 async function loopback<T>(fn: () => Promise<T>): Promise<T> {
@@ -141,6 +147,22 @@ describe('抓取的用量记账', () => {
       await server.stop(true)
     }
   })
+})
+
+/** 原始失败形状：请求超时与断开、无法连接同记为 `network_error`，工具行显示「失败」而不是「超时」。 */
+test('请求超时记为 timeout，工具行据此显示「超时」', async () => {
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Promise(() => {}) })
+  timeoutMs = 100
+  try {
+    const r = await loopback(() =>
+      webFetchTool.fn({ url: `http://127.0.0.1:${server.port}/` }, ctx()),
+    )
+    expect(r.status).toBe('failure')
+    expect(r.errorKind).toBe('timeout')
+  } finally {
+    timeoutMs = undefined
+    await server.stop(true)
+  }
 })
 
 test('HTTP 失败写明状态码名称，与模型请求和生成的报错写法一致', async () => {

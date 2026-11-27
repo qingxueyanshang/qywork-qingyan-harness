@@ -1,7 +1,7 @@
 /**
  * 覆盖 `shell/detach.ts` 的 `backgroundable`。
  *
- * 原始失败形状：生成、画布运行、Office 等工具不读取用户消息的信号，执行期间插入的消息要等工具结束才送达，
+ * 原始失败形状：生成、画布运行、制作文档等工具不读取用户消息的信号，执行期间插入的消息要等工具结束才送达，
  * 视频生成可达数分钟；只有运行命令会转入后台。
  */
 import { expect, test } from 'bun:test'
@@ -73,9 +73,7 @@ test('执行期间收到「调整方向」消息：登记到后台任务表并�
   expect(adopted[0]!.command).toBe('运行生成卡「封面」')
   expect(adopted[0]!.stepId).toBe('st_1')
   tool.finish('已取得结果：cover.mp4')
-  expect((await adopted[0]!.settled).receipt).toBe(
-    '运行生成卡「封面」已结束：已取得结果：cover.mp4',
-  )
+  expect((await adopted[0]!.settled).receipt).toBe('运行生成卡「封面」：已取得结果：cover.mp4')
 })
 
 test('转入后台之后本轮停止不再中止执行；任务表停止时中止且不送回执', async () => {

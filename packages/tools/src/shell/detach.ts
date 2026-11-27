@@ -6,7 +6,7 @@ import { CommandPort } from './port.ts'
  * 把这次执行登记到后台任务表并立即返回；执行照常进行，结束时以回执送达，
  * 可经 `background_command` 读取、等待与停止。没有后台任务端口（成员会话、命令行）时照常等待。
  *
- * 用于生成、画布运行与取回、导出成片、Office、浏览器下载：它们的执行可能超过命令的前台等待上限，
+ * 用于生成、画布运行与取回、导出成片、制作文档、浏览器下载：它们的执行可能超过命令的前台等待上限，
  * 且执行不依赖当前这一步，可以脱离本轮继续。
  *
  * 工具收到的是本次执行自己的中止信号：转入后台之前随本轮停止而中止，转入后台之后只由任务表的停止中止。
@@ -55,7 +55,7 @@ export function backgroundable(
             (outcome) => ({
               receipt: stopped
                 ? null
-                : `${name}${outcome.status === 'success' ? '已结束' : '失败'}：${outcome.message}`,
+                : `${name}${outcome.status === 'success' ? '' : '失败'}：${outcome.message}`,
               fileChanges: outcome.fileChanges ?? [],
             }),
             (error: unknown) => ({
@@ -79,7 +79,7 @@ function detachedOutcome(name: string, id: string): ToolOutcome {
   return {
     status: 'success',
     message:
-      `执行期间用户发来调整方向的消息，${name}转入后台继续运行，任务编号 ${id}；结束时结果作为回执消息送达，` +
+      `执行期间用户发来调整方向的消息，已转入后台继续运行（${name}），任务编号 ${id}；结束时结果作为回执消息送达，` +
       '可用 background_command 读取、等待或停止',
     data: { taskId: id },
   }
