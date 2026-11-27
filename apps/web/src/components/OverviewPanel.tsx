@@ -19,7 +19,7 @@ import { TodoList } from './TodoList.tsx'
 type Subagent = ConversationBoardResponse['subagents'][number]
 
 /**
- * 右侧面板的概要页：当前会话的待办、后台任务、子 agent 与画布，四组纵向排列，空组不显示，全部为空时空白。
+ * 右侧面板的概要页：当前会话的待办、画布、后台任务与子 agent，四组按此顺序纵向排列，空组不显示，全部为空时空白。
  *
  * 待办与后台任务读取实时快照（`state.todos`、`state.backgroundCommands`）；子 agent 与画布由
  * `/api/conversations/:id/board` 从账本读取。后两者没有推送：账本进度、本会话中已结束的工具调用数或
@@ -58,6 +58,25 @@ export function OverviewPanel() {
           <TodoList todos={state.todos} />
         </Section>
       </Show>
+      <Show when={canvases().length > 0}>
+        <Section title="画布">
+          <For each={canvases()}>
+            {(path) => (
+              <button
+                class="overview-row"
+                type="button"
+                data-tip={path}
+                onClick={() => openFileInPanel(path)}
+              >
+                <span class="overview-mark">
+                  <IconCanvas size={12} />
+                </span>
+                <span class="overview-label truncate">{canvasTitle(path)}</span>
+              </button>
+            )}
+          </For>
+        </Section>
+      </Show>
       <Show when={state.backgroundCommands.length > 0}>
         <Section title="后台任务">
           <For each={state.backgroundCommands}>
@@ -85,25 +104,6 @@ export function OverviewPanel() {
       <Show when={subagents().length > 0}>
         <Section title="子 agent">
           <For each={subagents()}>{(a) => <SubagentRow agent={a} />}</For>
-        </Section>
-      </Show>
-      <Show when={canvases().length > 0}>
-        <Section title="画布">
-          <For each={canvases()}>
-            {(path) => (
-              <button
-                class="overview-row"
-                type="button"
-                data-tip={path}
-                onClick={() => openFileInPanel(path)}
-              >
-                <span class="overview-mark">
-                  <IconCanvas size={12} />
-                </span>
-                <span class="overview-label truncate">{canvasTitle(path)}</span>
-              </button>
-            )}
-          </For>
         </Section>
       </Show>
     </div>

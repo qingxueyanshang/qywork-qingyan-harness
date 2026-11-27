@@ -108,7 +108,7 @@ test('后台任务：当前会话的快照每项一行，点击停止发送 comm
   }
 })
 
-test('四组按待办、后台任务、子 agent、画布排列；子 agent 运行状态取自忙态，点击打开子会话页与画布页', async () => {
+test('四组按待办、画布、后台任务、子 agent 排列；子 agent 运行状态取自忙态，点击打开子会话页与画布页', async () => {
   const { host, calls, store } = await mount({
     subagents: [
       { id: 'cv_review', title: '代码审查', kind: 'role' },
@@ -128,10 +128,10 @@ test('四组按待办、后台任务、子 agent、画布排列；子 agent 运�
     () => heads(host).length === 4,
     () => `组标题：${heads(host).join('、')}；请求：${calls.join('、')}`,
   )
-  expect(heads(host)).toEqual(['待办', '后台任务', '子 agent', '画布'])
+  expect(heads(host)).toEqual(['待办', '画布', '后台任务', '子 agent'])
   expect(calls).toContain('/api/conversations/cv_main/board')
 
-  const agents = [...host.querySelectorAll('.overview-section')][2]!
+  const agents = [...host.querySelectorAll('.overview-section')][3]!
   const rows = [...agents.querySelectorAll('.overview-row')]
   expect(rows.map((r) => r.textContent)).toEqual(['代码审查', 'OpenAI codex'])
   expect(rows.map((r) => r.classList.contains('running'))).toEqual([true, false])
@@ -141,7 +141,7 @@ test('四组按待办、后台任务、子 agent、画布排列；子 agent 运�
   click(rows[0]!)
   expect(store.panelTabs().at(-1)).toMatchObject({ kind: 'conversation', title: '代码审查' })
 
-  const canvas = [...host.querySelectorAll('.overview-section')][3]!.querySelector('button')!
+  const canvas = [...host.querySelectorAll('.overview-section')][1]!.querySelector('button')!
   expect(canvas.textContent).toBe('第1集')
   click(canvas)
   expect(store.panelTabs().at(-1)).toMatchObject({
