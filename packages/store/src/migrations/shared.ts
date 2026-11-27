@@ -33,5 +33,36 @@ export function parsedObject(raw: string | null): Record<string, unknown> | null
   }
 }
 
+/** 改写工具开头的迁移每批读取的候选行数。候选行按 payload 中的旧开头预先筛选，数量远少于全部工具行。 */
+const HEAD_BATCH_ROWS = 500
+
+/**
+ * 工具类目改名后改写历史工具行中已写入的开头（payload 的 `action.head`，迁移 81 写入）的一批。
+ * 只改写开头恰为 `from` 的行；返回值的约定同 `Migration.background`。
+ */
+export function renameToolHeadBatch(
+  db: Database,
+  after: number,
+  from: string,
+  to: string,
+): number | null {
+  const rows = db
+    .query<{ rid: number; id: string; payload: string | null }, [number, string, number]>(
+      `SELECT rowid AS rid, id, payload FROM steps
+       WHERE rowid > ? AND kind = 'tool_action' AND instr(payload, ?) > 0
+       ORDER BY rowid LIMIT ?`,
+    )
+    .all(after, from, HEAD_BATCH_ROWS)
+  if (!rows.length) return null
+  const write = db.query('UPDATE steps SET payload = ? WHERE id = ?')
+  for (const row of rows) {
+    const payload = parsedObject(row.payload)
+    const action = payload?.action as Record<string, unknown> | undefined
+    if (!payload || action?.head !== from) continue
+    write.run(JSON.stringify({ ...payload, action: { ...action, head: to } }), row.id)
+  }
+  return rows.at(-1)!.rid
+}
+
 /** 旧服务为临时子 agent 设定的显示名。迁移 41 沿用该名称，不以任务正文作为名字。 */
 export const TEMP_LABEL = '临时子 agent'

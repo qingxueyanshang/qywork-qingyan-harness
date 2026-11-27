@@ -4,13 +4,14 @@
  *
  * 原始失败形状：历史记录只有 `objectLabel`，新界面按 `head` 与 `verb` 显示，转换缺失时历史中的工具行标题为空。
  * 另覆盖迁移 82（`082-interrupted-steps.ts`）：停止时被收尾的历史工具行补写中断类别；
- * 迁移 83（`083-canvas-tool-head.ts`）：画布类工具的开头由「画布读写」改为「画布控制」。
+ * 迁移 83（`083-canvas-tool-head.ts`）与迁移 84（`084-web-tool-head.ts`）：类目改名后改写历史工具行的开头。
  */
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
 import { migration081 } from './migrations/081-tool-action-heads.ts'
 import { migration082 } from './migrations/082-interrupted-steps.ts'
 import { migration083 } from './migrations/083-canvas-tool-head.ts'
+import { migration084 } from './migrations/084-web-tool-head.ts'
 
 /** 在只含 steps 表的内存库中插入一行，执行迁移 81 的全部批次，返回转换后的 payload；未改写时返回 null。 */
 function convertToolAction(
@@ -256,5 +257,33 @@ test('迁移 83：开头为「画布读写」的工具行改为「画布控制�
     verb: '导出',
     object: '画布读写.md',
   })
+  db.close()
+})
+
+/** 覆盖迁移 84：历史中网页搜索与获取的工具行开头改为「联网搜索」。 */
+test('迁移 84：开头为「网络访问」的工具行改为「联网搜索」，其余行不变', () => {
+  const db = new Database(':memory:')
+  db.run('CREATE TABLE steps (id TEXT PRIMARY KEY, kind TEXT, tool_name TEXT, payload TEXT)')
+  const insert = db.query(
+    "INSERT INTO steps (id, kind, tool_name, payload) VALUES (?, 'tool_action', ?, ?)",
+  )
+  const row = (head: string, object: string) =>
+    JSON.stringify({ kind: 'tool_result', action: { kind: 'read', head, verb: '获取', object } })
+  insert.run('a', 'web_fetch', row('网络访问', 'https://example.com/'))
+  insert.run('b', 'run_command', row('命令执行', 'curl 网络访问.txt'))
+  let after = 0
+  for (;;) {
+    const next = migration084.background!(db, {} as never, after)
+    if (next === null) break
+    after = next
+  }
+  const head = (id: string) =>
+    (
+      JSON.parse(
+        (db.query('SELECT payload FROM steps WHERE id = ?').get(id) as { payload: string }).payload,
+      ) as { action: { head: string } }
+    ).action.head
+  expect(head('a')).toBe('联网搜索')
+  expect(head('b')).toBe('命令执行')
   db.close()
 })

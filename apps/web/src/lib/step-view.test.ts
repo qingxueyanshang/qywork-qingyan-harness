@@ -146,21 +146,21 @@ describe('target 截断方向', () => {
   })
 
   /**
-   * 该函数的用途即在于此：路径的有效信息在末尾，模式串的有效信息在开头。
-   * 两类都截断同一侧时，必然有一类丢失有效的部分。
+   * 原始失败形状：路径保留尾部，「读取 .agents/skills/…/roles/team.md:25-119」显示为「…s/skills/…/team.md:25-119」，
+   * 动词被截去，无法判断这一步执行的操作。
    */
-  test('路径保留尾部，非路径保留头部', () => {
-    const long = `packages/server/src/${'x'.repeat(60)}/git.ts`
+  test('超长时保留开头的动词与路径起始部分，截去末尾', () => {
+    const long = `读取 .agents/skills/flow-video-script/${'x'.repeat(40)}/roles/team.md:25-119`
     const cut = sanitizeTarget(long)
     expect(cut.length).toBe(TARGET_MAX)
-    expect(cut.startsWith('…')).toBe(true)
-    expect(cut.endsWith('git.ts')).toBe(true)
+    expect(cut.startsWith('读取 .agents/skills/flow-video-script/')).toBe(true)
+    expect(cut.endsWith('…')).toBe(true)
 
-    const pattern = `${'8'.repeat(60)}|abc`
+    const pattern = `搜索 ${'8'.repeat(60)}|abc`
     const cut2 = sanitizeTarget(pattern)
     expect(cut2.length).toBe(TARGET_MAX)
+    expect(cut2.startsWith('搜索 8888')).toBe(true)
     expect(cut2.endsWith('…')).toBe(true)
-    expect(cut2.startsWith('8888')).toBe(true)
   })
 })
 

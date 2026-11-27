@@ -90,17 +90,13 @@ export function hitRate(usage: UsageLike): string {
 export const TARGET_MAX = 48
 
 /**
- * 动作行 target 的净化：压缩空白，截断超长内容。
+ * 动作行 target（「动词 对象」）的净化：压缩空白，超长时保留开头、截去末尾，全文见悬停提示。
  *
- * 路径保留尾部（`…/submit/submit_core.py`），其余保留头部（长正则、长模式串）。
- * 有效信息在哪一端就保留哪一端：两类都截断同一侧时，必然有一类丢失有效的部分。
+ * 不要改为路径保留尾部：target 以动词开头，截去开头时动词一并丢失，无法判断这一步执行的操作。
  */
 export function sanitizeTarget(target: string): string {
   const clean = target.replace(/\s+/g, ' ').trim()
-  if (clean.length <= TARGET_MAX) return clean
-  return /[/\\]/.test(clean)
-    ? `…${clean.slice(-(TARGET_MAX - 1))}`
-    : `${clean.slice(0, TARGET_MAX - 1)}…`
+  return clean.length <= TARGET_MAX ? clean : `${clean.slice(0, TARGET_MAX - 1)}…`
 }
 
 /**

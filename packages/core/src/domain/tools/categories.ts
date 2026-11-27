@@ -16,7 +16,7 @@
 export const TOOL_CATEGORY_HEADS = {
   files: '文件读写',
   code: '命令执行',
-  web: '网络访问',
+  web: '联网搜索',
   browser: '网页控制',
   desktop: '电脑控制',
   office: '文档读写',
