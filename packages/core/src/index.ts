@@ -406,6 +406,29 @@ export {
 } from './domain/schedule.ts'
 // 技能目录中 SKILL.md 的前置元信息：电脑端扫描与安装、云端列出内置技能共用
 export { isSkillDescription, parseSkillFrontmatter } from './domain/skill.ts'
+// 创作广场：条目类型、云端接口的数据形状与快照校验，云端与电脑端共用
+export {
+  canvasFilePaths,
+  checkSquareSnapshot,
+  isSquareKind,
+  isSquarePath,
+  type SnapshotCheck,
+  type SnapshotFile,
+  SQUARE_KIND_LABEL,
+  SQUARE_KINDS,
+  SQUARE_LIMITS,
+  type SquareCard,
+  type SquareDetail,
+  type SquareFile,
+  type SquareKind,
+  type SquareMeta,
+  type SquareMetaByKind,
+  type SquareMineItem,
+  type SquarePublishManifest,
+  type SquareStatus,
+  type SquareWorkFormat,
+  squareTextProblem,
+} from './domain/square.ts'
 export {
   categoryOfHead,
   FILE_TARGET_CATEGORIES,
