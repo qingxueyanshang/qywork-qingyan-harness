@@ -212,7 +212,15 @@ function withSpecs(
 }
 
 /** 登录、注册或读取用量失败；`message` 直接显示给用户。 */
-export class CloudAccountError extends Error {}
+/** 账号相关的失败。`reply` 为云端答复的状态码与说明，云端未答复（未登录、连接失败等）时缺省。 */
+export class CloudAccountError extends Error {
+  constructor(
+    message: string,
+    readonly reply?: { status: number; message: string },
+  ) {
+    super(message)
+  }
+}
 
 export interface CloudAccountOptions {
   /** 云端接口写入或删除之后。 */
@@ -725,8 +733,10 @@ export class CloudAccount {
       await this.revoked()
       throw new CloudAccountError('设备已被移除')
     }
+    const reason = body?.error?.message
     throw new CloudAccountError(
-      `账号服务返回 ${res.status}${body?.error?.message ? `：${body.error.message}` : ''}`,
+      `账号服务返回 ${res.status}${reason ? `：${reason}` : ''}`,
+      reason ? { status: res.status, message: reason } : undefined,
     )
   }
 

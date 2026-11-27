@@ -8,7 +8,7 @@
  *   视频作品另带 `cover`（PNG）。打包、校验后上传，返回云端的 `{ id, version, status }`；校验不通过时 422。
  * - `POST github`：正文 `SquareGithubRequest`，原样转交云端收录该仓库，返回 `{ id, version, status }`。
  *
- * 未配置云端地址时 404；云端返回的失败以 400 返回云端的说明，安装失败以 409 或 422 返回原因。
+ * 未配置云端地址时 404；云端返回的失败按云端的状态码与说明返回，未取得云端答复时 400；安装失败以 409 或 422 返回原因。
  */
 
 import { type SquareDetail, squareMediaMime } from '@qywork/core'
@@ -130,7 +130,13 @@ export const handleSquareApi: ApiHandler = async (url, req, d) => {
         : json({ error: 'install_failed', message: result.error }, result.status)
     }
   } catch (err) {
-    if (err instanceof CloudAccountError) return json({ error: 'cloud', message: err.message }, 400)
+    // 创作广场的失败（审核状态、许可证、校验）按云端的状态码与说明返回，不加账号服务的前缀。
+    if (err instanceof CloudAccountError) {
+      return json(
+        { error: 'cloud', message: err.reply?.message ?? err.message },
+        err.reply?.status ?? 400,
+      )
+    }
     if (err instanceof CanvasFailure) {
       return json({ error: 'install_failed', message: err.message }, err.status)
     }

@@ -178,6 +178,15 @@ describe('各类型', () => {
     expect(
       error(checkSquareSnapshot('pet', {}, [file('pet.json', JSON.stringify(pack))])),
     ).toContain('缺少 a.png')
+    // GitHub 仓库中的说明与许可证可以随快照一起保存。
+    expect(
+      checkSquareSnapshot('pet', {}, [
+        file('pet.json', JSON.stringify(pack)),
+        file('a.png', PNG),
+        file('README.md', '# 猫'),
+        file('LICENSE', 'MIT'),
+      ]).ok,
+    ).toBe(true)
     const skin = {
       background: { kind: 'image', file: 'bg.png', fit: 'cover', dim: 0, blur: 0 },
       fog: null,

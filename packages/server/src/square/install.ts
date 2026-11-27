@@ -15,6 +15,9 @@ import { dirname, join } from 'node:path'
 import {
   type CanvasDoc,
   parseCanvas,
+  parsePersonalization,
+  parsePetPack,
+  petFrameFiles,
   type SquareDetail,
   type SquareKind,
   type SquareMetaByKind,
@@ -118,11 +121,13 @@ const INSTALLERS: Record<InstallableKind, Installer> = {
     return { ok: false, status: result.kind === 'conflict' ? 409 : 422, error: result.error }
   },
 
+  // 快照可以带其他文件（仓库中的说明与许可证），只取宠物包与皮肤引用的图片。
   pet: (detail, ctx) =>
     withSnapshot(detail, ctx, 'pet', async (dir) => {
-      const pack = JSON.parse(await readFile(join(dir, 'pet.json'), 'utf8')) as unknown
-      const frames = detail.files.map((f) => f.path).filter((p) => p !== 'pet.json')
-      const saved = await savePet(null, pack, await images(dir, frames))
+      const parsed = parsePetPack(JSON.parse(await readFile(join(dir, 'pet.json'), 'utf8')))
+      if (!parsed.ok) return { ok: false, status: 422, error: parsed.error }
+      const frames = petFrameFiles(parsed.value)
+      const saved = await savePet(null, parsed.value, await images(dir, frames))
       return saved.ok
         ? { ok: true, message: `已添加宠物 ${saved.entry.pack.name}` }
         : { ok: false, status: 422, error: saved.error }
@@ -130,9 +135,13 @@ const INSTALLERS: Record<InstallableKind, Installer> = {
 
   skin: (detail, ctx) =>
     withSnapshot(detail, ctx, 'skin', async (dir) => {
-      const raw = JSON.parse(await readFile(join(dir, 'skin.json'), 'utf8')) as unknown
-      const pictures = detail.files.map((f) => f.path).filter((p) => p !== 'skin.json')
-      const saved = await savePersonalization(raw, await images(dir, pictures))
+      const parsed = parsePersonalization(
+        JSON.parse(await readFile(join(dir, 'skin.json'), 'utf8')),
+      )
+      if (!parsed.ok) return { ok: false, status: 422, error: parsed.error }
+      const bg = parsed.value.background
+      const pictures = bg.kind === 'image' ? [bg.file] : []
+      const saved = await savePersonalization(parsed.value, await images(dir, pictures))
       return saved.ok
         ? { ok: true, message: '已应用皮肤' }
         : { ok: false, status: 422, error: saved.error }

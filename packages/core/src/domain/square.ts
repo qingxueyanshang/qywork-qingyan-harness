@@ -276,6 +276,11 @@ function image(files: ReadonlyMap<string, Uint8Array>, path: string, max: number
   return null
 }
 
+/**
+ * 画布、宠物、皮肤的快照可以带其他文件（GitHub 仓库中的说明与许可证等），只要求用到的文件齐全；安装时只取用到的文件。
+ */
+const anyFile = () => true
+
 const noFiles = (files: ReadonlyMap<string, Uint8Array>) =>
   files.size ? fail('该类型的快照不含文件') : null
 
@@ -357,7 +362,7 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
     }
     const bad = layout(
       files,
-      (p) => p === 'canvas.json' || p.startsWith('files/'),
+      anyFile,
       refs.map((r) => `files/${r}`),
     )
     if (bad) return bad
@@ -432,7 +437,7 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
     const parsed = parsePetPack(json(raw))
     if (!parsed.ok) return fail(`pet.json 不合法：${parsed.error}`)
     const frames = petFrameFiles(parsed.value)
-    const bad = layout(files, (p) => p === 'pet.json' || frames.includes(p), frames)
+    const bad = layout(files, anyFile, frames)
     if (bad) return bad
     for (const frame of frames) {
       const b = files.get(frame)!
@@ -449,7 +454,7 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
     const bg = parsed.value.background
     const imagePath = bg.kind === 'image' ? bg.file : null
     const bad =
-      layout(files, (p) => p === 'skin.json' || p === imagePath, imagePath ? [imagePath] : []) ??
+      layout(files, anyFile, imagePath ? [imagePath] : []) ??
       (imagePath ? image(files, imagePath, SQUARE_LIMITS.image) : null)
     return bad ?? { meta: {}, cover: imagePath }
   },

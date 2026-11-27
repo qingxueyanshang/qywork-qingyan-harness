@@ -122,8 +122,13 @@ const origin = `http://127.0.0.1:${cloud.port}`
 let workspaceRoot = ''
 let deps: ApiRequestDeps
 
+/** 测试进程原有的全局数据目录：本文件的安装写入独立的目录，结束时恢复，不影响同一进程中之后运行的文件。 */
+const sharedHome = process.env.QYWORK_HOME
+
 beforeAll(async () => {
-  workspaceRoot = await mkdtemp(join(process.env.QYWORK_TEST_TEMP ?? tmpdir(), 'square-ws-'))
+  const temp = process.env.QYWORK_TEST_TEMP ?? tmpdir()
+  process.env.QYWORK_HOME = await mkdtemp(join(temp, 'square-home-'))
+  workspaceRoot = await mkdtemp(join(temp, 'square-ws-'))
   const config = {
     providers: {
       [CLOUD_PROVIDER]: {
@@ -141,7 +146,11 @@ beforeAll(async () => {
   } as unknown as ApiRequestDeps
 })
 
-afterAll(() => cloud.stop(true))
+afterAll(() => {
+  cloud.stop(true)
+  if (sharedHome === undefined) delete process.env.QYWORK_HOME
+  else process.env.QYWORK_HOME = sharedHome
+})
 
 async function call(path: string, init?: RequestInit): Promise<Response> {
   const url = new URL(`http://local${path}`)
@@ -254,7 +263,7 @@ describe('安装', () => {
     expect((await install('sq_plugin')).status).toBe(409)
   })
 
-  test('宠物添加到宠物库；皮肤替换当前的个性化', async () => {
+  test('宠物添加到宠物库；皮肤替换当前的个性化；快照中的说明与许可证不作为图片', async () => {
     const anim = { frames: ['a.png'], fps: 4 }
     publish(
       'sq_pet',
@@ -267,6 +276,7 @@ describe('安装', () => {
           states: { desktop: anim, failed: anim, working: anim, done: anim, idle: anim },
         }),
         'a.png': PNG,
+        'README.md': '# 广场猫\n',
       },
     )
     expect((await install('sq_pet')).status).toBe(200)
@@ -285,6 +295,7 @@ describe('安装', () => {
           flow: null,
         }),
         'bg.png': PNG,
+        LICENSE: 'MIT License\n',
       },
     )
     expect((await install('sq_skin')).status).toBe(200)
