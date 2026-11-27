@@ -112,6 +112,20 @@ export interface SquareMineItem {
   updatedAt: string
 }
 
+/**
+ * 电脑端发布的来源，按类型：本机服务 `/api/square/publish` 的 `source`，由本机服务打包为快照。
+ * 路径为当前项目中的工作区相对路径；技能为本机技能目录的绝对路径。
+ */
+export type SquarePublishSource =
+  | { kind: 'prompt'; text: string }
+  | { kind: 'work'; path: string; prompt?: string }
+  | { kind: 'canvas'; path: string }
+  | { kind: 'plugin'; id: string }
+  | { kind: 'skill'; dir: string }
+  | { kind: 'mcp'; name: string }
+  | { kind: 'pet'; id: string }
+  | { kind: 'skin' }
+
 /** 发布请求中的清单（multipart 的 `manifest` 字段）。文件按 `files` 的顺序放在 `file:<序号>` 字段中。 */
 export interface SquarePublishManifest {
   kind: SquareKind

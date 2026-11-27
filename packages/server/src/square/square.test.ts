@@ -6,7 +6,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readdir, readFile, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { checkSquareSnapshot, parseCanvas, type SquareDetail, type SquareKind } from '@qywork/core'
@@ -67,11 +67,29 @@ function publish(
 }
 
 const listQueries: string[] = []
+/** 云端收到的发布：清单与按路径的文件内容。 */
+let uploaded: {
+  path: string
+  manifest: Record<string, unknown>
+  files: Map<string, Uint8Array>
+} | null = null
 const cloud = Bun.serve({
   port: 0,
   hostname: '127.0.0.1',
-  fetch(req) {
+  async fetch(req) {
     const url = new URL(req.url)
+    if (req.method === 'POST' && url.pathname.startsWith('/v1/square/items')) {
+      const form = await req.formData()
+      const manifest = JSON.parse(String(form.get('manifest'))) as {
+        files: { path: string }[]
+      } & Record<string, unknown>
+      const files = new Map<string, Uint8Array>()
+      for (const [i, f] of manifest.files.entries()) {
+        files.set(f.path, new Uint8Array(await (form.get(`file:${i}`) as Blob).arrayBuffer()))
+      }
+      uploaded = { path: url.pathname, manifest, files }
+      return Response.json({ id: 'sq_new', version: 1, status: 'pending' })
+    }
     const file = /^\/v1\/square\/files\/([0-9a-f]{64})$/.exec(url.pathname)
     if (file) {
       fileReads++
@@ -290,5 +308,202 @@ describe('安装', () => {
     // 同名目录已存在时加序号，不覆盖。
     const second = (await (await install('sq_canvas')).json()) as { canvas: string }
     expect(second.canvas).toBe('条目 sq_canvas-2/条目 sq_canvas.canvas.json')
+  })
+})
+
+/** 经 `/api/square/publish` 发布；`cover` 为视频封面。 */
+async function publishLocal(manifest: Record<string, unknown>, cover?: Uint8Array) {
+  uploaded = null
+  const form = new FormData()
+  form.set('manifest', JSON.stringify(manifest))
+  if (cover) form.set('cover', new Blob([cover], { type: 'image/png' }), 'cover.png')
+  return call('/api/square/publish', { method: 'POST', body: form })
+}
+
+describe('发布', () => {
+  test('提示词：标题为空时 422 且不上传；通过时上传清单', async () => {
+    const empty = await publishLocal({
+      title: ' ',
+      summary: '',
+      source: { kind: 'prompt', text: '写诗' },
+    })
+    expect(empty.status).toBe(422)
+    expect(uploaded).toBeNull()
+    const res = await publishLocal({
+      title: '写诗',
+      summary: '',
+      source: { kind: 'prompt', text: '写一首诗' },
+    })
+    expect(await res.json()).toEqual({ id: 'sq_new', version: 1, status: 'pending' })
+    expect(uploaded!.path).toBe('/v1/square/items')
+    expect(uploaded!.manifest).toMatchObject({
+      kind: 'prompt',
+      title: '写诗',
+      meta: { text: '写一首诗' },
+    })
+  })
+
+  test('发布者的条目发布新版本', async () => {
+    await publishLocal({
+      title: '写诗',
+      summary: '',
+      itemId: 'sq_mine',
+      source: { kind: 'prompt', text: '第二版' },
+    })
+    expect(uploaded!.path).toBe('/v1/square/items/sq_mine/versions')
+  })
+
+  test('MCP：env 只保留键', async () => {
+    await writeFile(
+      join(process.env.QYWORK_HOME!, 'mcp.json'),
+      JSON.stringify({
+        mcpServers: { secret: { command: 'qywork-x', env: { TOKEN: 'sk-real' } } },
+      }),
+    )
+    const res = await publishLocal({
+      title: 'X',
+      summary: '',
+      source: { kind: 'mcp', name: 'secret' },
+    })
+    expect(res.status).toBe(200)
+    expect(uploaded!.manifest.meta).toEqual({
+      name: 'secret',
+      server: { command: 'qywork-x', env: { TOKEN: '' } },
+    })
+    expect(JSON.stringify(uploaded!.manifest)).not.toContain('sk-real')
+  })
+
+  test('技能：只能发布本机已安装的技能，打包时跳过字节码缓存', async () => {
+    const dir = join(process.env.QYWORK_HOME!, 'skills', 'publish-demo')
+    await mkdir(join(dir, '__pycache__'), { recursive: true })
+    await writeFile(join(dir, 'SKILL.md'), '---\nname: 发布示例\ndescription: 示例\n---\n')
+    await writeFile(join(dir, '__pycache__', 'x.pyc'), 'x')
+    const outside = await publishLocal({
+      title: 'X',
+      summary: '',
+      source: { kind: 'skill', dir: workspaceRoot },
+    })
+    expect(outside.status).toBe(422)
+    expect(
+      (await publishLocal({ title: 'X', summary: '', source: { kind: 'skill', dir } })).status,
+    ).toBe(200)
+    expect([...uploaded!.files.keys()]).toEqual(['SKILL.md'])
+  })
+
+  test('画布：去掉生成记录、待取回的版本、自行添加接口的模型与参数选择；引用的文件与 Art 页面中的图片一并打包', async () => {
+    await mkdir(join(workspaceRoot, 'pub', 'img'), { recursive: true })
+    await writeFile(join(workspaceRoot, 'pub', 'a.png'), PNG)
+    await writeFile(join(workspaceRoot, 'pub', 'img', 'b.png'), PNG)
+    await writeFile(join(workspaceRoot, 'pub', 'page.html'), '<img src="img/b.png">')
+    const gen = (provider: string) => ({
+      id: `g_${provider}`,
+      type: 'generate',
+      output: 'image',
+      name: provider,
+      x: 0,
+      y: 0,
+      w: 100,
+      h: 100,
+      prompt: '海边',
+      provider,
+      model: 'm1',
+      params: {},
+      paramsByModel: { '["mine","m1"]': {} },
+      versions: [
+        {
+          id: `${provider}-v1`,
+          path: 'pub/a.png',
+          made: {
+            prompt: '海边',
+            provider,
+            model: 'm1',
+            params: {},
+            inputs: [],
+            at: '2026-11-27T00:00:00.000Z',
+          },
+        },
+        {
+          id: `${provider}-v2`,
+          path: 'pub/x.task.json',
+          made: {
+            prompt: '海边',
+            provider,
+            model: 'm1',
+            params: {},
+            inputs: [],
+            at: '2026-11-27T00:00:00.000Z',
+          },
+        },
+      ],
+      current: `${provider}-v2`,
+    })
+    const doc = {
+      version: 1,
+      nodes: [
+        { id: 'f1', type: 'file', path: 'pub/page.html', x: 0, y: 0, w: 100, h: 100 },
+        gen('mine'),
+        gen(CLOUD_PROVIDER),
+      ],
+      edges: [],
+    }
+    await writeFile(join(workspaceRoot, 'pub', 'demo.canvas.json'), JSON.stringify(doc))
+    const res = await publishLocal({
+      title: '画布',
+      summary: '',
+      source: { kind: 'canvas', path: 'pub/demo.canvas.json' },
+    })
+    expect(res.status).toBe(200)
+    expect([...uploaded!.files.keys()].sort()).toEqual(
+      ['canvas.json', 'files/pub/a.png', 'files/pub/img/b.png', 'files/pub/page.html'].sort(),
+    )
+    const sent = parseCanvas(new TextDecoder().decode(uploaded!.files.get('canvas.json')))
+    expect(sent.ok).toBe(true)
+    const nodes = sent.ok ? sent.doc.nodes : []
+    expect(nodes[1]).not.toHaveProperty('provider')
+    expect(nodes[1]).not.toHaveProperty('paramsByModel')
+    expect(nodes[1]).toMatchObject({ versions: [{ id: 'mine-v1' }], current: 'mine-v1' })
+    expect(nodes[2]).toMatchObject({ provider: CLOUD_PROVIDER, model: 'm1' })
+    // 版本的生成记录中，自行添加接口的名称与模型同样删除。
+    expect(nodes[1]).toMatchObject({ versions: [{ made: { provider: '', model: '' } }] })
+    expect(nodes[2]).toMatchObject({ versions: [{ made: { provider: CLOUD_PROVIDER } }] })
+  })
+
+  test('作品：图片原样打包；视频须带封面；其余格式 422', async () => {
+    await writeFile(join(workspaceRoot, 'pub', 'w.png'), PNG)
+    await publishLocal({
+      title: '图',
+      summary: '',
+      source: { kind: 'work', path: 'pub/w.png', prompt: '海边' },
+    })
+    expect(uploaded!.manifest.meta).toEqual({ format: 'image', prompt: '海边' })
+    expect([...uploaded!.files.keys()]).toEqual(['image.png'])
+
+    const MP4 = new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d])
+    await writeFile(join(workspaceRoot, 'pub', 'v.mp4'), MP4)
+    const noCover = await publishLocal({
+      title: '片',
+      summary: '',
+      source: { kind: 'work', path: 'pub/v.mp4' },
+    })
+    expect(noCover.status).toBe(422)
+    await publishLocal(
+      { title: '片', summary: '', source: { kind: 'work', path: 'pub/v.mp4' } },
+      PNG,
+    )
+    expect([...uploaded!.files.keys()].sort()).toEqual(['cover.png', 'video.mp4'])
+
+    await writeFile(join(workspaceRoot, 'pub', 'n.txt'), 'x')
+    expect(
+      (await publishLocal({ title: 'X', summary: '', source: { kind: 'work', path: 'pub/n.txt' } }))
+        .status,
+    ).toBe(422)
+  })
+
+  test('宠物与皮肤取自本机的宠物库与当前个性化', async () => {
+    const pet = (await listPets()).pets.find((p) => p.pack.name === '广场猫')!
+    await publishLocal({ title: '猫', summary: '', source: { kind: 'pet', id: pet.id } })
+    expect([...uploaded!.files.keys()].sort()).toEqual(['a.png', 'pet.json'])
+    await publishLocal({ title: '皮肤', summary: '', source: { kind: 'skin' } })
+    expect([...uploaded!.files.keys()].sort()).toEqual(['bg.png', 'skin.json'])
   })
 })

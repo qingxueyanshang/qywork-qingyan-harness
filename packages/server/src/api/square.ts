@@ -4,6 +4,8 @@
  * - `GET items`、`GET items/:id`、`GET mine`、`DELETE items/:id`：原样转交云端，应答的形状见 `@qywork/core` 的 `square.ts`。
  * - `GET files/:hash`：文件内容，按哈希保存在本机后提供（`square/files.ts`）；`content-type` 按文件头判定图片与视频。
  * - `POST install`：正文 `{ id }`，安装该条目的最新已上架版本（`square/install.ts`），返回 `{ message, canvas? }`。
+ * - `POST publish`：multipart，`manifest` 为 `{ title, summary, source, itemId? }`（`source` 见 `square/publish.ts`），
+ *   视频作品另带 `cover`（PNG）。打包、校验后上传，返回云端的 `{ id, version, status }`；校验不通过时 422。
  *
  * 未配置云端地址时 404；云端返回的失败以 400 返回云端的说明，安装失败以 409 或 422 返回原因。
  */
@@ -13,9 +15,20 @@ import { CanvasFailure } from '../canvas/docs.ts'
 import { CloudAccountError } from '../cloud/account.ts'
 import { SquareFileError, squareFile } from '../square/files.ts'
 import { installSquareItem } from '../square/install.ts'
+import { parsePublishSource, publishToSquare } from '../square/publish.ts'
 import { type ApiHandler, json } from './types.ts'
 
 const PREFIX = '/api/square/'
+
+/** multipart 字段中的 JSON；不是字符串或无法解析时为 null。 */
+function parseJson(field: unknown): unknown {
+  if (typeof field !== 'string') return null
+  try {
+    return JSON.parse(field)
+  } catch {
+    return null
+  }
+}
 const LIST_PARAMS = ['kind', 'q', 'before'] as const
 
 export const handleSquareApi: ApiHandler = async (url, req, d) => {
@@ -53,6 +66,38 @@ export const handleSquareApi: ApiHandler = async (url, req, d) => {
           'cache-control': 'private, max-age=31536000, immutable',
         },
       })
+    }
+    if (section === 'publish' && !id && req.method === 'POST') {
+      const form = await req.formData().catch(() => null)
+      const manifest = parseJson(form?.get('manifest')) as {
+        title?: unknown
+        summary?: unknown
+        itemId?: unknown
+        source?: unknown
+      } | null
+      const source = parsePublishSource(manifest?.source)
+      if (!manifest || typeof source === 'string') {
+        return json(
+          { error: 'invalid_request', message: typeof source === 'string' ? source : '缺少清单' },
+          400,
+        )
+      }
+      const cover = form?.get('cover')
+      const result = await publishToSquare(
+        {
+          title: String(manifest.title ?? ''),
+          summary: String(manifest.summary ?? ''),
+          source,
+          ...(typeof manifest.itemId === 'string' && manifest.itemId
+            ? { itemId: manifest.itemId }
+            : {}),
+          ...(cover instanceof Blob ? { cover: new Uint8Array(await cover.arrayBuffer()) } : {}),
+        },
+        { account, config: d.config, workspaceRoot: d.workspaceRoot, office: d.office },
+      )
+      return result.ok
+        ? json({ id: result.id, version: result.version, status: result.status })
+        : json({ error: 'invalid', message: result.error }, 422)
     }
     if (section === 'install' && !id && req.method === 'POST') {
       const body = (await req.json().catch(() => null)) as { id?: unknown } | null

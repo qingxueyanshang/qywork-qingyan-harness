@@ -3,7 +3,14 @@
  * 文件地址只用作本界面中 `<img>` 与 `<video>` 的 `src`：查询串带本机服务的令牌，不要在右侧面板或内置浏览器中打开。
  */
 
-import type { SquareCard, SquareDetail, SquareKind, SquareMineItem } from '@qywork/core'
+import type {
+  SquareCard,
+  SquareDetail,
+  SquareKind,
+  SquareMineItem,
+  SquarePublishSource,
+} from '@qywork/core'
+import { ApiError } from '../client.ts'
 import { sessionSignal } from '../session.ts'
 import { client } from './client.ts'
 import { cloudState } from './cloud.ts'
@@ -47,6 +54,28 @@ export function removeSquareItem(id: string): Promise<void> {
 /** 安装一个条目；画布导入时返回导入的画布文件路径。 */
 export function installSquareItem(id: string): Promise<{ message: string; canvas?: string }> {
   return client.api('/api/square/install', { method: 'POST', body: JSON.stringify({ id }) })
+}
+
+export interface SquarePublishRequest {
+  title: string
+  summary: string
+  source: SquarePublishSource
+  /** 本人已有的条目：给出时发布该条目的新版本。 */
+  itemId?: string
+}
+
+/** 发布到创作广场；`cover` 为视频作品的封面（PNG）。返回云端的条目与版本。 */
+export async function publishSquare(
+  manifest: SquarePublishRequest,
+  cover?: Blob,
+): Promise<{ id: string; version: number; status: string }> {
+  const form = new FormData()
+  form.set('manifest', JSON.stringify(manifest))
+  if (cover) form.set('cover', cover, 'cover.png')
+  const path = '/api/square/publish'
+  const res = await client.raw(path, { method: 'POST', body: form })
+  if (!res.ok) throw new ApiError(res.status, path, await res.text().catch(() => ''))
+  return (await res.json()) as { id: string; version: number; status: string }
 }
 
 export function squareFileUrl(hash: string): string {

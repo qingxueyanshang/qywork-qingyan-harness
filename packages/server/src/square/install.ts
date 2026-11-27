@@ -60,7 +60,7 @@ async function images(dir: string, names: readonly string[]) {
   return Promise.all(names.map(async (name) => ({ name, bytes: await readFile(join(dir, name)) })))
 }
 
-/** 文件卡、生成卡各版本与时间线片段的路径加上前缀 `folder/`。 */
+/** 文件卡、生成卡各版本（含生成时的输入）与时间线片段的路径加上前缀 `folder/`。 */
 function relocate(doc: CanvasDoc, folder: string): CanvasDoc {
   const at = (p: string) => `${folder}/${p}`
   return {
@@ -69,7 +69,14 @@ function relocate(doc: CanvasDoc, folder: string): CanvasDoc {
       n.type === 'file'
         ? { ...n, path: at(n.path) }
         : n.type === 'generate'
-          ? { ...n, versions: n.versions.map((v) => ({ ...v, path: at(v.path) })) }
+          ? {
+              ...n,
+              versions: n.versions.map((v) => ({
+                ...v,
+                path: at(v.path),
+                made: { ...v.made, inputs: v.made.inputs.map((i) => ({ ...i, path: at(i.path) })) },
+              })),
+            }
           : { ...n, clips: n.clips.map((c) => ({ ...c, path: at(c.path) })) },
     ),
   }

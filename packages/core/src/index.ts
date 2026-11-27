@@ -425,6 +425,7 @@ export {
   type SquareMetaByKind,
   type SquareMineItem,
   type SquarePublishManifest,
+  type SquarePublishSource,
   type SquareStatus,
   type SquareWorkFormat,
   squareMediaMime,

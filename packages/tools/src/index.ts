@@ -123,6 +123,7 @@ export { OfficePort } from './office/port.ts'
 // 路径：工作区边界的唯一判据，runtime 与 server 均使用
 export {
   officeRunDir,
+  renderOfficePages,
   type SampledFrame,
   sampleVideoFrames,
   type WorkerScope,

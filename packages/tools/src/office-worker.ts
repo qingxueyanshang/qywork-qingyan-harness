@@ -11,7 +11,7 @@
  * 每个中间版本都会留下一整套页面图片，且没有回收路径。
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chargeImage, type ToolContext, type ToolOutcome } from '@qywork/agent'
@@ -159,6 +159,43 @@ export async function runWorker(
     cleanup,
     callDir,
   }
+}
+
+/**
+ * Office 文件全部页面的 PNG（`view` 动作），按页码顺序。先渲染第 1 页取得页数，再取得全部页：渲染结果按文件哈希缓存在
+ * 同一个 run 目录中，第二次调用不重复渲染。页数超过 `maxPages` 时不取得其余页，返回失败。
+ * 用完后调用方删除 `officeRunDir(scope…)`。
+ */
+export async function renderOfficePages(
+  scope: WorkerScope,
+  port: OfficePort,
+  abs: string,
+  maxPages: number,
+): Promise<{ ok: true; pages: Uint8Array[] } | { ok: false; message: string }> {
+  const expected = createHash('sha256')
+    .update(await readFile(abs))
+    .digest('hex')
+  const view = (pages: string[]) =>
+    runWorker(
+      scope,
+      port,
+      { action: 'view', path: abs, expected_sha256: expected, pages },
+      READ_TIMEOUT_MS,
+    )
+  const first = await view(['1'])
+  const count = first.response?.ok ? first.response.files?.[0]?.pages : null
+  if (!count) return { ok: false, message: first.response?.message ?? noResponse(first).message }
+  await releaseCall(first)
+  if (count > maxPages) return { ok: false, message: `页数超过 ${maxPages} 页` }
+  const all = await view(Array.from({ length: count }, (_, i) => String(i + 1)))
+  const images = all.response?.ok ? all.response.images : null
+  if (!images?.length)
+    return { ok: false, message: all.response?.message ?? noResponse(all).message }
+  const pages = await Promise.all(
+    images.map(async (img) => new Uint8Array(await readFile(img.path))),
+  )
+  await releaseCall(all)
+  return { ok: true, pages }
 }
 
 /** 一轮的 Office 目录：本轮各次调用的目录与渲染缓存。本轮结束时删除，该轮仍有后台任务时保留到任务结束之后。 */

@@ -131,7 +131,7 @@
   flex-direction: column;
   gap: var(--s-3);
 }
-.square-back {
+.square-item > .square-back {
   align-self: flex-start;
 }
 .square-item-head {
@@ -162,6 +162,8 @@
 }
 .square-media {
   display: block;
+  align-self: flex-start;
+  object-fit: contain;
   max-width: 100%;
   max-height: 420px;
   border-radius: var(--r-sm);
@@ -173,6 +175,7 @@
   gap: var(--s-3);
 }
 .square-images img {
+  align-self: flex-start;
   max-width: 100%;
   border-radius: var(--r-sm);
   border: 1px solid var(--border-subtle);
@@ -193,6 +196,59 @@
   color: var(--text-secondary);
 }
 
+/* 发布表单：字段纵向排列，铺满正文的宽度。 */
+.square-publish {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.square-publish label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.square-publish input,
+.square-publish select,
+.square-publish textarea {
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  resize: vertical;
+}
+.square-publish-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 发布记录。 */
+.square-mine {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+.square-mine li {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.square-mine-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 @media (max-width: 820px) {
   .square-dialog {
     height: 100%;
@@ -207,8 +263,12 @@
     flex-wrap: wrap;
     padding: var(--s-4) calc(var(--s-4) + 32px) var(--s-3) var(--s-4);
   }
+  .square-tabs {
+    flex-basis: 100%;
+  }
   .square-search {
-    width: 100%;
+    flex: 1;
+    width: auto;
   }
   .square-body {
     padding: var(--s-4);

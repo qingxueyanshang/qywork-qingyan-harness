@@ -12,6 +12,8 @@ let store: typeof import('../../lib/store/index.ts')
 let cloudStore: typeof import('../../lib/store/cloud.ts')
 let squareStore: typeof import('../../lib/store/square.ts')
 let originalApi: typeof import('../../lib/store/index.ts')['client']['api']
+let originalRaw: typeof import('../../lib/store/index.ts')['client']['raw']
+let published: Record<string, unknown> | null = null
 let calls: string[] = []
 let cloud: CloudState
 
@@ -53,6 +55,13 @@ beforeAll(async () => {
   cloudStore = await import('../../lib/store/cloud.ts')
   squareStore = await import('../../lib/store/square.ts')
   originalApi = store.client.api
+  originalRaw = store.client.raw
+  store.client.raw = async (path: string, init?: RequestInit): Promise<Response> => {
+    calls.push(`${init?.method ?? 'GET'} ${path}`)
+    if (path !== '/api/square/publish') throw new Error(`unexpected ${path}`)
+    published = JSON.parse(String((init?.body as FormData).get('manifest')))
+    return Response.json({ id: 'sq_new', version: 1, status: 'pending' })
+  }
   store.client.api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
     calls.push(`${init?.method ?? 'GET'} ${path}`)
     if (path === '/api/cloud/state') return structuredClone(cloud) as T
@@ -64,6 +73,20 @@ beforeAll(async () => {
     const item = /^\/api\/square\/items\/(.+)$/.exec(path)
     if (item) return structuredClone(DETAILS[decodeURIComponent(item[1]!)]) as T
     if (path === '/api/square/install') return { message: '已安装全局技能 发版流程' } as T
+    if (path === '/api/square/mine') {
+      return [
+        {
+          id: 'sq_mine',
+          kind: 'prompt',
+          title: '我的提示词',
+          version: 2,
+          status: 'rejected',
+          note: '内容重复',
+          listed: true,
+          updatedAt: '2026-11-27T00:00:00.000Z',
+        },
+      ] as T
+    }
     throw new Error(`unexpected ${path}`)
   }
 })
@@ -91,6 +114,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   store.client.api = originalApi
+  store.client.raw = originalRaw
   await GlobalRegistrator.unregister()
 })
 
@@ -161,5 +185,31 @@ test('技能「安装」调用安装接口并显示结果；返回后回到列�
   expect(calls).toContain('POST /api/square/install')
   view.button('返回')!.click()
   await until(() => view.host.querySelector('.square-card') !== null)
+  view.close()
+})
+
+test('发布提示词：提交后转到发布记录并显示结果；发布记录列出状态与驳回原因', async () => {
+  const { default: SquareDialog } = await import('./SquareDialog.tsx')
+  const view = await mount(() => <SquareDialog />)
+  view.button('发布')!.click()
+  await until(() => view.host.querySelector('.square-publish') !== null)
+  const title = view.host.querySelector<HTMLInputElement>('.square-publish input')!
+  title.value = '海边的诗'
+  title.dispatchEvent(new Event('input', { bubbles: true }))
+  const body = [...view.host.querySelectorAll<HTMLTextAreaElement>('.square-publish textarea')].at(
+    -1,
+  )!
+  body.value = '写一首关于海的诗'
+  body.dispatchEvent(new Event('input', { bubbles: true }))
+  view.host
+    .querySelector<HTMLFormElement>('.square-publish')!
+    .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await until(() => view.text().includes('已提交，待审核'))
+  expect(published).toMatchObject({
+    title: '海边的诗',
+    source: { kind: 'prompt', text: '写一首关于海的诗' },
+  })
+  await until(() => view.text().includes('内容重复'))
+  expect(view.text()).toContain('已驳回')
   view.close()
 })
