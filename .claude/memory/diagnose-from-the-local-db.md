@@ -21,6 +21,11 @@ metadata:
 | 用户原话 | `messages` |
 | 每次请求发送了多少、上游计入了多少、在哪里中断 | `provider_requests`（`sent_categories` / `provider_*_tokens` / `sent_at` / `diagnostic`）|
 
+统计工具失败时：`steps.status` 的取值是 `success` / `failure`（不是 `done`），按 `kind='tool_action'` 过滤；
+`payload.outcome.errorKind` 可直接作为分类键（`no_match`、`stale_write`、`path_not_found` 等），
+`run_command` 的非零退出没有 `errorKind`，按 `outcome.data` 中的 `stdout` / `stderr` 分类。
+命令输出中出现「棣栭〉」一类乱码时，先核对输出解码，不要当作文件内容（2026-11-27 修复了按字节截断导致的整条流误判）。
+
 `provider_requests` 的两个陷阱（2026-09-28 排查「Opus 反复长思考」时发现）：
 
 - `request_bytes` 与 `measured_input_tokens` 统计的是**适配器转换之前**的通用请求，
