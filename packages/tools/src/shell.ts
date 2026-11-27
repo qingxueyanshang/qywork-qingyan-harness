@@ -763,16 +763,13 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
             wrote +
             (ended === 'waited'
               ? `命令在 ${waitSeconds} 秒内没有结束，已转入后台继续运行`
-              : ended === 'steer'
+              : ended === 'message'
                 ? '等待期间用户发来调整方向的消息，命令转入后台继续运行'
-                : ended === 'queue'
-                  ? `等待期间${QUEUED_NOTE}，命令转入后台继续运行`
-                  : '命令已在后台启动') +
+                : '命令已在后台启动') +
             `，任务编号 ${id}；结束时结果作为回执消息送达，已产生的输出见 stdout / stderr` +
             droppedNote(now.dropped) +
             (watched.incomplete ? WATCH_INCOMPLETE : ''),
           data: { taskId: id, ...delivered.data },
-          resultState: 'background',
           ...withWritten(watched.changes),
           ...(delivered.resources.length ? { resources: delivered.resources } : {}),
         }
@@ -802,8 +799,8 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
 }
 
 /**
- * 前台等待：命令退出时为 `exited`，到达 `waitMs` 时为 `waited`，本会话有用户发来、尚未送达的消息时为
- * `steer` / `queue`（见 `CommandPort.steered`）。后三种由调用方把命令转入后台。
+ * 前台等待：命令退出时为 `exited`，到达 `waitMs` 时为 `waited`，本会话收到用户的「调整方向」消息时为 `message`。
+ * 后两种由调用方把命令转入后台。
  *
  * `steered` 只因本函数的中止而拒绝；其他原因的拒绝不结束等待，命令不因端口故障失去持有方，等待仍由退出或上限结束。
  */
@@ -811,14 +808,14 @@ async function foregroundWait(
   port: CommandPort,
   collecting: Promise<unknown>,
   waitMs: number,
-): Promise<'exited' | 'waited' | 'steer' | 'queue'> {
+): Promise<'exited' | 'waited' | 'message'> {
   const done = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
       collecting.then(() => 'exited' as const),
       port.steered(done.signal).then(
-        (kind) => kind,
+        () => 'message' as const,
         () => new Promise<never>(() => {}),
       ),
       new Promise<'waited'>((resolve) => {
@@ -915,12 +912,8 @@ const MAX_WAIT_SECONDS = 1800
  */
 const FOREGROUND_WAIT_SECONDS = 120
 
-/** 因排队的消息转入后台时写给模型的说明，与等待子 agent 的回执一致：继续本轮会推迟该消息。 */
-const QUEUED_NOTE = '用户有一条排在本轮之后的消息，本轮结束后才会送达，继续执行会推迟它'
-
 /**
- * 在本轮内等待一条后台命令结束：命令结束、用户发来尚未送达的消息（`CommandPort.steered`）、到达 `timeoutMs`
- * 三者中最先发生的一项。
+ * 在本轮内等待一条后台命令结束：命令结束、用户发来「调整方向」消息、到达 `timeoutMs` 三者中最先发生的一项。
  * `signal` 中止时以中止原因拒绝。端口的 `steered` 因其他原因拒绝时继续等待其余两项。
  */
 async function endedFirst(
@@ -928,7 +921,7 @@ async function endedFirst(
   ended: Promise<boolean>,
   timeoutMs: number,
   signal: AbortSignal,
-): Promise<'receipt' | 'stopped' | 'steer' | 'queue' | 'timeout'> {
+): Promise<'receipt' | 'stopped' | 'message' | 'timeout'> {
   signal.throwIfAborted()
   const done = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -937,7 +930,7 @@ async function endedFirst(
     return await Promise.race([
       ended.then((receipt) => (receipt ? ('receipt' as const) : ('stopped' as const))),
       port.steered(done.signal).then(
-        (kind) => kind,
+        () => 'message' as const,
         () => new Promise<never>(() => {}),
       ),
       new Promise<'timeout'>((resolve) => {
@@ -1194,11 +1187,9 @@ export const backgroundCommandTool: ToolSpec = {
       }
       latest = port.output(id) ?? found
       state =
-        result === 'steer'
+        result === 'message'
           ? '仍在运行，用户发来调整方向的消息，内容见下一条消息；输出为至今的内容'
-          : result === 'queue'
-            ? `仍在运行，${QUEUED_NOTE}；输出为至今的内容`
-            : `在等待的 ${seconds} 秒内没有结束，仍在运行，输出为至今的内容`
+          : `在等待的 ${seconds} 秒内没有结束，仍在运行，输出为至今的内容`
     }
     if (stopping) port.stop(id)
     const delivered = deliverStreams(ctx, latest.command, latest.stdout, latest.stderr)

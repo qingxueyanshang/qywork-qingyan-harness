@@ -439,10 +439,7 @@ describe('后台命令的工具形态', () => {
         respond?: (text: string) => string
       }
     >,
-    waits: {
-      ended?: Record<string, Promise<boolean>>
-      steered?: Promise<'steer' | 'queue'>
-    } = {},
+    waits: { ended?: Record<string, Promise<boolean>>; steered?: Promise<void> } = {},
   ) {
     const stopped: string[] = []
     const writes: { id: string; text: string; end: boolean }[] = []
@@ -646,7 +643,7 @@ describe('后台命令的工具形态', () => {
 
   test('wait_seconds 等待期间用户发来消息或到达秒数时返回至今的输出，命令不被停止', async () => {
     const running = { cmd_1: { command: 'bash wait.sh', stdout: 'tick\n', stderr: '' } }
-    const steered = fakePort(running, { steered: Promise.resolve('steer' as const) })
+    const steered = fakePort(running, { steered: Promise.resolve() })
     const onMessage = await backgroundCommandTool.fn(
       { task_id: 'cmd_1', wait_seconds: 600 },
       ctxWith(steered.port),

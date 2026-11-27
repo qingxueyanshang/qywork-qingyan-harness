@@ -2,8 +2,8 @@ import type { ToolOutcome, ToolSpec } from '@qywork/agent'
 import { CommandPort } from './port.ts'
 
 /**
- * 可转入后台的工具：执行期间本会话有用户发来、尚未送达的消息时（`CommandPort.steered`），
- * 把这次执行登记到后台任务表并立即返回「已转入后台」；执行照常进行，结束时以回执送达，
+ * 可转入后台的工具：执行期间本会话收到用户的「调整方向」消息时（`CommandPort.steered`），
+ * 把这次执行登记到后台任务表并立即返回；执行照常进行，结束时以回执送达，
  * 可经 `background_command` 读取、等待与停止。没有后台任务端口（成员会话、命令行）时照常等待。
  *
  * 用于生成、画布运行与取回、导出成片、Office、浏览器下载：它们的执行可能超过命令的前台等待上限，
@@ -33,7 +33,7 @@ export function backgroundable(
         const first = await Promise.race([
           running.then((outcome) => ({ outcome })),
           port.steered(watch.signal).then(
-            (kind) => ({ kind }),
+            () => ({ steered: true }),
             () => new Promise<never>(() => {}),
           ),
         ])
@@ -66,7 +66,7 @@ export function backgroundable(
             }),
           ),
         })
-        return detachedOutcome(name, id, first.kind)
+        return detachedOutcome(name, id)
       } finally {
         watch.abort()
         if (!detached) ctx.signal.removeEventListener('abort', forward)
@@ -75,23 +75,18 @@ export function backgroundable(
   }
 }
 
-function detachedOutcome(name: string, id: string, kind: 'steer' | 'queue'): ToolOutcome {
-  const cause =
-    kind === 'steer'
-      ? '用户发来调整方向的消息'
-      : '用户有一条排在本轮之后的消息，本轮结束后才会送达，继续执行会推迟它'
+function detachedOutcome(name: string, id: string): ToolOutcome {
   return {
     status: 'success',
     message:
-      `执行期间${cause}，${name}转入后台继续运行，任务编号 ${id}；结束时结果作为回执消息送达，` +
+      `执行期间用户发来调整方向的消息，${name}转入后台继续运行，任务编号 ${id}；结束时结果作为回执消息送达，` +
       '可用 background_command 读取、等待或停止',
     data: { taskId: id },
-    resultState: 'background',
   }
 }
 
 /**
- * 纯等待的工具（浏览器等待、电脑等待）：等待期间本会话有用户发来、尚未送达的消息时结束等待并返回，
+ * 纯等待的工具（浏览器等待、电脑等待）：等待期间本会话收到用户的「调整方向」消息时结束等待并返回，
  * 与等待子 agent 一致。等待本身不产生结果，没有可转入后台的任务。`advice` 是返回后的下一步（重新观察）。
  */
 export function endsOnMessage(spec: ToolSpec, advice: string): ToolSpec {
@@ -110,7 +105,7 @@ export function endsOnMessage(spec: ToolSpec, advice: string): ToolSpec {
         const first = await Promise.race([
           running.then((outcome) => ({ outcome })),
           port.steered(watch.signal).then(
-            (kind) => ({ kind }),
+            () => ({ steered: true }),
             () => new Promise<never>(() => {}),
           ),
         ])
@@ -118,11 +113,10 @@ export function endsOnMessage(spec: ToolSpec, advice: string): ToolSpec {
         own.abort(new Error('等待已结束'))
         // 等待的结果已不再读取；它在中止之后结束，结果与异常都丢弃。
         running.catch(() => {})
-        const cause =
-          first.kind === 'steer'
-            ? '用户发来调整方向的消息'
-            : '用户有一条排在本轮之后的消息，本轮结束后才会送达'
-        return { status: 'success', message: `等待期间${cause}，已结束等待；${advice}` }
+        return {
+          status: 'success',
+          message: `等待期间用户发来调整方向的消息，已结束等待；${advice}`,
+        }
       } finally {
         watch.abort()
         ctx.signal.removeEventListener('abort', forward)

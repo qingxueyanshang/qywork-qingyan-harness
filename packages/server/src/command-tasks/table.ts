@@ -224,9 +224,8 @@ export async function settleAfterRound(
  * 其他会话的后台命令因此不可见。
  *
  * `steered` 与 `DelegatePort.awaitReceipt` 读取同一个信号来源：`RunManager` 的跟进队列与其变化通知。
- * 判据是用户发来、尚未送达的消息（没有 `origin`；回执带 `origin`，回执到达不结束等待）：
- * 「调整方向」的消息在等待开始时已在队列中也触发；「排队」的消息只有等待开始之后到达的才触发。
- * 不要让已在队列中的排队消息触发：它要到本轮结束才送达，期间每一次等待都会立即结束，短命令也转入后台。
+ * 判据是用户发来的「调整方向」消息（`steer` 为真且没有 `origin`）：回执同样以 `steer` 入队，
+ * 回执到达不结束等待。「排队」的消息不结束等待：它在本轮结束后才送达，不改变当前这一步。
  */
 export function commandPortOf(
   table: CommandTaskTable,
@@ -236,11 +235,8 @@ export function commandPortOf(
 ): CommandPort {
   return {
     async steered(signal) {
-      const before = new Set(runs.queueOf(conversationId).map((f) => f.id))
       for (;;) {
-        const queue = runs.queueOf(conversationId).filter((f) => !f.origin)
-        if (queue.some((f) => f.steer)) return 'steer'
-        if (queue.some((f) => !before.has(f.id))) return 'queue'
+        if (runs.queueOf(conversationId).some((f) => f.steer && !f.origin)) return
         await runs.changed(conversationId, RECHECK_MS, signal)
       }
     },

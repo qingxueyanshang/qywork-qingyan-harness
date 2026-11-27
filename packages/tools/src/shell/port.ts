@@ -3,7 +3,7 @@ import type { FileChange } from '@qywork/core'
 
 /**
  * 后台任务端口：`run_command` 结束等待而命令仍在运行时，或可转入后台的工具（`shell/detach.ts`）在执行期间
- * 收到用户消息时，这次执行交给装配方的进程级任务表持有。
+ * 收到用户的「调整方向」消息时，这次执行交给装配方的进程级任务表持有。
  *
  * 任务表跨越多轮存在，回执经由会话的投递入口送达，二者都在 server，因此实现由 server 注入。
  * 端口按会话绑定，方法不带会话参数：其他会话的后台命令在此不可见。只注入顶层会话：
@@ -17,10 +17,10 @@ import type { FileChange } from '@qywork/core'
  */
 export interface CommandPort {
   /**
-   * 本会话有用户发来、尚未送达的消息时兑现：「调整方向」的消息（已存在时立即兑现）为 `steer`，
-   * 调用之后新到达的「排队」消息为 `queue`。`signal` 中止时以中止原因拒绝。信号来源与 `DelegatePort.awaitReceipt` 相同。
+   * 本会话的投递队列中出现用户发来的「调整方向」消息（`FollowUp.steer` 为真且没有 `origin`）后兑现；
+   * 已存在时立即兑现。「排队」的消息不使它兑现。`signal` 中止时以中止原因拒绝。信号来源与 `DelegatePort.awaitReceipt` 相同。
    */
-  steered(signal: AbortSignal): Promise<'steer' | 'queue'>
+  steered(signal: AbortSignal): Promise<void>
   /** 登记一条转入后台的任务，返回任务编号。登记之后本轮停止不再影响该任务。 */
   adopt(task: {
     /** 任务说明：命令原文，或工具写明的说明（如「运行生成卡「封面」」）。显示在任务列表、回执与工具行中。 */

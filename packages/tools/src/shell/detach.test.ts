@@ -11,7 +11,7 @@ import { CommandPort } from './port.ts'
 
 type Adopted = Parameters<CommandPort['adopt']>[0]
 
-function harness(steered: Promise<'steer' | 'queue'>) {
+function harness(steered: Promise<void>) {
   const adopted: Adopted[] = []
   const port = {
     steered: () => steered,
@@ -62,12 +62,12 @@ function slowTool() {
   return { spec, finish: (m: string) => finish(m), signal: () => seen! }
 }
 
-test('执行期间收到消息：登记到后台任务表并立即返回，结束时的回执写明任务说明与结果', async () => {
-  const { adopted, ctx } = harness(Promise.resolve('queue'))
+test('执行期间收到「调整方向」消息：登记到后台任务表并立即返回，结束时的回执写明任务说明与结果', async () => {
+  const { adopted, ctx } = harness(Promise.resolve())
   const tool = slowTool()
   const out = await backgroundable(tool.spec, () => '运行生成卡「封面」').fn({}, ctx)
-  expect(out.resultState).toBe('background')
-  expect(out.message).toContain('用户有一条排在本轮之后的消息')
+  expect(out.status).toBe('success')
+  expect(out.message).toContain('执行期间用户发来调整方向的消息')
   expect(out.message).toContain('任务编号 task_1')
   expect(adopted).toHaveLength(1)
   expect(adopted[0]!.command).toBe('运行生成卡「封面」')
@@ -79,7 +79,7 @@ test('执行期间收到消息：登记到后台任务表并立即返回，结�
 })
 
 test('转入后台之后本轮停止不再中止执行；任务表停止时中止且不送回执', async () => {
-  const { adopted, ctx, run } = harness(Promise.resolve('steer'))
+  const { adopted, ctx, run } = harness(Promise.resolve())
   const tool = slowTool()
   await backgroundable(tool.spec, () => '生成视频').fn({}, ctx)
   run.abort()
@@ -106,7 +106,7 @@ test('先于消息结束时原样返回结果，不登记任务；转入后台�
 })
 
 test('纯等待收到消息时结束等待并返回下一步，不登记任务', async () => {
-  const { adopted, ctx } = harness(Promise.resolve('steer'))
+  const { adopted, ctx } = harness(Promise.resolve())
   const tool = slowTool()
   const out = await endsOnMessage(tool.spec, '先用 browser_observe 确认页面状态').fn({}, ctx)
   expect(out.status).toBe('success')

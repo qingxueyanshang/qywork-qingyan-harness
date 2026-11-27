@@ -122,7 +122,6 @@ export function statusWord(
     return '失败'
   }
   if (status === 'success') {
-    if (outcome?.resultState === 'background') return '已转入后台'
     if (outcome?.resultState === 'partial') return '部分完成'
   }
   return imagesUndelivered ? '图片未发送' : ''

@@ -301,7 +301,7 @@ describe('读数格式', () => {
   })
 
   /** 用词与读数条一致：用户停止为「已中断」，请求已发出而结果不明为「结果不明」。 */
-  test('八个状态词只按状态、错误类别、是否执行与结果状态判定', () => {
+  test('七个状态词只按状态、错误类别、是否执行与结果状态判定', () => {
     expect(statusWord('failure', { executed: false, errorKind: 'interrupted' })).toBe('已中断')
     expect(
       statusWord('failure', { executed: true, errorKind: 'interrupted', resultState: 'unknown' }),
@@ -313,7 +313,6 @@ describe('读数格式', () => {
       '已拒绝',
     )
     expect(statusWord('failure', { executed: true, errorKind: 'timeout' })).toBe('超时')
-    expect(statusWord('success', { resultState: 'background' })).toBe('已转入后台')
     expect(statusWord('success', { resultState: 'partial' })).toBe('部分完成')
   })
 })

@@ -276,7 +276,7 @@ export interface ToolOutcome {
   /** 执行后才确定的对象名称，见 `ToolOutcomeWire.subject`。 */
   subject?: string
   /** 见 `ToolOutcomeWire.resultState`。 */
-  resultState?: 'background' | 'partial' | 'unknown'
+  resultState?: 'partial' | 'unknown'
 }
 
 // ─────────────────────────────── 工具声明 ───────────────────────────────

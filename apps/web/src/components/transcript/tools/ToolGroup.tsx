@@ -8,7 +8,7 @@ import { ToolCard } from './ToolCard.tsx'
 
 export function ToolGroup(props: { id: string; members: TranscriptItem[] }) {
   /**
-   * 有问题的调用按状态词计数，与各行行尾的状态词相同（「失败 1 次」「已中断 1 次」「已转入后台 1 次」），
+   * 有问题的调用按状态词计数，与各行行尾的状态词相同（「失败 1 次」「已中断 1 次」「部分完成 1 次」），
    * 按首次出现的顺序排列。失败类状态单独着色，其余保持默认颜色。
    */
   const states = () => {
