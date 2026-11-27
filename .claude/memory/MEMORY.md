@@ -43,6 +43,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [上下文只由压缩改变](no-trimming-model-context.md) — 到阈值自动或用户手动压缩是唯一入口；在其外折叠旧工具结果是并列入口且前提错误；慢的问题从调用次数入手
 - [浏览器点击无响应先比较落点坐标](browser-click-lands-on-ancestor.md) — 命中判定接受祖先元素，落在圆角外缘的点击仍判为成功；全零 `point` 已按元素中心处理
 - [会话流触摸滑动须实测](touch-scroll-probe.md) — 修改底部跟随后用 .tmp/probe/touch-follow.mjs 与 touch-static.mjs 以真实触摸序列实测；synthesizeScrollGesture 在无头模式下不派发 touchmove
+- [发送后会话流位移的实测方法](send-follow-probe.md) — `.tmp/probe/send-pull` 的模拟模型服务与 probe-q.mjs；rAF 中逐帧读取布局本身会使滚动位置被收紧，不以逐帧记录定案
 - [CI 运行环境没有 rg](ci-runner-has-no-rg.md) — 断言 ripgrep 引擎的用例须以 Bun.which 为前提；0.3.23 发布门禁因此在三个平台失败
 - [按请求计算缓存差额](cache-lag-by-request.md) — 上一次总输入减本次命中；固定差额等于系统提示词大小时是上游把它放在对话之后，客户端调整位置无效
 - [闪烁以实际绘制帧定案](flicker-probe-by-painted-frames.md) — DOM 逐帧检测找候选，CDP 截帧定案；内置浏览器在外壳中截屏；区域显示后创建的组件不挂起；模板克隆的图片挂起期间不加载
