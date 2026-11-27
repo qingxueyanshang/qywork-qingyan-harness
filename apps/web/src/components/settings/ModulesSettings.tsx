@@ -82,7 +82,7 @@ export function officeSwitchOn(cfg: { officeEnabled?: boolean } | null): boolean
   return cfg?.officeEnabled !== false
 }
 
-/** 「画布读写」「媒体生成」开关的读数：字段缺失视为开启，与会话注册这组工具的判据（`mediaEnabled !== false`）一致。 */
+/** 「画布控制」「媒体生成」开关的读数：字段缺失视为开启，与会话注册这组工具的判据（`mediaEnabled !== false`）一致。 */
 export function mediaSwitchOn(cfg: { mediaEnabled?: boolean } | null): boolean {
   return cfg?.mediaEnabled !== false
 }

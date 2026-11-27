@@ -874,6 +874,13 @@ test('bind 回包仍在途时，同一页对另一个执行者已处于占用状
   host.hold = { op: 'bind', gate: g.promise }
   const binding = a?.bind('bt_u')
   await until(() => host.ops().includes('bind'), 'bind 帧已发出')
+  // 宿主先发出归属变更、回包被按住。归属到达服务端之前，页面操作先判定该页不归本会话，检查的不是占用；
+  // 只等待 bind 帧发出时，结果取决于归属事件与下一步谁先执行。
+  const probe = handle.browser?.portFor('cv_1', WS)
+  await until(
+    async () => ((await probe?.tabs()) ?? []).some((t) => t.tabId === 'bt_u' && t.controlled),
+    'bt_u 的归属到达服务端',
+  )
 
   expect((await failure(b?.observe({ tabId: 'bt_u' }))).message).toMatch(/正被另一个任务操作/)
   g.open()

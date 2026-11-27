@@ -42,13 +42,13 @@ test('原先显示错误的工具得到描述实际动作的标题', () => {
   }
   expect(title('open_in_panel', { path: 'page.html' })).toBe('文件读写 · 打开 page.html')
   expect(title('capture_canvas_frame', { path: 'a.canvas.json', node: '封面', at: 12.5 })).toBe(
-    '画布读写 · 截取 封面 12.5 秒',
+    '画布控制 · 截取 封面 12.5 秒',
   )
   expect(title('export_timeline', { path: 'a.canvas.json', node: '成片' })).toBe(
-    '画布读写 · 导出 成片',
+    '画布控制 · 导出 成片',
   )
   expect(title('cancel_canvas', { path: 'a.canvas.json', node: '封面' })).toBe(
-    '画布读写 · 取消 封面',
+    '画布控制 · 取消 封面',
   )
   expect(title('browser_observe', { tabId: 'tab_7' })).toBe('网页控制 · 查看 网页')
   expect(title('browser_act', { tabId: 'tab_7', action: 'type', text: '会议纪要' })).toBe(

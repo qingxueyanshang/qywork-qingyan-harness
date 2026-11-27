@@ -3,12 +3,14 @@
  * 执行后确定的对象写入结果的 `subject`。
  *
  * 原始失败形状：历史记录只有 `objectLabel`，新界面按 `head` 与 `verb` 显示，转换缺失时历史中的工具行标题为空。
- * 另覆盖迁移 82（`082-interrupted-steps.ts`）：停止时被收尾的历史工具行补写中断类别。
+ * 另覆盖迁移 82（`082-interrupted-steps.ts`）：停止时被收尾的历史工具行补写中断类别；
+ * 迁移 83（`083-canvas-tool-head.ts`）：画布类工具的开头由「画布读写」改为「画布控制」。
  */
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
 import { migration081 } from './migrations/081-tool-action-heads.ts'
 import { migration082 } from './migrations/082-interrupted-steps.ts'
+import { migration083 } from './migrations/083-canvas-tool-head.ts'
 
 /** 在只含 steps 表的内存库中插入一行，执行迁移 81 的全部批次，返回转换后的 payload；未改写时返回 null。 */
 function convertToolAction(
@@ -221,5 +223,38 @@ test('迁移 82：两种中断回执补写错误类别，其余失败行不变',
   expect(outcome('b')).toMatchObject({ errorKind: 'interrupted' })
   expect(outcome('b').resultState).toBeUndefined()
   expect(outcome('c').errorKind).toBeUndefined()
+  db.close()
+})
+
+/** 覆盖迁移 83：历史中画布类工具行的开头改为「画布控制」，与新写入的行和设置页的分组名一致。 */
+test('迁移 83：开头为「画布读写」的工具行改为「画布控制」，其余行不变', () => {
+  const db = new Database(':memory:')
+  db.run('CREATE TABLE steps (id TEXT PRIMARY KEY, kind TEXT, tool_name TEXT, payload TEXT)')
+  const insert = db.query(
+    "INSERT INTO steps (id, kind, tool_name, payload) VALUES (?, 'tool_action', ?, ?)",
+  )
+  const row = (head: string, object: string) =>
+    JSON.stringify({ kind: 'tool_result', action: { kind: 'write', head, verb: '导出', object } })
+  insert.run('a', 'export_timeline', row('画布读写', '成片'))
+  insert.run('b', 'write_file', row('文件读写', '画布读写.md'))
+  let after = 0
+  for (;;) {
+    const next = migration083.background!(db, {} as never, after)
+    if (next === null) break
+    after = next
+  }
+  const action = (id: string) =>
+    (
+      JSON.parse(
+        (db.query('SELECT payload FROM steps WHERE id = ?').get(id) as { payload: string }).payload,
+      ) as { action: Record<string, unknown> }
+    ).action
+  expect(action('a')).toEqual({ kind: 'write', head: '画布控制', verb: '导出', object: '成片' })
+  expect(action('b')).toEqual({
+    kind: 'write',
+    head: '文件读写',
+    verb: '导出',
+    object: '画布读写.md',
+  })
   db.close()
 })

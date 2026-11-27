@@ -20,7 +20,7 @@ export const TOOL_CATEGORY_HEADS = {
   browser: '网页控制',
   desktop: '电脑控制',
   office: '文档读写',
-  canvas: '画布读写',
+  canvas: '画布控制',
   generate: '媒体生成',
   memory: '记忆管理',
   skills: '技能管理',

@@ -1,5 +1,5 @@
 /**
- * 「模块」页的网页控制、电脑控制、文档读写、画布读写与媒体生成五组：分组标题中的开关读取并写入
+ * 「模块」页的网页控制、电脑控制、文档读写、画布控制与媒体生成五组：分组标题中的开关读取并写入
  * `browserEnabled` / `desktopEnabled` / `officeEnabled` / `mediaEnabled`。
  *
  * 覆盖范围：`ModulesSettings.tsx` 的分组标题开关、工具行分组与「会话读取」组的自动压缩比例滑块、
@@ -168,14 +168,14 @@ test('分组标题开关：缺省视为启用，单击后写入 desktopEnabled',
     expect(await until(() => stored.officeEnabled === false)).toBe(true)
     expect(stored.desktopEnabled).toBe(true)
 
-    // 画布读写分组：分组标题中是开关而不是「去配置」，写入 mediaEnabled；媒体生成分组的开关读写同一个字段。
+    // 画布控制分组：分组标题中是开关而不是「去配置」，写入 mediaEnabled；媒体生成分组的开关读写同一个字段。
     const media = Array.from(host.querySelectorAll<HTMLElement>('.settings-block-head')).find(
-      (h) => h.querySelector('h3')?.textContent === '画布读写',
+      (h) => h.querySelector('h3')?.textContent === '画布控制',
     )
     expect(media?.querySelector('.module-console')).toBeNull()
-    expect(isOn(host, '画布读写')).toBe(true)
+    expect(isOn(host, '画布控制')).toBe(true)
     expect(isOn(host, '媒体生成')).toBe(true)
-    click(switchOf(host, '画布读写') as HTMLInputElement)
+    click(switchOf(host, '画布控制') as HTMLInputElement)
     expect(config()?.mediaEnabled).toBe(false)
     expect(await until(() => stored.mediaEnabled === false)).toBe(true)
     expect(isOn(host, '媒体生成')).toBe(false)
