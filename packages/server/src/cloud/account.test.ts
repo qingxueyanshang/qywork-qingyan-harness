@@ -480,7 +480,7 @@ beforeEach(async () => {
   account = new CloudAccount(live, origin)
 })
 
-test('登录后写入云端接口：设备密钥只在该接口中，型号带各自的协议，未选模型时设为当前模型', async () => {
+test('登录后写入云端接口：设备密钥只在该接口中，型号带各自的协议；未选模型时不设置默认模型', async () => {
   const state = await account.login('me@example.com', PASSWORD)
   expect(state).toEqual({
     state: 'signed_in',
@@ -507,7 +507,8 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
     cacheWrite: 375,
     currency: 'CREDIT',
   })
-  expect(live.active?.provider).toBe(CLOUD_PROVIDER)
+  expect(live.active).toBeUndefined()
+  expect((await loadConfig()).active).toBeUndefined()
   // 一次请求完成登录与登记本设备，只发往接口主机，带本机名称与平台。
   expect(cloud.logins).toEqual([
     {
@@ -622,6 +623,7 @@ test('读取请求的连接被断开时重发：前两次连接失败，第三�
 
 test('网关返回 device_revoked 时删除本地接口并清除当前模型；其他 401 不删除', async () => {
   await account.login('me@example.com', PASSWORD)
+  live.active = { provider: CLOUD_PROVIDER, model: 'claude-sonnet-5-5' }
   cloud.me = 'invalid'
   expect((await account.state()).state).toBe('signed_in')
   expect(live.providers[CLOUD_PROVIDER]).toBeDefined()

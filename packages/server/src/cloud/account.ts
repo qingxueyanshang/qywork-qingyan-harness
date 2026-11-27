@@ -719,13 +719,15 @@ export class CloudAccount {
     return (await res.json()) as T
   }
 
-  /** 登录完成：以设备密钥写入云端接口与型号。 */
+  /**
+   * 登录完成：以设备密钥写入云端接口与型号。不设置默认对话模型：清单按显示名称排序，
+   * 取第一个型号作默认值会使新用户的新会话使用一个用户从未选择的型号并按它计费。
+   */
   private async complete(key: string): Promise<void> {
     const list = await this.catalog(key)
     const models = storedModels(list.models)
     const media = storedMedia(list.media ?? [])
     const result = await writeConfig(this.live, (current) => {
-      const first = Object.keys(models)[0]
       const catalog = withSpecs(current.catalog, list.models)
       const { catalog: _catalog, ...rest } = current
       return {
@@ -741,7 +743,6 @@ export class CloudAccount {
             ...(Object.keys(media).length ? { media } : {}),
           },
         },
-        ...(current.active || !first ? {} : { active: { provider: CLOUD_PROVIDER, model: first } }),
       }
     })
     if (result instanceof Response || 'problems' in result) {
