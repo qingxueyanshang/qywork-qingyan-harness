@@ -2175,6 +2175,12 @@ describe('子会话与主会话共用流式外壳', () => {
       })
       resize(inner)
       expect(scroller.scrollTop).toBe(300)
+      // 手指的纵坐标随事件给出：坐标增大即手指向下移动，内容向上滚动。
+      const touch = (type: 'touchstart' | 'touchmove', clientY: number) => {
+        const event = new Event(type)
+        Object.defineProperty(event, 'touches', { value: [{ clientY }] })
+        scroller.dispatchEvent(event)
+      }
 
       // 鼠标或键盘展开 details 后，浏览器会为焦点自行滚动；这不属于用户向上滚动。
       details
@@ -2208,8 +2214,8 @@ describe('子会话与主会话共用流式外壳', () => {
       scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }))
       scroller.scrollTop = 520
       scroller.dispatchEvent(new Event('scroll'))
-      scroller.dispatchEvent(new Event('touchstart'))
-      scroller.dispatchEvent(new Event('touchmove'))
+      touch('touchstart', 300)
+      touch('touchmove', 360)
       height = 700
       resize(inner)
       expect(scroller.scrollTop).toBe(700)
@@ -2225,7 +2231,7 @@ describe('子会话与主会话共用流式外壳', () => {
       // 惯性滚动回到底部后恢复跟随；随后的点击（touchstart 之后没有 touchmove）引起的滚动不关闭跟随。
       scroller.scrollTop = 700
       scroller.dispatchEvent(new Event('scroll'))
-      scroller.dispatchEvent(new Event('touchstart'))
+      touch('touchstart', 300)
       scroller.scrollTop = 300
       scroller.dispatchEvent(new Event('scroll'))
       height = 900
@@ -2233,25 +2239,36 @@ describe('子会话与主会话共用流式外壳', () => {
       expect(scroller.scrollTop).toBe(900)
 
       // 触摸滑动结束后仍在底部：跟随写入的 scroll 派发时内容已再次增高（距底部大于 2px），不关闭跟随。
-      scroller.dispatchEvent(new Event('touchstart'))
-      scroller.dispatchEvent(new Event('touchmove'))
+      touch('touchstart', 300)
+      touch('touchmove', 360)
       height = 960
       scroller.dispatchEvent(new Event('scroll'))
       resize(inner)
       expect(scroller.scrollTop).toBe(960)
 
       // 原始失败形状：回看后滑回底部，scroll 派发时内容已再次增高（距底部大于 2px），跟随仍须恢复。
-      scroller.dispatchEvent(new Event('touchstart'))
-      scroller.dispatchEvent(new Event('touchmove'))
+      touch('touchstart', 300)
+      touch('touchmove', 360)
       scroller.scrollTop = 500
       scroller.dispatchEvent(new Event('scroll'))
       resize(inner)
       expect(scroller.scrollTop).toBe(500)
+      touch('touchmove', 250)
       scroller.scrollTop = 860
       height = 1040
       scroller.dispatchEvent(new Event('scroll'))
       resize(inner)
       expect(scroller.scrollTop).toBe(1040)
+
+      // 原始失败形状：在底部向下滑动不产生 scroll，触摸标记保留到下一次触摸；此后浏览器因布局变化
+      // 收紧滚动位置，这次向上的移动不得关闭跟随。
+      touch('touchstart', 300)
+      touch('touchmove', 250)
+      scroller.scrollTop = 900
+      scroller.dispatchEvent(new Event('scroll'))
+      height = 1200
+      resize(inner)
+      expect(scroller.scrollTop).toBe(1200)
     } finally {
       dispose()
       host.remove()

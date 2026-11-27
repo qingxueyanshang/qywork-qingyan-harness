@@ -46,13 +46,18 @@ export function createConversationScroll(conversationId: () => string | null) {
   let scrollIntent: -1 | 0 | 1 = 0
   let scrollbarDrag = false
   /**
-   * 一次触摸手势是否已发生滑动：`touchmove` 置位，下一次 `touchstart` 复位。
+   * 本次触摸手势中手指最近一次移动对应的滚动方向：-1 向上，1 向下，0 表示尚未滑动。
+   * `touchmove` 置位，下一次 `touchstart` 复位。
    *
    * 不要与 `scrollIntent` 合并为「每个 scroll 事件消耗一次」：触摸滚动开始后 `touchmove` 的派发
    * 被节流，手指离开后的惯性滚动没有 `touchmove`，这些 scroll 事件都没有新的意图标记。
    * 在 `touchstart` 复位，使点击展开 `<details>` 引起的滚动不被视为用户滚动。
+   * 记录方向的理由同 `scrollIntent`：标记保留到下一次触摸，期间浏览器收紧滚动位置引起的向上移动
+   * 不得因一次向下的滑动被判为用户向上滚动。
    */
-  let touchScroll = false
+  let touchScroll: -1 | 0 | 1 = 0
+  /** 本次触摸手势中手指上一次的纵坐标。 */
+  let touchY = 0
   /** 最近一次已知的 scrollTop：上一个 scroll 事件中的值，或经 `writeTop` 写入后的值。用于判定滚动方向。 */
   let lastTop = -1
   /**
@@ -96,7 +101,8 @@ export function createConversationScroll(conversationId: () => string | null) {
    *
    * 因此 wheel、滚动键与拖动滚动条先记录一次滚动意图，其后的 scroll 事件才能修改
    * `pinned`；触摸滑动的标记在整个手势及其惯性滚动期间有效（见 `touchScroll`）。
-   * 关闭跟随只接受向上的意图：滚轮与滚动键记录方向（见 `scrollIntent`），拖动滚动条与触摸滑动不区分方向。
+   * 关闭跟随只接受向上的意图：滚轮、滚动键与触摸滑动记录方向（见 `scrollIntent`、`touchScroll`），
+   * 拖动滚动条不区分方向。
    * 没有手势来源的 scroll 保持原状态，内容增长时继续跟随底部。
    *
    * 实测（真实服务端与前端，测试 provider 驱动一轮四步）：跟随在第 5 秒被关闭，
@@ -117,9 +123,9 @@ export function createConversationScroll(conversationId: () => string | null) {
     const top = scroller.scrollTop
     const mine = Math.abs(top - followTop) < 1
     const gap = scroller.scrollHeight - top - scroller.clientHeight
-    const upward = scrollIntent < 0 || scrollbarDrag || touchScroll
+    const upward = scrollIntent < 0 || scrollbarDrag || touchScroll < 0
     if (gap <= 2) {
-      if (upward || scrollIntent > 0 || !mine) setPinned(true)
+      if (upward || scrollIntent > 0 || touchScroll > 0 || !mine) setPinned(true)
     } else if (upward && !mine && top < lastTop) setPinned(false)
     if (!mine) scrollIntent = 0
     lastTop = top
@@ -214,12 +220,17 @@ export function createConversationScroll(conversationId: () => string | null) {
     // 只有横向分量的滚轮不移动本容器的纵向位置，不记录意图。
     if (event.deltaY !== 0) scrollIntent = event.deltaY < 0 ? -1 : 1
   }
-  const onTouchStart = () => {
-    touchScroll = false
+  const onTouchStart = (event: TouchEvent) => {
+    touchScroll = 0
+    touchY = event.touches[0]?.clientY ?? 0
     revealRun++
   }
-  const onTouchMove = () => {
-    touchScroll = true
+  const onTouchMove = (event: TouchEvent) => {
+    const y = event.touches[0]?.clientY
+    if (y === undefined || y === touchY) return
+    // 手指向下移动时内容随之下移，scrollTop 减小。
+    touchScroll = y > touchY ? -1 : 1
+    touchY = y
   }
   const onPointerDown = (event: PointerEvent) => {
     // 点击正文（包括 details 的 summary）不是滚动意图；只有拖动滚动条时事件目标是滚动容器本身。
