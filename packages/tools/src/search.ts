@@ -433,7 +433,19 @@ export const grepTool: ToolSpec = {
     }
 
     // 降级路径。结果中明确标出 engine，以说明速度较慢的原因。
-    const re = new RegExp(pattern, ci ? 'i' : '')
+    // rg 无法解析的模式同样经过此处：两种引擎都无法解析时，按参数错误返回，不作为工具执行出错。
+    let re: RegExp
+    try {
+      re = new RegExp(pattern, ci ? 'i' : '')
+    } catch (err) {
+      return {
+        status: 'failure',
+        message:
+          `pattern 不是合法的正则表达式：${(err as Error).message}。` +
+          '按字面搜索时，将 ( ) [ ] { } * + ? . | ^ $ \\ 写作 \\( \\* 等转义形式。',
+        errorKind: 'invalid_args',
+      }
+    }
     const globMatcher = fileGlob ? new Bun.Glob(fileGlob) : null
     const items: GrepItem[] = []
     let total = 0

@@ -876,6 +876,70 @@ describe('文件工具', () => {
   })
 
   /**
+   * 原始失败形状：文件正文用直引号，模型复述时写成弯引号（反之亦然），old_string 未在文件中找到。
+   * 定位不区分两种双引号，写入按文件原有的写法。
+   */
+  describe('edit_file 不区分直双引号与弯双引号', () => {
+    const editAfterRead = async (
+      body: string,
+      edit: { old_string: string; new_string: string },
+    ) => {
+      const root = await workspace()
+      await writeFile(join(root, 'script.md'), body, 'utf8')
+      const r = registry()
+      const c = ctx(root)
+      await r.execute('read_file', { path: 'script.md' }, c)
+      const out = await r.execute('edit_file', { path: 'script.md', edits: [edit] }, c)
+      return { out, after: await readFile(join(root, 'script.md'), 'utf8') }
+    }
+
+    test('文件用直引号、old_string 用弯引号：命中，写入沿用直引号', async () => {
+      const { out, after } = await editAfterRead('他说："路边拆，也一样。"\n下一场\n', {
+        old_string: '他说：“路边拆，也一样。”',
+        new_string: '他说：“路边拆，都一样。”',
+      })
+      expect(out.status).toBe('success')
+      expect(after).toBe('他说："路边拆，都一样。"\n下一场\n')
+    })
+
+    test('文件用弯引号、old_string 用直引号：命中，写入按开闭改为弯引号', async () => {
+      const { out, after } = await editAfterRead('“只剩三十二块六。”许遥在门边。\n', {
+        old_string: '"只剩三十二块六。"许遥',
+        new_string: '"只剩三十块。"许遥说"走吧"',
+      })
+      expect(out.status).toBe('success')
+      expect(after).toBe('“只剩三十块。”许遥说“走吧”在门边。\n')
+    })
+
+    test('替换起点在一对弯引号之内时，第一个直引号改为闭引号', async () => {
+      const { out, after } = await editAfterRead('“路边拆，也一样。”下一句\n', {
+        old_string: '也一样。"下一句',
+        new_string: '都一样。"下一句',
+      })
+      expect(out.status).toBe('success')
+      expect(after).toBe('“路边拆，都一样。”下一句\n')
+    })
+
+    test('old_string 的引号与文件一致时，替换文本中的引号改动原样写入', async () => {
+      const { out, after } = await editAfterRead('title = "首页"\n', {
+        old_string: 'title = "首页"',
+        new_string: 'title = “首页”',
+      })
+      expect(out.status).toBe('success')
+      expect(after).toBe('title = “首页”\n')
+    })
+
+    test('未命中的说明不把引号写法的差异当作不一致之处', async () => {
+      const { out } = await editAfterRead('他说："路边拆，也一样。"下一场\n', {
+        old_string: '他说：“路边拆，也一个样。”',
+        new_string: 'x',
+      })
+      expect(out.status).toBe('failure')
+      expect(out.message).toContain('此后的原文为 "样。')
+    })
+  })
+
+  /**
    * 无法解析为整数的 offset 是失败，而不是一次读取到 0 行的成功。
    *
    * 原始失败：模型把行区间写成一个字符串（`offset: "1,4000"`），
@@ -1626,6 +1690,16 @@ describe('搜索与命令', () => {
     const out = await registry().execute('grep', { pattern: 'answer' }, ctx(root))
     expect(out.status).toBe('success')
     expect((out.data?.matches as string[]).join('\n')).toContain('src/main.ts')
+  })
+
+  /** 原始失败形状：模型按字面搜索 `maskPhone(`，回执为「工具 grep 执行出错」，看起来是工具故障。 */
+  test('pattern 不是合法的正则表达式时按参数错误返回，写明转义方式', async () => {
+    const root = await workspace()
+    const out = await registry().execute('grep', { pattern: 'maskPhone(' }, ctx(root))
+    expect(out.status).toBe('failure')
+    expect(out.errorKind).toBe('invalid_args')
+    expect(out.message).toContain('pattern 不是合法的正则表达式')
+    expect(out.message).not.toContain('执行出错')
   })
 
   /**

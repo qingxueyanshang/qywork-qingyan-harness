@@ -38,6 +38,7 @@ import { CanvasPort } from './canvas/port.ts'
 import { cloudReadOnly, cloudTarget, listCloudDir, readCloudFile } from './cloud-skills/source.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
 import { FileReadPort } from './files/port.ts'
+import { matchQuoteStyle, quoteInsensitive, straightQuotes } from './files/quotes.ts'
 import { readTokens } from './files/read-size.ts'
 import { fitBudget, SCAN_LIMITS, truncationNote } from './files/scan.ts'
 import {
@@ -1024,6 +1025,8 @@ export const editFileTool: ToolSpec = {
      * 只替换命中的片段，其余字节原样保留：混合行尾的文件不会因一次单行编辑
      * 被整份重写。
      *
+     * 定位时同样不区分直双引号与弯双引号，替换文本按命中原文的引号写法改写（`files/quotes.ts`）。
+     *
      * 各项逐一生效，未命中的项跳过。不要改为整组不写入：一项未命中即须重发全部项。
      */
     const eol = dominantEol(current)
@@ -1034,10 +1037,9 @@ export const editFileTool: ToolSpec = {
       const oldStr = String(edit.old_string ?? '')
       const replaceAll = edit.replace_all === true
       const hits = oldStr
-        ? [...next.matchAll(new RegExp(eolInsensitivePattern(oldStr), 'g'))].map((m) => ({
-            at: m.index,
-            len: m[0].length,
-          }))
+        ? [...next.matchAll(new RegExp(quoteInsensitive(eolInsensitivePattern(oldStr)), 'g'))].map(
+            (m) => ({ at: m.index, text: m[0] }),
+          )
         : []
       if (hits.length === 0) {
         skipped.push({
@@ -1060,7 +1062,10 @@ export const editFileTool: ToolSpec = {
       for (let i = (replaceAll ? hits.length : 1) - 1; i >= 0; i--) {
         const hit = hits[i]
         if (!hit) continue
-        next = next.slice(0, hit.at) + replacement + next.slice(hit.at + hit.len)
+        next =
+          next.slice(0, hit.at) +
+          matchQuoteStyle(replacement, oldStr, hit.text) +
+          next.slice(hit.at + hit.text.length)
       }
     })
 
@@ -1166,8 +1171,11 @@ const MISMATCH_MIN_PREFIX = 10
  * 取 old_string 在文件中能找到的最长前缀；前缀过短或在文件中不止一处时不给出位置，返回空串。
  */
 function mismatchAt(content: string, oldStr: string): string {
-  const text = toLf(content)
-  const old = toLf(oldStr)
+  // 比较时引号统一为直引号，与定位的规则一致；引号写法不同不是不一致之处。显示时取原文。
+  const raw = toLf(content)
+  const rawOld = toLf(oldStr)
+  const text = straightQuotes(raw)
+  const old = straightQuotes(rawOld)
   let lo = 0
   let hi = old.length
   while (lo < hi) {
@@ -1180,7 +1188,7 @@ function mismatchAt(content: string, oldStr: string): string {
   if (lo < MISMATCH_MIN_PREFIX || text.indexOf(prefix, at + 1) >= 0) return ''
   const line = text.slice(0, at + lo).split('\n').length
   const quote = (t: string) => JSON.stringify(t.slice(0, 24))
-  return `。前 ${lo} 字与原文一致，第 ${line} 行此后的原文为 ${quote(text.slice(at + lo))}，old_string 为 ${quote(old.slice(lo))}`
+  return `。前 ${lo} 字与原文一致，第 ${line} 行此后的原文为 ${quote(raw.slice(at + lo))}，old_string 为 ${quote(rawOld.slice(lo))}`
 }
 
 /**
