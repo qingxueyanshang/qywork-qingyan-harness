@@ -82,6 +82,7 @@ beforeEach(async () => {
     announcementSeen: null,
     support: false,
     supportUnread: 0,
+    square: false,
   }
   stateReply = null
   feed.closeAnnouncements()

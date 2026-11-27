@@ -30,6 +30,7 @@ import { handlePluginsApi } from './plugins.ts'
 import { handleProbeApi } from './probe.ts'
 import { handlePullApi } from './pull.ts'
 import { handleSchedulesApi } from './schedules.ts'
+import { handleSquareApi } from './square.ts'
 import { handleTeamApi } from './team.ts'
 import type { ApiDeps, ApiHandler, ApiRequestDeps } from './types.ts'
 import { json } from './types.ts'
@@ -65,6 +66,7 @@ const HANDLERS: ApiHandler[] = [
   handleWorkspaceApi,
   handleConfigApi,
   handleCloudApi,
+  handleSquareApi,
   handleProbeApi,
   handlePullApi,
   handleSchedulesApi,

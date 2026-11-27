@@ -30,6 +30,7 @@ const SettingsDialog = lazy(() =>
 )
 // 账号弹窗同样仅在打开时下载。
 const AccountDialog = lazy(() => import('./components/account/AccountDialog.tsx'))
+const SquareDialog = lazy(() => import('./components/square/SquareDialog.tsx'))
 const ReleaseNotesDialog = lazy(() => import('./components/ReleaseNotesDialog.tsx'))
 const AnnouncementsDialog = lazy(() => import('./components/AnnouncementsDialog.tsx'))
 
@@ -75,6 +76,7 @@ import {
   workspace,
 } from './lib/store/index.ts'
 import { releaseNotesShown, showReleaseNotesOnce } from './lib/store/release-notes.ts'
+import { setSquareOpen, squareAvailable, squareOpen } from './lib/store/square.ts'
 
 /**
  * 正文中的链接在右侧面板打开：有内置浏览器时打开真实网页，否则打开网页预览；
@@ -162,6 +164,7 @@ export function App() {
   closeOnBack(() => sidePanel() !== null, closePanel)
   closeOnBack(() => settingsPage() !== null, closeSettings)
   closeOnBack(accountOpen, () => setAccountOpen(false))
+  closeOnBack(squareOpen, () => setSquareOpen(false))
   // 面板显示画布或文件时上报给电脑，发送消息时由服务端附上（手机发出的消息同样带上电脑上打开的画布）。
   watchViewing()
   // 设置页或插件工作台把指令送入输入框时（`askInChat`），窄屏上收起遮挡输入框的抽屉与覆盖全屏的面板，
@@ -426,6 +429,11 @@ export function App() {
       <Show when={accountOpen() && cloudState() && cloudState()?.state !== 'unavailable'}>
         <Suspense>
           <AccountDialog />
+        </Suspense>
+      </Show>
+      <Show when={squareOpen() && squareAvailable()}>
+        <Suspense>
+          <SquareDialog />
         </Suspense>
       </Show>
       <Show when={releaseNotesShown()}>

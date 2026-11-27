@@ -248,6 +248,7 @@ interface MeReply {
   announcementSeen?: string | null
   support?: boolean
   supportUnread?: number
+  square?: boolean
 }
 
 type Me = Required<Omit<MeReply, 'avatar' | 'announcementSeen'>> & {
@@ -265,6 +266,7 @@ function meOf(me: MeReply): Me {
     announcementSeen: me.announcementSeen ?? null,
     support: me.support === true,
     supportUnread: me.supportUnread ?? 0,
+    square: me.square === true,
   }
 }
 
@@ -443,6 +445,7 @@ export class CloudAccount {
       ...(this.seen?.key === provider.apiKey ? { announcementSeen: this.seen.id } : {}),
       support: false,
       supportUnread: 0,
+      square: false,
     }
   }
 
@@ -466,6 +469,7 @@ export class CloudAccount {
       announcementSeen: me.announcementSeen,
       support: me.support,
       supportUnread: me.supportUnread,
+      square: me.square,
     }
   }
 

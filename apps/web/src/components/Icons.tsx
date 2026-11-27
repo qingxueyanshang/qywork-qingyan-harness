@@ -241,6 +241,16 @@ export const IconPackage = (p: IconProps) => (
   </Svg>
 )
 
+/** 四格：创作广场的入口。 */
+export const IconGrid = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="4" y="4" width="6.5" height="6.5" rx="1.6" />
+    <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6" />
+    <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6" />
+    <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6" />
+  </Svg>
+)
+
 export const IconPlug = (p: IconProps) => (
   <Svg {...p}>
     <path d="M9 3.8v4.4M15 3.8v4.4" />

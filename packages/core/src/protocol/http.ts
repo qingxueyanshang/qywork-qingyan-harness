@@ -246,6 +246,8 @@ export type CloudState =
       support: boolean
       /** 客服回复中未读的条数。云端暂时无法访问时为 0。 */
       supportUnread: number
+      /** 云端已开通创作广场；false 时左栏不显示「创作广场」。云端暂时无法访问时为 false。 */
+      square: boolean
     }
 
 /** 客服对话中的一个附件。内容经 `GET /api/cloud/support/files/:id` 读取。 */

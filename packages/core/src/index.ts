@@ -1,4 +1,4 @@
-﻿/**
+/**
  * `@qywork/core` 的对外接口。**此处列出的即对外承诺，未列出的均为内部实现。**
  * 使用具名导出，不用 `export *`（B6）；新增导出前先确认它确有包外调用方（B3）。
  *
@@ -427,6 +427,7 @@ export {
   type SquarePublishManifest,
   type SquareStatus,
   type SquareWorkFormat,
+  squareMediaMime,
   squareTextProblem,
 } from './domain/square.ts'
 export {

@@ -22,6 +22,7 @@ import { ConversationRow } from './ConversationRow.tsx'
 import { IconChevron, IconPanel, IconPlus, IconSettings } from './Icons.tsx'
 import { NewProjectDialog } from './NewProjectDialog.tsx'
 import { ProjectRow } from './ProjectRow.tsx'
+import { SquareEntry } from './square/SquareEntry.tsx'
 
 /**
  * 左侧导航。
@@ -263,8 +264,9 @@ export function Sidebar(props: { onClose?: () => void }) {
             不要把定时任务 / 记忆与技能 / 插件 / Agent 团队 / 手机接入并列放在此处：
             它们是「设置」的子项，每增加一项能力就多一行，配置项最终会挤占会话
             列表的空间，而左栏的主要职责是会话。它们是设置弹窗中的五个类目。
-            账号入口不是设置的子项：它打开独立的账号弹窗，数据来自云端。 */}
+            账号与创作广场不是设置的子项：它们打开独立的弹窗，数据来自云端。 */}
         <ul class="nav-list">
+          <SquareEntry />
           <AccountEntry />
           <li>
             <button class="nav-item" type="button" onClick={() => openSettings()}>

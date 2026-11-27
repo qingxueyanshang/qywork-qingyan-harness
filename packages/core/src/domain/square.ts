@@ -202,6 +202,11 @@ function videoMime(b: Uint8Array): string | null {
 
 const isZip = (b: Uint8Array) => starts(b, [0x50, 0x4b, 0x03, 0x04])
 
+/** 按文件头判定的图片或视频的 MIME 类型；都不是时为 null。快照校验与电脑端提供文件内容时共用。 */
+export function squareMediaMime(bytes: Uint8Array): string | null {
+  return imageMime(bytes) ?? videoMime(bytes)
+}
+
 type Fail = { ok: false; error: string }
 const fail = (error: string): Fail => ({ ok: false, error })
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -447,7 +452,7 @@ export function checkSquareSnapshot(
   if ('ok' in checked) return checked
   const mime: Record<string, string> = {}
   for (const [path, bytes] of map) {
-    mime[path] = imageMime(bytes) ?? videoMime(bytes) ?? mimeOf(path)
+    mime[path] = squareMediaMime(bytes) ?? mimeOf(path)
   }
   return { ok: true, meta: checked.meta, cover: checked.cover, mime }
 }

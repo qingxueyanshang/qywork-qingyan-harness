@@ -1,0 +1,83 @@
+/**
+ * 创作广场：`/api/square/*`，以本机登录的云端账号调用云端的创作广场接口（`/v1/square/*`）。
+ *
+ * - `GET items`、`GET items/:id`、`GET mine`、`DELETE items/:id`：原样转交云端，应答的形状见 `@qywork/core` 的 `square.ts`。
+ * - `GET files/:hash`：文件内容，按哈希保存在本机后提供（`square/files.ts`）；`content-type` 按文件头判定图片与视频。
+ * - `POST install`：正文 `{ id }`，安装该条目的最新已上架版本（`square/install.ts`），返回 `{ message, canvas? }`。
+ *
+ * 未配置云端地址时 404；云端返回的失败以 400 返回云端的说明，安装失败以 409 或 422 返回原因。
+ */
+
+import { type SquareDetail, squareMediaMime } from '@qywork/core'
+import { CanvasFailure } from '../canvas/docs.ts'
+import { CloudAccountError } from '../cloud/account.ts'
+import { SquareFileError, squareFile } from '../square/files.ts'
+import { installSquareItem } from '../square/install.ts'
+import { type ApiHandler, json } from './types.ts'
+
+const PREFIX = '/api/square/'
+const LIST_PARAMS = ['kind', 'q', 'before'] as const
+
+export const handleSquareApi: ApiHandler = async (url, req, d) => {
+  if (!url.pathname.startsWith(PREFIX)) return null
+  const account = d.cloud
+  if (!account) return json({ error: 'unavailable', message: '未配置云端服务' }, 404)
+  const rest = url.pathname.slice(PREFIX.length)
+  const [section = '', id = '', ...extra] = rest.split('/').map(decodeURIComponent)
+  if (extra.length) return null
+  try {
+    if (section === 'items' && !id && req.method === 'GET') {
+      const query = new URLSearchParams()
+      for (const key of LIST_PARAMS) {
+        const value = url.searchParams.get(key)
+        if (value) query.set(key, value)
+      }
+      return json(await account.call(`/v1/square/items?${query}`))
+    }
+    if (section === 'items' && id && req.method === 'GET') {
+      return json(await account.call(`/v1/square/items/${encodeURIComponent(id)}`))
+    }
+    if (section === 'items' && id && req.method === 'DELETE') {
+      await account.call(`/v1/square/items/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      return json({ ok: true })
+    }
+    if (section === 'mine' && !id && req.method === 'GET') {
+      return json(await account.call('/v1/square/mine'))
+    }
+    if (section === 'files' && id && req.method === 'GET') {
+      const file = Bun.file(await squareFile(account, id))
+      const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+      return new Response(file, {
+        headers: {
+          'content-type': squareMediaMime(head) ?? 'application/octet-stream',
+          'cache-control': 'private, max-age=31536000, immutable',
+        },
+      })
+    }
+    if (section === 'install' && !id && req.method === 'POST') {
+      const body = (await req.json().catch(() => null)) as { id?: unknown } | null
+      if (typeof body?.id !== 'string' || !body.id) {
+        return json({ error: 'invalid_request', message: '缺少条目 id' }, 400)
+      }
+      const detail = await account.call<SquareDetail>(
+        `/v1/square/items/${encodeURIComponent(body.id)}`,
+      )
+      const result = await installSquareItem(detail, {
+        account,
+        canvas: d.canvas,
+        workspaceRoot: d.workspaceRoot,
+      })
+      return result.ok
+        ? json({ message: result.message, ...(result.canvas ? { canvas: result.canvas } : {}) })
+        : json({ error: 'install_failed', message: result.error }, result.status)
+    }
+  } catch (err) {
+    if (err instanceof CloudAccountError) return json({ error: 'cloud', message: err.message }, 400)
+    if (err instanceof CanvasFailure) {
+      return json({ error: 'install_failed', message: err.message }, err.status)
+    }
+    if (err instanceof SquareFileError) return json({ error: 'file', message: err.message }, 502)
+    throw err
+  }
+  return null
+}

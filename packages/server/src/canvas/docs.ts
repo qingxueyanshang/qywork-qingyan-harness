@@ -8,7 +8,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
 import { isOutsideRelative, mediaDurationOfFile } from '@qywork/agent'
 import {
@@ -42,6 +42,7 @@ import {
   textPathOf,
   textReferenceProblems,
   toPosixPath,
+  validateCanvas,
 } from '@qywork/core'
 import { renameWithRetry, resolveInWorkspace, resolveWritablePath } from '@qywork/tools'
 import { findByName } from '../files.ts'
@@ -188,6 +189,51 @@ export class CanvasDocs {
       }
       this.changed()
       return this.relativeTo(workspaceRoot, abs)
+    }
+  }
+
+  /**
+   * 导入一份画布：在工作区根目录新建以 `title` 命名的目录（已存在时加序号），把 `files` 复制到其中的相对路径，
+   * 再写入 `build(目录)` 返回的文档。文档不满足不变式时拒绝，已复制的文件随目录一并删除。返回画布文件的工作区相对路径。
+   */
+  async importDoc(
+    workspaceRoot: string,
+    title: string,
+    files: readonly { path: string; source: string }[],
+    build: (folder: string) => CanvasDoc,
+  ): Promise<string> {
+    const base =
+      title
+        .replace(/[\\/:*?"<>|\p{Cc}]+/gu, '-')
+        .trim()
+        .slice(0, 60) || 'canvas'
+    let folder = base
+    for (let n = 2; await stat(join(workspaceRoot, folder)).catch(() => null); n++) {
+      folder = `${base}-${n}`
+    }
+    const root = await resolveWritablePath(workspaceRoot, folder, { literal: true })
+    try {
+      for (const f of files) {
+        const dest = await resolveWritablePath(workspaceRoot, `${folder}/${f.path}`, {
+          literal: true,
+        })
+        await mkdir(dirname(dest), { recursive: true })
+        await copyFile(f.source, dest)
+      }
+      const doc = build(folder)
+      const problem = validateCanvas(doc)
+      if (problem) throw new CanvasFailure(`画布不合法：${problem}`, 422)
+      const abs = await resolveWritablePath(workspaceRoot, `${folder}/${base}${CANVAS_SUFFIX}`, {
+        literal: true,
+        followFinalSymlink: false,
+      })
+      await mkdir(dirname(abs), { recursive: true })
+      await writeFile(abs, serializeCanvas(doc), { flag: 'wx' })
+      this.changed()
+      return this.relativeTo(workspaceRoot, abs)
+    } catch (err) {
+      await rm(root, { recursive: true, force: true })
+      throw err
     }
   }
 

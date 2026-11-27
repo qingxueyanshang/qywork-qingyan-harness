@@ -494,6 +494,7 @@ test('登录后写入云端接口：设备密钥只在该接口中，型号带�
     announcementSeen: null,
     support: true,
     supportUnread: 0,
+    square: false,
   })
   const provider = live.providers[CLOUD_PROVIDER]!
   expect(provider).toMatchObject({ baseUrl: origin, apiKey: 'qyd_device_key' })

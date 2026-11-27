@@ -67,6 +67,7 @@ const SIGNED_IN: CloudState = {
   announcementSeen: null,
   support: true,
   supportUnread: 0,
+  square: true,
 }
 
 const USAGE: CloudUsage = {
