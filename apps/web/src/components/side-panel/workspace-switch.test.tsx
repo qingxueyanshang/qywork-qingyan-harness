@@ -139,8 +139,13 @@ async function waitFor(done: () => boolean, detail: () => string) {
   throw new Error(`界面未在时限内更新：${detail()}`)
 }
 
+/**
+ * 等待已排队的 Promise 与动画帧执行完毕。happy-dom 以 `setImmediate` 实现 `requestAnimationFrame`，
+ * 切换与显示页的路径中没有带延迟的计时器；不要改回按毫秒等待，每次显示页都按真实时间等待时，
+ * 本文件在并行测试的负载下超过 5 秒时限。
+ */
 const settle = async () => {
-  for (let i = 0; i < 12; i++) await new Promise((resolve) => setTimeout(resolve, 5))
+  for (let i = 0; i < 12; i++) await new Promise((resolve) => setImmediate(resolve))
 }
 
 const parked = { cmd: 'browser_layout', args: { x: 0, y: 0, width: 0, height: 0 } }
