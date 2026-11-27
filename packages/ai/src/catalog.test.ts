@@ -1045,6 +1045,23 @@ describe('目录中的价格与档位', () => {
     }
   })
 
+  test('Gemini 4 Neon 在 1M 窗口内不分档计价，思考档位含 xhigh', () => {
+    const neon = spec('gemini-4-neon')
+    expect(neon.vendor).toBe('google')
+    expect(neon.vision).toBe(true)
+    expect(neon.contextWindow).toBe(1_048_576)
+    expect(neon.maxOutputTokens).toBe(65_536)
+    expect(neon.effortLevels).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(neon.chatReasoningProtocol).toBe('google_signatures')
+    expect(neon.minCacheablePrefix).toBe(4096)
+    expect(neon.pricing).toMatchObject({ input: 3, output: 15, cacheRead: 0.15, cacheWrite5m: 0 })
+    expect(priceAt(neon, { promptTokens: 1_000_000 })).toMatchObject({
+      input: 3,
+      output: 15,
+      cacheRead: 0.15,
+    })
+  })
+
   test('Gemini 4 Hydrogen 在 1M 窗口内不分档计价，思考档位含 xhigh', () => {
     const hydrogen = spec('gemini-4-hydrogen')
     expect(hydrogen.vendor).toBe('google')
@@ -1388,6 +1405,7 @@ test('思考回放规则与厂商文档的要求一致', () => {
     'gemini-3.8-flash',
     'gemini-3.6-flash',
     'gemini-4-argon',
+    'gemini-4-neon',
   ]) {
     expect(chat(id).signatures).toBe('google_chat_signature')
   }

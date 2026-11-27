@@ -1690,6 +1690,7 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      *
      * | 模型 | 输入 | 输出 | 缓存 | 备注 |
      * |---|---|---|---|---|
+     * | gemini-4-neon | 3.00 | 15.00 | 0.15 | 2026-11-26 核对；1M 窗口内不分档 |
      * | gemini-4-carbon | 2.00 | 10.00 | 0.10 | 促销至 2026-11-30，之后 4.00 / 20.00 / 0.20 |
      * | gemini-4-argon | 2.00 | 10.00 | 0.10 | 同上 |
      * | gemini-4-hydrogen | 1.50 | 7.50 | 0.075 | 1M 窗口内不分档 |
@@ -1706,9 +1707,25 @@ function openAiCompatCatalog(now: number): ModelSpec[] {
      * 3.x 给出 1,048,576 输入与 65,536 输出上限。Carbon 与 Argon 的输入、思考和输出共用 1M 窗口；
      * 当前 Chat 接入单次输出上限为 65,536，1M 长输出需另行接入后台续接。
      * Carbon 的型号页：思考档位 low / medium / high，只提供隐式缓存；分词器未标定，使用上界档。
-     * Hydrogen（2026-11-12 核对型号页与兼容接口页）：思考档位 low 至 xhigh，默认 high，`xhigh` 只有该型号接受；
-     * 只提供隐式缓存，最小前缀 4,096；分词器未标定，使用上界档。
+     * Hydrogen（2026-11-12 核对型号页与兼容接口页）与 Neon（2026-11-26 核对型号页、迁移说明与价格页）：
+     * 思考档位 low 至 xhigh，默认 high，`xhigh` 只有这两个型号接受；只提供隐式缓存，最小前缀 4,096；
+     * 分词器未标定，使用上界档。
      */
+    {
+      ...base,
+      ...effort(['low', 'medium', 'high', 'xhigh']),
+      id: 'gemini-4-neon',
+      displayName: 'Gemini 4 Neon',
+      vendor: 'google',
+      vision: true,
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+      chatReasoningProtocol: 'google_signatures',
+      chatToolSchema: 'native',
+      cacheRouting: 'none',
+      minCacheablePrefix: 4096,
+      pricing: usd(3, 15, 0.15),
+    },
     {
       ...base,
       ...effort(['low', 'medium', 'high']),
