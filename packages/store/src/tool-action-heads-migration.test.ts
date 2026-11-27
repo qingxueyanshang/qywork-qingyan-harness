@@ -5,7 +5,8 @@
  * 原始失败形状：历史记录只有 `objectLabel`，新界面按 `head` 与 `verb` 显示，转换缺失时历史中的工具行标题为空。
  * 另覆盖迁移 82（`082-interrupted-steps.ts`）：停止时被收尾的历史工具行补写中断类别；
  * 迁移 83（`083-canvas-tool-head.ts`）与迁移 84（`084-web-tool-head.ts`）：类目改名后改写历史工具行的开头；
- * 迁移 85（`085-office-guide-target.ts`）：清除历史 read_office_guide 行的格式名目标。
+ * 迁移 85（`085-office-guide-target.ts`）：清除历史 read_office_guide 行的格式名目标；
+ * 迁移 86（`086-tool-load-head.ts`）：load_tool 行改为「工具加载 · 加载」。
  */
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
@@ -14,6 +15,7 @@ import { migration082 } from './migrations/082-interrupted-steps.ts'
 import { migration083 } from './migrations/083-canvas-tool-head.ts'
 import { migration084 } from './migrations/084-web-tool-head.ts'
 import { migration085 } from './migrations/085-office-guide-target.ts'
+import { migration086 } from './migrations/086-tool-load-head.ts'
 
 /** 在只含 steps 表的内存库中插入一行，执行迁移 81 的全部批次，返回转换后的 payload；未改写时返回 null。 */
 function convertToolAction(
@@ -356,5 +358,36 @@ test('迁移 85：read_office_guide 行的目标清除为 null，其余行不变
   expect(action('a').target).toBeNull()
   expect(action('a').object).toBe('docx 制作说明')
   expect(action('b').target).toBe('report.docx')
+  db.close()
+})
+
+/** 覆盖迁移 86：历史 load_tool 行显示为「会话读取 · 读取 read_office」，改为「工具加载 · 加载 read_office」。 */
+test('迁移 86：load_tool 行的开头与动词改为「工具加载」「加载」，其余行不变', () => {
+  const db = new Database(':memory:')
+  db.run('CREATE TABLE steps (id TEXT PRIMARY KEY, kind TEXT, tool_name TEXT, payload TEXT)')
+  const insert = db.query(
+    "INSERT INTO steps (id, kind, tool_name, payload) VALUES (?, 'tool_action', ?, ?)",
+  )
+  const row = (head: string, object: string) =>
+    JSON.stringify({
+      kind: 'tool_result',
+      action: { kind: 'read', head, verb: '读取', object, target: object },
+    })
+  insert.run('a', 'load_tool', row('会话读取', 'read_office'))
+  insert.run('b', 'read_history', row('会话读取', '历史原文'))
+  let after = 0
+  for (;;) {
+    const next = migration086.background!(db, {} as never, after)
+    if (next === null) break
+    after = next
+  }
+  const action = (id: string) =>
+    (
+      JSON.parse(
+        (db.query('SELECT payload FROM steps WHERE id = ?').get(id) as { payload: string }).payload,
+      ) as { action: Record<string, unknown> }
+    ).action
+  expect(action('a')).toMatchObject({ head: '工具加载', verb: '加载', object: 'read_office' })
+  expect(action('b')).toMatchObject({ head: '会话读取', verb: '读取' })
   db.close()
 })

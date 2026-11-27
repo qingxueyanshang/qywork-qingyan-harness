@@ -32,10 +32,18 @@ async function remove(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true }).catch((err) => warn('删除', dir, err))
 }
 
+/**
+ * 本进程中正在移入或删除的回收目录。清理遗留的回收目录时跳过它们：另一次删除刚建立、正在向其中改名的目录
+ * 被删除时，改名以 ENOENT 失败，与「父目录已先移走」无法区分，该目录静默留在原处。
+ */
+const activeTrash = new Set<string>()
+
 /** 把目录移入回收目录后在后台删除，返回时目录已不在原位置（或改名失败、保持原样）。 */
 async function discard(workspaceRoot: string, dirs: string[]): Promise<void> {
   const trashRoot = join(workspaceRoot, '.tmp', '.trash')
   const trash = join(trashRoot, randomUUID())
+  // 先登记再建立：同一进程中的其他删除在列出回收目录时已能看到它。
+  activeTrash.add(trash)
   await mkdir(trash, { recursive: true })
   // 逐个改名：其中可能同时有父目录与其下的子目录，并发改名的结果取决于先后。
   // 父目录先移走时子目录随之移走，再改名子目录得到 ENOENT，属于正常结果。
@@ -44,8 +52,16 @@ async function discard(workspaceRoot: string, dirs: string[]): Promise<void> {
       if (err.code !== 'ENOENT') warn('移入回收目录', dir, err)
     })
   }
-  // 整个回收目录一并删除：包括此前未删除完成的部分。并发的删除对同一路径使用 `force`，互不报错。
-  void remove(trashRoot)
+  void (async () => {
+    await remove(trash)
+    activeTrash.delete(trash)
+    // 此前未删除完成的回收目录（进程被结束时遗留）一并删除。不要改为直接删除整个 .trash：
+    // 其中可能有另一次删除正在使用的目录。
+    for (const name of await readdir(trashRoot).catch(() => [] as string[])) {
+      const left = join(trashRoot, name)
+      if (!activeTrash.has(left)) await remove(left)
+    }
+  })()
 }
 
 /** 删除一条会话及其全部子会话的临时目录。必须在会话记录删除之前调用：子会话随父会话级联删除后无法再列出。 */

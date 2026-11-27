@@ -55,6 +55,9 @@ test('原先显示错误的工具得到描述实际动作的标题', () => {
     '网页控制 · 输入 「会议纪要」',
   )
   expect(title('desktop_windows', {})).toBe('电脑控制 · 列出 窗口')
+  expect(title('load_tool', { names: ['read_office', 'write_office'] })).toBe(
+    '工具加载 · 加载 read_office、write_office',
+  )
   expect(title('install_plugin', { path: 'C:/plugins/shot' })).toBe(
     '插件管理 · 安装 C:/plugins/shot',
   )

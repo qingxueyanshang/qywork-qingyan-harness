@@ -29,6 +29,7 @@ export const TOOL_CATEGORY_HEADS = {
   collab: '任务派发',
   appearance: '外观管理',
   context: '会话读取',
+  tool_load: '工具加载',
   schedule: '定时管理',
   mcp: 'MCP 管理',
   mcp_call: 'MCP 调用',

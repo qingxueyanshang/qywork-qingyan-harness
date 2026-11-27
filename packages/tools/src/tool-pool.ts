@@ -78,8 +78,8 @@ export function makeLoadToolTool(registry: ToolRegistry): ToolSpec {
       required: ['names'],
       additionalProperties: false,
     },
-    verb: '读取',
-    category: 'context',
+    verb: '加载',
+    category: 'tool_load',
     facet: '工具定义',
     summary: '读取按需工具的完整参数定义',
     targetExtractor: (a) =>

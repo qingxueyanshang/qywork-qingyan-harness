@@ -341,6 +341,7 @@ const MODULES: Module[] = [
     ...category('context'),
     settings: CompactPercentRows,
   },
+  category('tool_load'),
   {
     ...category('schedule'),
     consoles: [{ page: 'schedules', label: '去配置' }],
@@ -352,7 +353,7 @@ const MODULES: Module[] = [
       },
     ],
   },
-  // 按需加载的边界已在「会话读取」分组 load_tool 一行的用途中写明，此处不重复。
+  // 按需加载的边界已在「工具加载」分组 load_tool 一行的用途中写明，此处不重复。
   { ...category('mcp'), consoles: [{ page: 'mcp', label: '去配置' }] },
   { ...category('mcp_call'), consoles: [{ page: 'mcp', label: '去配置' }] },
   { ...category('plugins'), consoles: [{ page: 'plugins', label: '去配置' }] },

@@ -15,6 +15,7 @@ export const VERB_KINDS = {
   查看: 'read',
   获取: 'read',
   取回: 'read',
+  加载: 'read',
   等待: 'read',
   创建: 'write',
   新建: 'write',
