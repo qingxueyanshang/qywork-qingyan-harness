@@ -715,28 +715,68 @@ describe('子进程输出解码', () => {
   const GBK = new Uint8Array([0xca, 0xd7, 0xd2, 0xb3])
   const UTF8 = new Uint8Array([0xe9, 0xa6, 0x96, 0xe9, 0xa1, 0xb5])
 
+  const LF = new Uint8Array([0x0a])
+  const bytes = (...parts: Uint8Array[]) => new Uint8Array(parts.flatMap((p) => [...p]))
+
   test('UTF-8 流原样解码', () => {
-    expect(makeOutputDecoder()(UTF8)).toBe('首页')
+    const decoder = makeOutputDecoder()
+    expect(decoder.write(UTF8) + decoder.end()).toBe('首页')
   })
 
   test('跨片的不完整字符不被切断：不完整的分片不得触发编码切换', () => {
-    const decode = makeOutputDecoder()
-    expect(decode(UTF8.slice(0, 2))).toBe('')
-    expect(decode(UTF8.slice(2))).toBe('首页')
+    const decoder = makeOutputDecoder()
+    expect(decoder.write(UTF8.slice(0, 2))).toBe('')
+    expect(decoder.write(bytes(UTF8.slice(2), LF))).toBe('首页\n')
   })
 
-  test('非法 UTF-8 不抛出异常也不丢弃，切换到本机代码页继续解码', () => {
-    const decode = makeOutputDecoder()
-    const got = decode(GBK)
+  test('GBK 输出按本机代码页解码，不丢弃', () => {
+    const decoder = makeOutputDecoder()
+    const got = decoder.write(bytes(GBK, LF)) + decoder.end()
     expect(got.length).toBeGreaterThan(0)
     // Windows 上按代码页可解出实际字符；其他平台回退为 U+FFFD，不断言字形。
-    if (process.platform === 'win32') expect(got).not.toContain('\uFFFD')
+    if (process.platform === 'win32') expect(got).toBe('首页\n')
   })
 
-  test('判定后不再切换，后续分片正常解码', () => {
-    const decode = makeOutputDecoder()
-    decode(GBK)
-    expect(decode(new Uint8Array([0x6f, 0x6b]))).toBe('ok')
+  test('按字节截断的一行只影响该行：前后各行与同一行中的其余中文仍按 UTF-8 解码', () => {
+    const decoder = makeOutputDecoder()
+    // 第二行是「首页首」截去最后一个字的末字节，即 `cut -c` 按字节截断的形状。
+    const got =
+      decoder.write(bytes(UTF8, LF, UTF8, UTF8.slice(0, 2), LF)) +
+      decoder.write(bytes(UTF8, LF)) +
+      decoder.end()
+    expect(got).toBe('首页\n首页�\n首页\n')
+  })
+
+  test('GBK 行与 UTF-8 行交替时各自解码', () => {
+    if (process.platform !== 'win32') return
+    const decoder = makeOutputDecoder()
+    expect(decoder.write(bytes(GBK, LF, UTF8, LF, GBK, LF)) + decoder.end()).toBe(
+      '首页\n首页\n首页\n',
+    )
+  })
+
+  test('不完整的一行：全部是 ASCII 时立即解码，含中文时等到换行或结束', () => {
+    const decoder = makeOutputDecoder()
+    expect(decoder.write(new TextEncoder().encode('Password: '))).toBe('Password: ')
+    expect(decoder.write(UTF8)).toBe('')
+    expect(decoder.end()).toBe('首页')
+  })
+
+  test('没有换行的长输出不无限暂存', () => {
+    const decoder = makeOutputDecoder()
+    const chunk = new TextEncoder().encode('首页,'.repeat(10_000))
+    const first = decoder.write(chunk)
+    expect(first.length).toBeGreaterThan(0)
+    expect(first + decoder.end()).toBe('首页,'.repeat(10_000))
+  })
+
+  test('真实进程：按字节截断的输出经 collectProcess 后其余中文不变为乱码', async () => {
+    const src =
+      'const u=Buffer.from("首页\\n");' +
+      'process.stdout.write(Buffer.concat([u, Buffer.from("首页首").subarray(0, 8), Buffer.from("\\n"), u]))'
+    const proc = Bun.spawn([process.execPath, '-e', src], { stdout: 'pipe', stderr: 'pipe' })
+    const got = await collectProcess(proc, { timeoutMs: 20_000 })
+    expect(got.stdout).toBe('首页\n首页�\n首页\n')
   })
 })
 /**

@@ -128,14 +128,16 @@ export async function collectProcess(
   const pump = async (stream: ReadableStream<Uint8Array>, channel: 'stdout' | 'stderr') => {
     const reader = stream.getReader()
     readers.push(reader)
-    const decode = makeOutputDecoder()
+    const decoder = makeOutputDecoder()
+    const append = (decoded: string) => {
+      text[channel] += opts.onText ? opts.onText(channel, decoded) : decoded
+    }
     try {
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
         armIdle()
-        const decoded = decode(value)
-        text[channel] += opts.onText ? opts.onText(channel, decoded) : decoded
+        append(decoder.write(value))
         if (opts.maxChars !== undefined && text[channel].length >= opts.maxChars) {
           // 必须 cancel，不能只 break。读端未关闭时，写端写满后阻塞，
           // 进程无法退出，输出上限会成为新的阻塞点。
@@ -144,6 +146,9 @@ export async function collectProcess(
         }
       }
     } finally {
+      // 解码器暂存的末尾一行先经过 `onText`，再取 `onEnd`：脱敏器的跨片缓冲须包含这一行。
+      const rest = decoder.end()
+      if (rest) append(rest)
       const tail = opts.onEnd?.(channel)
       if (tail) text[channel] += tail
     }
