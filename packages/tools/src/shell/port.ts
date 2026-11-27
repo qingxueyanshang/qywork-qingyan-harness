@@ -54,7 +54,7 @@ export interface CommandPort {
   write(id: string, text: string, end: boolean): 'written' | 'no_input' | 'closed' | null
   /**
    * 某条后台命令结束并移出任务表后兑现：回执已进入投递队列时为 true，被停止而没有回执时为 false。
-   * 不在任务表中时为 null。只报告结束，不返回回执内容：回执只经由队列送达。
+   * 已结束的命令返回已兑现的信号；本会话从未登记该编号时为 null。只报告结束，不返回回执内容：回执只经由队列送达。
    */
   ended(id: string): Promise<boolean> | null
 }

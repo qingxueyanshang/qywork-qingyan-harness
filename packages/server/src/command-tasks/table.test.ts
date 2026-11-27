@@ -701,6 +701,41 @@ describe('在本轮内等待后台命令', () => {
     expect(commands.listOf(cv)).toEqual([])
     expect(bodies.length).toBe(3)
   }, 30_000)
+
+  /**
+   * 原始失败形状：模型的请求发出之后后台任务结束，任务移出任务表；模型随后等待该任务，得到「本会话没有运行中的后台命令」，
+   * 这一步显示为失败，回执随后才送达。
+   */
+  test('等待已结束、已移出任务表的命令：答复已结束，不答复没有该命令', async () => {
+    const cv = conversation()
+    script.push(
+      callsTurn([
+        run('call_q', { command: hold('Q'), background: true }),
+        run('call_q2', { command: hold('Q2') }),
+      ]),
+    )
+    void startRun(cv, '后台构建后等待', undefined, deps())
+    await pidOf('Q2')
+    await until(() => commands.listOf(cv).length === 1, '后台命令登记')
+    const [task] = commands.listOf(cv)
+    await writeFile(join(dir, 'Q.go'), '')
+    await until(() => commands.listOf(cv).length === 0, '后台命令结束')
+    script.push(
+      callsTurn([
+        {
+          id: 'call_late',
+          name: 'background_command',
+          args: { task_id: task!.id, wait_seconds: 600 },
+        },
+      ]),
+      textTurn('构建已完成。'),
+    )
+    await writeFile(join(dir, 'Q2.go'), '')
+    await until(() => bodies.length === 3, '等待之后的请求')
+    expect(bodies[2]).toContain(`后台命令 ${task!.id} 已结束，结果见回执消息`)
+    expect(bodies[2]).not.toContain('没有运行中的后台命令')
+    await idle(cv)
+  }, 30_000)
 })
 
 describe('与后台命令交互', () => {

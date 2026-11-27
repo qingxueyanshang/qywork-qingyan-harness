@@ -37,6 +37,11 @@ const RECHECK_MS = 60_000
 export class CommandTaskTable {
   /** 外层键是会话 id，内层键是任务编号。 */
   private readonly byConversation = new Map<ConversationId, Map<string, Task>>()
+  /**
+   * 已结束的任务的结束信号，键同上。模型可能在回执送达之前查询刚结束的任务，此时须答复「已结束」，
+   * 不能答复「没有该任务」。只保留信号，不保留句柄与输出。
+   */
+  private readonly endedByConversation = new Map<ConversationId, Map<string, Promise<boolean>>>()
 
   constructor(
     /** 发布某会话的后台命令快照（`commands.changed`）与追加的文件改动（`file.changed`），按会话过滤下发。 */
@@ -66,6 +71,10 @@ export class CommandTaskTable {
           `[后台任务回执] 任务 ${id} 已结束，结果无法读取：${err instanceof Error ? err.message : String(err)}\n任务：${task.command}`,
       )
       .then((content) => {
+        const finished =
+          this.endedByConversation.get(conversationId) ?? new Map<string, Promise<boolean>>()
+        finished.set(id, Promise.resolve(content !== null))
+        this.endedByConversation.set(conversationId, finished)
         this.remove(conversationId, id)
         if (content !== null) {
           deliver({ id: `rc_${crypto.randomUUID()}`, content, steer: true, origin: 'command' })
@@ -79,9 +88,13 @@ export class CommandTaskTable {
     return id
   }
 
-  /** 该会话中一条后台命令的结束信号，见 `CommandPort.ended`；不在表中时为 null。 */
+  /** 该会话中一条后台命令的结束信号，见 `CommandPort.ended`；该会话从未登记该编号时为 null。 */
   ended(conversationId: ConversationId, id: string): Promise<boolean> | null {
-    return this.byConversation.get(conversationId)?.get(id)?.ended ?? null
+    return (
+      this.byConversation.get(conversationId)?.get(id)?.ended ??
+      this.endedByConversation.get(conversationId)?.get(id) ??
+      null
+    )
   }
 
   /** 该会话正在后台运行的命令，按登记顺序。 */

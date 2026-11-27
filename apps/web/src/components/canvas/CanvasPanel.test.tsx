@@ -162,6 +162,8 @@ interface Server {
   restores: { from: string; to: string }[]
   /** 时间线导出会话的请求，按请求顺序记录：开始、写入、完成、放弃。 */
   exports: string[]
+  /** 为真时开始导出返回 409：该时间线的导出已由另一个界面认领。 */
+  exportClaimed: boolean
   /** 停止请求的节点 id，按请求顺序记录；返回结果取 `cancelOutcome`。 */
   cancels: string[]
   retrievals: { nodeId: string; version?: string }[]
@@ -244,6 +246,7 @@ async function mount(
     uploads: [],
     restores: [],
     exports: [],
+    exportClaimed: false,
   }
   const original = store.client.api
   ;(
@@ -369,6 +372,14 @@ async function mount(
     }
     if (path.startsWith('/api/canvas/export/')) {
       server.exports.push(path.split('?')[0]!.slice('/api/canvas/export/'.length))
+      if (path.startsWith('/api/canvas/export/start') && server.exportClaimed) {
+        const { ApiError } = await import('../../lib/client.ts')
+        throw new ApiError(
+          409,
+          path,
+          JSON.stringify({ error: 'conflict', message: '该时间线正在由另一个界面导出' }),
+        )
+      }
       if (path.startsWith('/api/canvas/export/start')) return { upload: 'u1' }
       if (path.startsWith('/api/canvas/export/abort')) return { ok: true }
       throw new Error('测试中不写入磁盘')
@@ -6005,6 +6016,29 @@ describe('画布：时间线', () => {
     } finally {
       render.mockRestore()
     }
+  })
+
+  /**
+   * 原始失败形状：大模型请求导出时每个打开该项目的界面都开始导出，由先开始的界面认领；
+   * 其余界面得到 409，显示「该时间线正在由另一个界面导出」且不再消失，而导出已在另一个界面完成。
+   */
+  test('请求已由另一个界面认领：本界面不显示错误；用户点击导出时照常显示', async () => {
+    const store = await import('../../lib/store/index.ts')
+    const { host, server, refs } = await mount(TIMELINE)
+    server.exportClaimed = true
+    store.setExportRequests([{ path: 'board.canvas.json', nodeId: refs.$t! }])
+    await waitFor(
+      () => server.exports.includes('start'),
+      () => JSON.stringify(server.exports),
+    )
+    await nextTurn()
+    expect(host.querySelector('.canvas-fault')).toBeNull()
+
+    node(host, refs.$t!).querySelector<HTMLButtonElement>('.canvas-tl-export')!.click()
+    await waitFor(
+      () => host.querySelector('.canvas-fault')?.textContent === '该时间线正在由另一个界面导出',
+      () => host.querySelector('.canvas-fault')?.textContent ?? '',
+    )
   })
 })
 

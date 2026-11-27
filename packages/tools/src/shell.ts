@@ -1011,12 +1011,12 @@ export const backgroundCommandTool: ToolSpec = {
   description:
     '读取本会话一条后台命令至今的输出（stdout / stderr）；stop 为 true 时结束该命令的进程树，返回停止前的输出；' +
     'input 向以 background 启动的命令写入标准输入，用于与 REPL、命令行向导等交互程序交互。' +
-    '后台命令由 run_command 转入后台，任务编号见其结果。命令结束时结果作为回执消息送达，被停止的命令不发送回执。' +
+    '后台命令由 run_command 或生成、导出、制作文档等工具转入后台，任务编号见其结果。命令结束时结果作为回执消息送达，被停止的命令不发送回执。' +
     '本轮后续工作需要该命令的结果时，用 wait_seconds 在本轮内等待它结束；等待期间不调用模型。',
   parameters: {
     type: 'object',
     properties: {
-      task_id: { type: 'string', description: 'run_command 结果中的任务编号' },
+      task_id: { type: 'string', description: '转入后台时结果中的任务编号' },
       stop: { type: 'boolean', description: '为 true 时停止该命令' },
       wait_seconds: {
         type: 'number',
@@ -1077,6 +1077,17 @@ export const backgroundCommandTool: ToolSpec = {
     }
     const id = idArg(args.task_id)
     const found = id ? port.output(id) : null
+    // 刚结束的命令：回执可能尚未送达，答复已结束，不答复「没有该命令」。
+    const ended = !found && id ? port.ended(id) : null
+    if (ended) {
+      return {
+        status: 'success',
+        message: (await ended)
+          ? `后台命令 ${id} 已结束，结果见回执消息`
+          : `后台命令 ${id} 已被停止，没有回执`,
+        data: { taskId: id },
+      }
+    }
     if (!found) {
       const running = port.list().map((c) => `${c.id}（${c.command}）`)
       return {

@@ -55,13 +55,13 @@ export function backgroundable(
             (outcome) => ({
               receipt: stopped
                 ? null
-                : `${name}${outcome.status === 'success' ? '' : '失败'}：${outcome.message}`,
+                : `${name}：${outcome.status === 'success' ? '' : '失败，'}${outcome.message}`,
               fileChanges: outcome.fileChanges ?? [],
             }),
             (error: unknown) => ({
               receipt: stopped
                 ? null
-                : `${name}失败：${error instanceof Error ? error.message : String(error)}`,
+                : `${name}：失败，${error instanceof Error ? error.message : String(error)}`,
               fileChanges: [],
             }),
           ),

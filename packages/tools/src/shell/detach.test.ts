@@ -76,6 +76,36 @@ test('执行期间收到「调整方向」消息：登记到后台任务表并�
   expect((await adopted[0]!.settled).receipt).toBe('运行生成卡「封面」：已取得结果：cover.mp4')
 })
 
+test('转入后台的执行失败或抛出时，回执在任务说明之后写明失败与原因', async () => {
+  /** 晚于「调整方向」的消息结束的工具：结束前先让出一次计时器。 */
+  const later = (end: () => never | { status: 'failure'; message: string }) =>
+    ({
+      name: 'later',
+      fn: async () => {
+        await new Promise((r) => setTimeout(r, 0))
+        return end()
+      },
+    }) as unknown as ToolSpec
+
+  const failing = harness(Promise.resolve())
+  await backgroundable(
+    later(() => ({ status: 'failure', message: '文件已被占用' })),
+    () => '制作文档 report.docx',
+  ).fn({}, failing.ctx)
+  expect((await failing.adopted[0]!.settled).receipt).toBe(
+    '制作文档 report.docx：失败，文件已被占用',
+  )
+
+  const throwing = harness(Promise.resolve())
+  await backgroundable(
+    later(() => {
+      throw new Error('ENOENT')
+    }),
+    () => '生成图片',
+  ).fn({}, throwing.ctx)
+  expect((await throwing.adopted[0]!.settled).receipt).toBe('生成图片：失败，ENOENT')
+})
+
 test('转入后台之后本轮停止不再中止执行；任务表停止时中止且不送回执', async () => {
   const { adopted, ctx, run } = harness(Promise.resolve())
   const tool = slowTool()

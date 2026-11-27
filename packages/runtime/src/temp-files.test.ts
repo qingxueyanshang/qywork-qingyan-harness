@@ -3,7 +3,7 @@
  * `officeRunDir` 的路径约定。
  *
  * 锁定「任务是否完成只读取账本与运行表」：待办全部完成且正常结束才删除整个会话目录，
- * 其余情形只删除本轮的 Office 目录。
+ * 有后台任务运行时两个目录都保留，其余情形只删除本轮的 Office 目录。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -97,12 +97,19 @@ describe('一轮结束时的临时目录', () => {
     ['本轮没有待办', null, {}],
     ['等待用户回复', done, { stopReason: 'awaiting_user' as const }],
     ['被中断', done, { stopReason: 'user_interrupt' as const }],
-    ['仍有子 agent 或后台命令在运行', done, { backgroundRunning: true }],
     ['子会话的轮次', done, { topLevel: false }],
   ])('%s：只删除本轮的 Office 目录，会话临时目录保留', async (_, todos, over) => {
     const f = await fixture(todos)
     await release(f, over)
     expect(existsSync(officeRunDir(f.root, f.parent, f.run))).toBe(false)
+    expect(existsSync(join(conversationTempDir(f.root, f.parent), 'crop.png'))).toBe(true)
+    expect(existsSync(join(conversationTempDir(f.root, f.child), 'crop.png'))).toBe(true)
+  })
+
+  test('仍有子 agent 或后台任务在运行：本轮的 Office 目录与会话临时目录都保留', async () => {
+    const f = await fixture(done)
+    await release(f, { backgroundRunning: true })
+    expect(existsSync(join(officeRunDir(f.root, f.parent, f.run), 'candidate.pptx'))).toBe(true)
     expect(existsSync(join(conversationTempDir(f.root, f.parent), 'crop.png'))).toBe(true)
     expect(existsSync(join(conversationTempDir(f.root, f.child), 'crop.png'))).toBe(true)
   })

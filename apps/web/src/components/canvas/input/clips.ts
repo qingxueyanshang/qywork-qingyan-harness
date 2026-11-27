@@ -2,6 +2,7 @@
 
 import { canvasMediaOf } from '@qywork/core'
 import { createEffect, untrack } from 'solid-js'
+import { ApiError } from '../../../lib/client.ts'
 import {
   explainApiError,
   exportAbort,
@@ -120,6 +121,9 @@ export const addClips = async (
 /**
  * 导出视频：浏览器一边编码 mp4 一边写入服务端，完成后保存到 `generated/`，来源节点右侧出现新的视频节点。
  * `encode` 把字节交给 `write`，进度经 `progress` 报告。返回新节点的 id；取消或失败时为 `null`。
+ *
+ * `requested` 表示执行的是大模型请求的导出（`canvas.export`）。该请求发给打开该项目的每个界面，由先开始导出的界面认领，
+ * 其余界面开始导出时得到 409：这次导出由另一个界面执行，不是本界面的错误，不显示。用户点击导出时的 409 照常显示。
  */
 export const exportVideo = async (
   canvas: CanvasController,
@@ -130,6 +134,7 @@ export const exportVideo = async (
     progress: (ratio: number) => void,
     signal: AbortSignal,
   ) => Promise<void>,
+  requested = false,
 ): Promise<string | null> => {
   if (canvas.exportAborts.has(id)) return null
   const ac = new AbortController()
@@ -152,7 +157,11 @@ export const exportVideo = async (
   } catch (e) {
     // 未完成的文件由服务端删除；该请求失败时，服务端在空闲超时后同样会删除。
     if (upload) void exportAbort(upload).catch(() => {})
-    if ((e as Error).name !== 'AbortError') canvas.setFault(explainApiError(e, failText))
+    const claimedElsewhere =
+      requested && upload === null && e instanceof ApiError && e.status === 409
+    if ((e as Error).name !== 'AbortError' && !claimedElsewhere) {
+      canvas.setFault(explainApiError(e, failText))
+    }
     return null
   } finally {
     canvas.exportAborts.delete(id)
@@ -160,23 +169,28 @@ export const exportVideo = async (
   }
 }
 
-/** 导出时间线成片，完成后选中新节点（全屏编辑中不改变选区）。 */
-export const exportTimeline = async (canvas: CanvasController, id: string) => {
+/** 导出时间线成片，完成后选中新节点（全屏编辑中不改变选区）。`requested` 见 `exportVideo`。 */
+export const exportTimeline = async (canvas: CanvasController, id: string, requested = false) => {
   const n = canvas.byId(id)
   if (n?.type !== 'timeline' || !n.clips.length) return
-  const created = await exportVideo(canvas, id, '导出失败', (write, progress, signal) =>
-    renderTimeline(
-      n.clips.map((c) => ({
-        url: fileUrlOf(canvas.view(), c.path),
-        name: c.path.split('/').pop() ?? c.path,
-        in: c.in,
-        out: c.out,
-      })),
-      !!n.muted,
-      progress,
-      signal,
-      write,
-    ),
+  const created = await exportVideo(
+    canvas,
+    id,
+    '导出失败',
+    (write, progress, signal) =>
+      renderTimeline(
+        n.clips.map((c) => ({
+          url: fileUrlOf(canvas.view(), c.path),
+          name: c.path.split('/').pop() ?? c.path,
+          in: c.in,
+          out: c.out,
+        })),
+        !!n.muted,
+        progress,
+        signal,
+        write,
+      ),
+    requested,
   )
   if (created && !canvas.fullscreen()) canvas.setSelected(new Set([created]))
 }
@@ -189,7 +203,7 @@ export const exportOnRequest = (canvas: CanvasController) => {
     if (!mine.length) return
     setExportRequests((all) => all.filter((r) => !mine.includes(r)))
     untrack(() => {
-      for (const r of mine) void exportTimeline(canvas, r.nodeId)
+      for (const r of mine) void exportTimeline(canvas, r.nodeId, true)
     })
   })
 }

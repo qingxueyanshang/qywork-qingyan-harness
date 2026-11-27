@@ -2,7 +2,7 @@
  * 会话临时目录的删除。目录的位置由 `tools` 的 `conversationTempDir` 定义，本文件只负责两个删除时机：
  *
  * - 一轮结束：删除本轮的 Office 目录（`officeRunDir`）。成功的调用已即时删除，剩下的是未提交写入的
- *   候选文件与未处理完的调用，它们只在本轮内有效。
+ *   候选文件与未处理完的调用，它们只在本轮内有效。本会话有后台任务运行时不删除，见 `releaseRunTemp`。
  * - 任务完成或删除会话：删除会话临时目录及其子会话的目录。
  *
  * 任务是否完成只读取账本与运行表，不由模型判断：待办未完成、等待用户、被中断时都不删除，
@@ -61,7 +61,10 @@ export async function removeConversationTemp(
 /**
  * 一轮结束时的删除。任务完成的判据：顶层会话、本轮正常结束、本轮所接续的待办存在且全部完成、
  * 没有运行中的子 agent 与后台命令。待办按 `latestTodos` 的接续规则读取：用户新发起的一轮只读取本轮提交的清单，
- * 回执发起的一轮沿用会话清单。后台命令的 TMP / TEMP / TMPDIR 指向会话临时目录，运行期间不能移走该目录。
+ * 回执发起的一轮沿用会话清单。
+ *
+ * 本会话有后台任务运行时两个目录都不删除：后台命令的 TMP / TEMP / TMPDIR 指向会话临时目录，转入后台的
+ * `write_office` 仍在本轮的 Office 目录中执行，移走时该任务以 ENOENT 失败。保留的 Office 目录随会话临时目录删除。
  *
  * **不抛出**：调用方在发出 `run.finished` 之前等待本函数，抛出时该事件不再发出。读取账本或建立回收目录失败时
  * 记录日志，目录保持原样，由下一次删除时机处理。
@@ -73,16 +76,16 @@ export async function releaseRunTemp(input: {
   runId: RunId
   stopReason: StopReason | null
   topLevel: boolean
-  /** 本会话仍有运行中的子 agent 或后台命令。 */
+  /** 本会话仍有运行中的子 agent 或后台任务。 */
   backgroundRunning: boolean
 }): Promise<void> {
   const { store, workspaceRoot, conversationId, runId } = input
+  if (input.backgroundRunning) return
   try {
     const dirs = [officeRunDir(workspaceRoot, conversationId, runId)]
     const todos = latestTodos(store, conversationId, runId)
     const taskCompleted =
       input.topLevel &&
-      !input.backgroundRunning &&
       input.stopReason === 'completed' &&
       !!todos?.length &&
       todos.every((todo) => todo.status === 'completed')

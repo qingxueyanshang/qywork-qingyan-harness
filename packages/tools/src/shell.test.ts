@@ -445,7 +445,8 @@ describe('后台命令的工具形态', () => {
     const writes: { id: string; text: string; end: boolean }[] = []
     const port: CommandPort = {
       steered: () => waits.steered ?? new Promise(() => {}),
-      ended: (id) => (running[id] ? (waits.ended?.[id] ?? new Promise(() => {})) : null),
+      // 不在 running 中而 `ended` 中有的编号是已结束、已移出任务表的命令。
+      ended: (id) => waits.ended?.[id] ?? (running[id] ? new Promise(() => {}) : null),
       adopt: () => {
         throw new Error('本组用例不应启动命令')
       },
@@ -592,6 +593,27 @@ describe('后台命令的工具形态', () => {
     const missing = await backgroundCommandTool.fn({ task_id: 'cmd_9' }, ctxWith(port))
     expect(missing.status).toBe('failure')
     expect(missing.message).toContain('cmd_1（npm run dev）')
+  })
+
+  test('已结束、移出任务表的命令：读取、等待与停止都答复已结束或已被停止，不答复没有该命令', async () => {
+    const { port } = fakePort(
+      {},
+      { ended: { cmd_2: Promise.resolve(true), cmd_3: Promise.resolve(false) } },
+    )
+    for (const args of [
+      { task_id: 'cmd_2' },
+      { task_id: 'cmd_2', wait_seconds: 30 },
+      { task_id: 'cmd_2', stop: true },
+    ]) {
+      expect(await backgroundCommandTool.fn(args, ctxWith(port))).toMatchObject({
+        status: 'success',
+        message: '后台命令 cmd_2 已结束，结果见回执消息',
+      })
+    }
+    expect(await backgroundCommandTool.fn({ task_id: 'cmd_3' }, ctxWith(port))).toMatchObject({
+      status: 'success',
+      message: '后台命令 cmd_3 已被停止，没有回执',
+    })
   })
 
   test('stop 为真时停止该命令，并返回停止前的输出', async () => {
