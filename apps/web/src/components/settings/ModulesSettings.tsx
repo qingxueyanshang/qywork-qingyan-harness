@@ -282,6 +282,7 @@ const MODULES: Module[] = [
   // 分组标题为开关，理由同电脑控制。画布与生成由同一个配置项启用，两组各显示一个开关，读写同一个字段。
   { ...category('canvas'), toggle: MEDIA_TOGGLE },
   { ...category('generate'), toggle: MEDIA_TOGGLE },
+  category('panel'),
   /*
    * 记忆与技能是两个类目，不合并为「记忆与技能」。
    *

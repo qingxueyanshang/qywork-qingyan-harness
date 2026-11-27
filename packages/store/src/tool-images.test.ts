@@ -271,8 +271,10 @@ describe('迁移 70：已有执行记录中的图像字节移入正文库', () =
       done(84),
       done(85),
       done(86),
-    ]).toEqual([false, false, false, false, false, false, false, false])
+      done(87),
+    ]).toEqual([false, false, false, false, false, false, false, false, false])
     const content = new ContentStore(':memory:')
+    expect(store.migrateInBackground(content)).toBe(true)
     expect(store.migrateInBackground(content)).toBe(true)
     expect(store.migrateInBackground(content)).toBe(true)
     expect(store.migrateInBackground(content)).toBe(true)

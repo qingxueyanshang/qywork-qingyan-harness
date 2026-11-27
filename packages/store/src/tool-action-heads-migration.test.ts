@@ -6,7 +6,8 @@
  * 另覆盖迁移 82（`082-interrupted-steps.ts`）：停止时被收尾的历史工具行补写中断类别；
  * 迁移 83（`083-canvas-tool-head.ts`）与迁移 84（`084-web-tool-head.ts`）：类目改名后改写历史工具行的开头；
  * 迁移 85（`085-office-guide-target.ts`）：清除历史 read_office_guide 行的格式名目标；
- * 迁移 86（`086-tool-load-head.ts`）：load_tool 行改为「工具加载 · 加载」。
+ * 迁移 86（`086-tool-load-head.ts`）：load_tool 行改为「工具加载 · 加载」；
+ * 迁移 87（`087-panel-tool-head.ts`）：open_in_panel 行的开头改为「面板控制」。
  */
 import { Database } from 'bun:sqlite'
 import { describe, expect, test } from 'bun:test'
@@ -16,6 +17,7 @@ import { migration083 } from './migrations/083-canvas-tool-head.ts'
 import { migration084 } from './migrations/084-web-tool-head.ts'
 import { migration085 } from './migrations/085-office-guide-target.ts'
 import { migration086 } from './migrations/086-tool-load-head.ts'
+import { migration087 } from './migrations/087-panel-tool-head.ts'
 
 /** 在只含 steps 表的内存库中插入一行，执行迁移 81 的全部批次，返回转换后的 payload；未改写时返回 null。 */
 function convertToolAction(
@@ -389,5 +391,36 @@ test('迁移 86：load_tool 行的开头与动词改为「工具加载」「加�
     ).action
   expect(action('a')).toMatchObject({ head: '工具加载', verb: '加载', object: 'read_office' })
   expect(action('b')).toMatchObject({ head: '会话读取', verb: '读取' })
+  db.close()
+})
+
+/** 覆盖迁移 87：历史 open_in_panel 行显示为「文件读写 · 打开 a.canvas.json」，改为「面板控制 · 打开 a.canvas.json」。 */
+test('迁移 87：open_in_panel 行的开头改为「面板控制」，动词与其余行不变', () => {
+  const db = new Database(':memory:')
+  db.run('CREATE TABLE steps (id TEXT PRIMARY KEY, kind TEXT, tool_name TEXT, payload TEXT)')
+  const insert = db.query(
+    "INSERT INTO steps (id, kind, tool_name, payload) VALUES (?, 'tool_action', ?, ?)",
+  )
+  const row = (head: string, verb: string, object: string) =>
+    JSON.stringify({
+      kind: 'tool_result',
+      action: { kind: 'call', head, verb, object, target: object },
+    })
+  insert.run('a', 'open_in_panel', row('文件读写', '打开', 'a.canvas.json'))
+  insert.run('b', 'read_file', row('文件读写', '读取', 'a.ts'))
+  let after = 0
+  for (;;) {
+    const next = migration087.background!(db, {} as never, after)
+    if (next === null) break
+    after = next
+  }
+  const action = (id: string) =>
+    (
+      JSON.parse(
+        (db.query('SELECT payload FROM steps WHERE id = ?').get(id) as { payload: string }).payload,
+      ) as { action: Record<string, unknown> }
+    ).action
+  expect(action('a')).toMatchObject({ head: '面板控制', verb: '打开', object: 'a.canvas.json' })
+  expect(action('b')).toMatchObject({ head: '文件读写', verb: '读取' })
   db.close()
 })

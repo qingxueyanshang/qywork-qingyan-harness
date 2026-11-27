@@ -58,7 +58,8 @@ export const openInPanelTool: ToolSpec = {
   },
   requireOneOf: [['path', 'workbench']],
   verb: '打开',
-  category: 'files',
+  // 不归入文件读写：本工具不读取也不写入文件，只让界面打开一页，目标还可以是工作台。
+  category: 'panel',
   facet: '查看',
   summary: '在右侧面板打开文件或工作台',
   targetExtractor: (a) =>

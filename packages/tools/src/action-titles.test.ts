@@ -40,7 +40,10 @@ test('原先显示错误的工具得到描述实际动作的标题', () => {
     const a = resolveAction(byName.get(name)!, args)
     return `${a.head} · ${a.verb} ${a.object ?? ''}`.trim()
   }
-  expect(title('open_in_panel', { path: 'page.html' })).toBe('文件读写 · 打开 page.html')
+  expect(title('open_in_panel', { path: 'page.html' })).toBe('面板控制 · 打开 page.html')
+  expect(title('open_in_panel', { workbench: 'dev.demo/board' })).toBe(
+    '面板控制 · 打开 dev.demo/board',
+  )
   expect(title('capture_canvas_frame', { path: 'a.canvas.json', node: '封面', at: 12.5 })).toBe(
     '画布控制 · 截取 封面 12.5 秒',
   )

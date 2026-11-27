@@ -102,6 +102,7 @@ import { migration083 } from './083-canvas-tool-head.ts'
 import { migration084 } from './084-web-tool-head.ts'
 import { migration085 } from './085-office-guide-target.ts'
 import { migration086 } from './086-tool-load-head.ts'
+import { migration087 } from './087-panel-tool-head.ts'
 import type { Migration } from './shared.ts'
 
 export const MIGRATIONS: Migration[] = [
@@ -191,6 +192,7 @@ export const MIGRATIONS: Migration[] = [
   migration084,
   migration085,
   migration086,
+  migration087,
 ]
 
 /**

@@ -22,6 +22,7 @@ export const TOOL_CATEGORY_HEADS = {
   office: '文档读写',
   canvas: '画布控制',
   generate: '媒体生成',
+  panel: '面板控制',
   memory: '记忆管理',
   skills: '技能管理',
   planning: '待办管理',

@@ -1101,7 +1101,7 @@ test('分段读取的文件行在路径后显示行号范围', async () => {
   }
 })
 
-test('在面板中打开文件的工具行显示「文件读写 · 打开 page.html」，行内没有按钮，双击标题行打开或收起面板', async () => {
+test('在面板中打开文件的工具行显示「面板控制 · 打开 page.html」，行内没有按钮，双击标题行打开或收起面板', async () => {
   const store = await import('../lib/store/index.ts')
   const { delegateEvents, render } = await import('solid-js/web')
   delegateEvents(['dblclick', 'mousedown'])
@@ -1131,7 +1131,7 @@ test('在面板中打开文件的工具行显示「文件读写 · 打开 page.h
             toolName: 'open_in_panel',
             action: {
               kind: 'call',
-              head: '文件读写',
+              head: '面板控制',
               verb: '打开',
               object: 'page.html',
               target: 'page.html',
@@ -1153,7 +1153,7 @@ test('在面板中打开文件的工具行显示「文件读写 · 打开 page.h
   document.body.append(host)
   const dispose = render(() => <Transcript />, host)
   try {
-    expect(host.querySelector('.fold-label')?.textContent).toBe('文件读写')
+    expect(host.querySelector('.fold-label')?.textContent).toBe('面板控制')
     expect(host.querySelector('.fold-target')?.getAttribute('data-tip')).toBe('打开 page.html')
     expect([...host.querySelectorAll('button')].some((b) => b.textContent?.trim() === '打开')).toBe(
       false,
