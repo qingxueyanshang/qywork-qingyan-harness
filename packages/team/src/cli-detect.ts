@@ -95,7 +95,7 @@ const KNOWN: KnownCli[] = [
     // `--skip-git-repo-check` 是必需参数：codex 默认拒绝在非 git 目录中运行
     // （原文「Not inside a trusted directory」），因此派发给它的节点在任何
     // 非 git 仓库的工作区中必然失败。工作区由用户选择，派发由用户的模型发起，
-    // 该判断应由 qywork 的权限模式负责，不应由被调度的 CLI 再次拦截。
+    // 该判断应由 QyWork 的权限模式负责，不应由被调度的 CLI 再次拦截。
     // 派发任务允许修改当前工作区。显式指定写入沙箱，避免落入 CLI 默认的只读模式。
     args: [
       'exec',

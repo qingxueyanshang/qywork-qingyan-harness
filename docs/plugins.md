@@ -1,4 +1,4 @@
-# 写一个 qywork 插件
+# 写一个 QyWork 插件
 
 插件放在 `~/.qywork/plugins/<任意目录名>/`，至少要有一个 `qywork.plugin.json`。
 **插件不分层，只有这一个目录**——它贡献的是工具、预览器、供应商，那些是这个 agent
@@ -56,7 +56,7 @@
 
 `--allow-worker` 和 `--allow-addons` 任何权限都换不来——两者都能绕开权限模型本身。
 
-**没有 node 20 以上版本时插件不加载。** bun 与 qywork 自身都没有权限模型，用它们运行插件即不隔离，
+**没有 node 20 以上版本时插件不加载。** bun 与 QyWork 自身都没有权限模型，用它们运行插件即不隔离，
 而 `auto` 下模型可以自行安装插件，因此二者不作为备选运行时。
 
 启动日志形如：
@@ -88,7 +88,7 @@ qy plugins --tools    # 连带列出每个插件提供的工具，以及启动�
 
 ### 需要 PATH 上有 node 20 以上版本
 
-插件运行在独立进程中，而 qywork 的发布产物是 Bun 编译的单文件二进制，不能作为 JS 运行时。
+插件运行在独立进程中，而 QyWork 的发布产物是 Bun 编译的单文件二进制，不能作为 JS 运行时。
 PATH 中没有 node 或版本低于 20 时，插件加载失败并说明原因，`qy plugins` 列出该原因。
 
 ---
@@ -170,7 +170,7 @@ PATH 中没有 node 或版本低于 20 时，插件加载失败并说明原因�
 
 页面在沙箱 iframe 中运行（`allow-scripts allow-forms allow-popups allow-modals allow-downloads`，
 不含 `allow-same-origin`）。页面的源是不透明源，因此无法使用 `localStorage`、cookie，也无法直接请求
-qywork 的接口；需要保存的数据经本插件的工具写入。
+QyWork 的接口；需要保存的数据经本插件的工具写入。
 
 页面经桥接调用界面：
 
@@ -188,8 +188,8 @@ parent.postMessage({ type: 'qywork', id, method, params }, '*')
 `tool.call` 与模型调用使用同一个插件进程，插件经 `host.*` 使用宿主能力时经过同一套权限检查；
 调用由用户在页面上的操作发起，不再经过模型调用时的权限审批。
 
-服务端对启动时打开的项目常驻持有扩展，插件安装后其工具最迟在 qywork 重启后加载；
-加载之前 `tool.call` 返回「插件的工具尚未加载，重启 qywork 后可用」，页面本身不受影响。
+服务端对启动时打开的项目常驻持有扩展，插件安装后其工具最迟在 QyWork 重启后加载；
+加载之前 `tool.call` 返回「插件的工具尚未加载，重启 QyWork 后可用」，页面本身不受影响。
 
 ---
 

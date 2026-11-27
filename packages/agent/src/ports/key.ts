@@ -40,7 +40,7 @@ export class Ports {
   constructor(entries: readonly PortEntry[] = []) {
     this.entries = entries
     for (const { key, value } of entries) {
-      if (this.values.has(key)) throw new Error(`[qywork] 端口重复提供，拒绝覆盖：${key.name}`)
+      if (this.values.has(key)) throw new Error(`[QyWork] 端口重复提供，拒绝覆盖：${key.name}`)
       this.values.set(key, value)
     }
   }

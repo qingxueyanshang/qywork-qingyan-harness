@@ -432,7 +432,7 @@ export class ToolRegistry {
 
   register(spec: ToolSpec): void {
     if (this.tools.has(spec.name)) {
-      throw new Error(`[qywork] 工具重复注册，拒绝静默覆盖：${spec.name}`)
+      throw new Error(`[QyWork] 工具重复注册，拒绝静默覆盖：${spec.name}`)
     }
     validate(spec)
     this.tools.set(spec.name, spec)
@@ -669,30 +669,30 @@ export function deferredDefinition(
 }
 
 function validate(spec: ToolSpec): void {
-  if (!spec.name.trim()) throw new Error('[qywork] 工具缺少 name')
+  if (!spec.name.trim()) throw new Error('[QyWork] 工具缺少 name')
   if (!TOOL_NAME_PATTERN.test(spec.name)) {
     throw new Error(
-      `[qywork] 工具名 ${spec.name} 含 provider 不接受的字符（只允许字母、数字、下划线、短横线，最长 64）`,
+      `[QyWork] 工具名 ${spec.name} 含 provider 不接受的字符（只允许字母、数字、下划线、短横线，最长 64）`,
     )
   }
   if (!spec.description.trim()) {
     // 描述是模型判断何时调用的唯一依据，描述为空时该工具无法被正确使用。
-    throw new Error(`[qywork] 工具 ${spec.name} 缺少 description`)
+    throw new Error(`[QyWork] 工具 ${spec.name} 缺少 description`)
   }
   if (!spec.permissionEffect) {
-    throw new Error(`[qywork] 工具 ${spec.name} 未声明 permissionEffect`)
+    throw new Error(`[QyWork] 工具 ${spec.name} 未声明 permissionEffect`)
   }
   // 三条轴同等处理：缺少即装配错误，立即抛出。提供默认值时新工具会静默归入
   // 无关的类目，而分类表看起来仍然完整，此类错误无法被发现。
   if (!TOOL_CATEGORIES.includes(spec.category)) {
     throw new Error(
-      `[qywork] 工具 ${spec.name} 的 category 无法识别：${String(spec.category)}` +
+      `[QyWork] 工具 ${spec.name} 的 category 无法识别：${String(spec.category)}` +
         `（可用：${TOOL_CATEGORIES.join('、')}）`,
     )
   }
-  if (!spec.facet?.trim()) throw new Error(`[qywork] 工具 ${spec.name} 未声明 facet`)
-  if (!spec.summary?.trim()) throw new Error(`[qywork] 工具 ${spec.name} 未声明 summary`)
+  if (!spec.facet?.trim()) throw new Error(`[QyWork] 工具 ${spec.name} 未声明 facet`)
+  if (!spec.summary?.trim()) throw new Error(`[QyWork] 工具 ${spec.name} 未声明 summary`)
   if (spec.deferred && !spec.deferred.brief.trim()) {
-    throw new Error(`[qywork] 按需工具 ${spec.name} 未声明 deferred.brief`)
+    throw new Error(`[QyWork] 按需工具 ${spec.name} 未声明 deferred.brief`)
   }
 }

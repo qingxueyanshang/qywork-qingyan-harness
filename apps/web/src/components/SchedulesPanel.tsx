@@ -28,7 +28,7 @@ import { LoadState } from './settings/LoadState.tsx'
  */
 /** 「新增」填入输入框的初始指令。不自动发送：用户可先修改再发送。 */
 const NEW_SCHEDULE =
-  '新建一个定时任务。请先说明定时任务在 qywork 中如何工作、触发后在何处运行；然后询问需要它做什么、何时运行。'
+  '新建一个定时任务。请先说明定时任务在 QyWork 中如何工作、触发后在何处运行；然后询问需要它做什么、何时运行。'
 
 export function SchedulesPanel() {
   /*

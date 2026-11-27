@@ -1,5 +1,5 @@
 @echo off
-rem qywork one-click launcher. Double-click to run, or pass a mode:
+rem QyWork one-click launcher. Double-click to run, or pass a mode:
 rem   start.bat          desktop (Tauri native window)  -- default
 rem   start.bat web      browser / phone
 rem

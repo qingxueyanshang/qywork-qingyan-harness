@@ -22,7 +22,7 @@ import { type ApiHandler, json } from './types.ts'
  * 未提供源文件夹时，默认工作区创建在此目录下。
  *
  * 与账本同根（`~/.qywork/`，可由 `QYWORK_HOME` 修改）：二者属于同一类数据，
- * 即本机上 qywork 自身的数据，卸载时一并移除。放在用户主目录下会多出一个
+ * 即本机上 QyWork 自身的数据，卸载时一并移除。放在用户主目录下会多出一个
  * 无法判定能否删除的文件夹。需要打开时使用菜单中的「在资源管理器中打开」。
  */
 function defaultWorkspacesRoot(): string {

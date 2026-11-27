@@ -199,7 +199,7 @@ pub fn launch(found: &Found, profile: &Path) -> Result<Launched, String> {
 }
 
 /// 启动期间的 stderr 写入日志，启动失败的原因记录于此；启动完成后只读取不记录，浏览器运行期间的
-/// 输出与 qywork 无关。
+/// 输出与 QyWork 无关。
 fn relay_stderr(stderr: std::process::ChildStderr, started: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {

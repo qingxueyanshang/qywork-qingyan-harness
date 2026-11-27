@@ -51,7 +51,7 @@ export async function sourceRoot(root: string): Promise<void> {
   const top = await git(root, ['rev-parse', '--show-toplevel'])
   const key = (path: string) =>
     process.platform === 'win32' ? realpathSync(path).toLowerCase() : realpathSync(path)
-  if (key(top) !== key(root)) throw new Error('启动目录不是 qywork 源码仓库根目录')
+  if (key(top) !== key(root)) throw new Error('启动目录不是 QyWork 源码仓库根目录')
 }
 
 export async function fetchRelease(

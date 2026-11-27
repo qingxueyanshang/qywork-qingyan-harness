@@ -1,11 +1,11 @@
 # MCP：接入外部工具
 
-qywork 是 MCP **客户端**：把别人写的 MCP server 提供的工具接进来给模型用。
+QyWork 是 MCP **客户端**：把别人写的 MCP server 提供的工具接进来给模型用。
 配置在工作区的 `.agents/mcp.json`；全局的一份在 `~/.qywork/mcp.json`，同名时项目层优先。
 
 项目 `.agents/mcp.json` 中的服务经用户确认后才启动：仓库自带的服务、或 `git pull` 后命令被修改的服务，
 在设置页的「未连接」中显示为「未启用」，模型在会话中列出命令、用户同意后由模型启用。
-在 qywork 中新增、导入的服务即已确认。确认记录保存在 `~/.qywork/mcp-approvals.json`，不写入仓库。
+在 QyWork 中新增、导入的服务即已确认。确认记录保存在 `~/.qywork/mcp-approvals.json`，不写入仓库。
 
 ```bash
 qy mcp            # 看每个 server 连没连上
@@ -107,7 +107,7 @@ MCP 工具注册名是 `mcp__<server>__<tool>`，权限 scope 是
 两者都可能带 `.` `:` `/`，而 provider 会直接 400 拒掉整个请求。所以配置里写
 `"my.server"` 的话，工具是 `mcp__my_server__xxx`，权限目标仍保留原服务名。
 
-qywork 使用 `auto` 与 `full` 两档。`full` 不作权限裁决；`auto` 的命令规则用于
+QyWork 使用 `auto` 与 `full` 两档。`full` 不作权限裁决；`auto` 的命令规则用于
 `run_command`，MCP 工具沿用专用通道的判定，不逐次弹窗。
 详见 [权限](permissions.md)。
 
@@ -134,7 +134,7 @@ MCP 的工具定义里有 `annotations.readOnlyHint`，看起来正好能拿来�
 用不上。文本内容原样传，未知的内容块类型留 `[类型名]` 占位而不是丢掉。
 
 **`isError` 是工具失败，不是调用失败。** MCP 把工具自己的错误放在结果里而不是
-JSON-RPC error 里，就是为了让模型看得见失败详情并自己改参数重试。qywork 原样传下去，
+JSON-RPC error 里，就是为了让模型看得见失败详情并自己改参数重试。QyWork 原样传下去，
 只把状态标成 failure。
 
 **MCP 工具不并行。** 外部进程对并发的处理无从预知，并行的收益远小于
@@ -167,7 +167,7 @@ server 声明了 `capabilities.resources` 时，自动多出两个工具：
 
 按需读的代价是模型多一次工具调用，收益是**上下文占用与 resource 数量无关**。
 
-`fetch_resource` 与内置的 `read_resource` **不是一回事**：后者读的是 qywork
+`fetch_resource` 与内置的 `read_resource` **不是一回事**：后者读的是 QyWork
 自己落盘的中间产物（命令输出、大文件被截断的部分）。
 
 二进制 resource 只给一行占位，不内联 base64。
@@ -180,7 +180,7 @@ server 声明了 `capabilities.resources` 时，自动多出两个工具：
 qy mcp
 ```
 
-server 声明了、而 qywork 没接的能力（目前是 `prompts` 和 `logging` 之类）
+server 声明了、而 QyWork 没接的能力（目前是 `prompts` 和 `logging` 之类）
 会明确列出来。**这一条是为了消灭一种静默失败**：一个只提供 `prompts` 的 server
 会连上、握手成功、注册 0 个工具、不报任何错——用户看到「配了但什么都没发生」，
 而日志干干净净。
@@ -194,7 +194,7 @@ server 声明了、而 qywork 没接的能力（目前是 `prompts` 和 `logging
 
 - **SSE / streamable HTTP 传输。** 本地工具用 stdio 就够；远程 server 涉及鉴权、
   重连、会话恢复，是另一件事。
-- **把 qywork 暴露成 MCP server。** 反方向，与本文无关。
+- **把 QyWork 暴露成 MCP server。** 反方向，与本文无关。
 - **`prompts/*`。** 它是给「用户从菜单里挑一条提示词」用的，而本仓没有那个交互位——
   `qy exec` 场景下没有人在场。硬接的话只能由模型自己挑，那与它直接读 resource
   没有区别，却多一套协议。

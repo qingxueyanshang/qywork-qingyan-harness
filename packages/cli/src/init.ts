@@ -90,7 +90,7 @@ export async function runInit(args: string[]): Promise<number> {
     return 0
   }
 
-  process.stderr.write(`\n${BOLD}qywork 初始化${RESET}\n配置将写入 ${configPath()}\n\n`)
+  process.stderr.write(`\n${BOLD}QyWork 初始化${RESET}\n配置将写入 ${configPath()}\n\n`)
   for (const [i, p] of PRESETS.entries()) process.stderr.write(`  ${i + 1}. ${p.label}\n`)
   process.stderr.write(`\n请选择 [1-${PRESETS.length}，默认 1] `)
 

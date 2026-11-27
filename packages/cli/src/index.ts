@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * qy：qywork 内核 CLI，即发布产物本身。
+ * qy：QyWork 内核 CLI，即发布产物本身。
  *
  * 桌面端不是内置 agent 的独立应用，而是该 CLI 的一个前端：Tauri 只负责
  * spawn `qy serve` 并显示 WebView，Rust 侧不保存任何业务状态。手机端连接的
@@ -65,14 +65,14 @@ import { runTui } from './tui.ts'
 import { runUsage } from './usage.ts'
 import { embeddedWeb } from './web-assets.ts'
 
-const USAGE = `qy —— qywork 编码 agent
+const USAGE = `qy —— QyWork 编码 agent
 
   qy                      交互模式（多轮，同一会话）
 
   qy init                 生成配置（首次使用时先执行此命令）
     --force               覆盖已有配置
 
-  qy login                以邮箱与密码登录 qywork 账号，之后可使用内置模型
+  qy login                以邮箱与密码登录 QyWork 账号，之后可使用内置模型
   qy logout               退出登录并移除本设备
 
   qy exec "<任务>"        在当前目录执行一次任务

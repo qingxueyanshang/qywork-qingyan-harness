@@ -1,15 +1,15 @@
-# qywork
+# QyWork
 
 **多模型接入、多 Agent 协作的轻量化开源 Agent Harness。**
 
-Agent = Model + Harness。模型负责推理，qywork 提供工具执行、上下文管理、记忆、技能与任务编排，
+Agent = Model + Harness。模型负责推理，QyWork 提供工具执行、上下文管理、记忆、技能与任务编排，
 并将它们集成到本地工作台。可以直接用于编程，也可以制作 PPT、在画布中生成图像与视频，
 或组合领域知识、工具和角色，定制自己的 Agent。
 
 [官网](https://qywork.io) · [下载 Windows / macOS / Linux 版](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) ·
 [快速开始](#快速开始) · [从源码启动](#从源码启动) · [文档](docs/INDEX.md)
 
-![qywork 工作台：会话与画布，画布中批量生成的角色、场景图片与分镜视频](docs/images/qywork-workbench.jpg)
+![QyWork 工作台：会话与画布，画布中批量生成的角色、场景图片与分镜视频](docs/images/qywork-workbench.jpg)
 
 ## 作品
 
@@ -20,7 +20,7 @@ Agent = Model + Harness。模型负责推理，qywork 提供工具执行、上�
 
 | 画布 | PPT |
 |---|---|
-| ![画布中的文本卡与生成卡：角色定妆照、三视图与场景图](docs/images/canvas-batch.webp) | ![由 qywork 制作的一页 PPT：指标、条形图、表格、配图与结论条](docs/images/ppt-slide.webp) |
+| ![画布中的文本卡与生成卡：角色定妆照、三视图与场景图](docs/images/canvas-batch.webp) | ![由 QyWork 制作的一页 PPT：指标、条形图、表格、配图与结论条](docs/images/ppt-slide.webp) |
 | 文本卡连到生成卡，批量生成角色定妆照、三视图与场景图 | PPT 的实际渲染：文字与表格可直接编辑 |
 
 ## 核心特色
@@ -99,7 +99,7 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 | 文件与变更 | 浏览文件树，查看和编辑源码，检查文件差异 |
 | 浏览器与终端 | 多标签浏览器预览、桌面端交互式终端，可与任务并排查看 |
 | 产出预览 | 查看图片、PDF、网页、音视频、文本文件，以及 Word、PPT、Excel 文档 |
-| 画布 | 在画布中编排图像、视频与音频生成卡及其连线，运行生成、截取视频帧、导出时间线成片；Agent 可新建、读取、修改与运行画布，也可以在会话中直接生成图像、视频与音频。生成模型可配置在自行添加的模型服务下，登录 qywork 账号后也可直接使用云端提供的生成模型 |
+| 画布 | 在画布中编排图像、视频与音频生成卡及其连线，运行生成、截取视频帧、导出时间线成片；Agent 可新建、读取、修改与运行画布，也可以在会话中直接生成图像、视频与音频。生成模型可配置在自行添加的模型服务下，登录 QyWork 账号后也可直接使用云端提供的生成模型 |
 | Office 文档 | Agent 读取、制作与修改 Word、PPT、Excel，查看渲染后的页面；PPT 的表格与图表使用原生对象，整页为图片的 PPT 可保留版式，重建为可编辑的 PPT。Office 工具需要 Python 与 Office 文档库，可在“运行环境”中安装；Agent 查看渲染页面依赖本机的 Word 或 WPS，仅支持 Windows，工作台的产出预览不依赖办公软件 |
 | 运行与用量 | 查看逐次模型请求、token、缓存、费用和停止原因；汇总内置子 Agent 用量 |
 
@@ -115,10 +115,10 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 
 ### 本地数据，同一服务多端访问
 
-无需注册 qywork 账号，配置、会话、记忆与用量保存在本机。模型请求发送至所配置的服务，
-不提供 qywork 云同步，也不采集产品遥测。
+无需注册 QyWork 账号，配置、会话、记忆与用量保存在本机。模型请求发送至所配置的服务，
+不提供 QyWork 云同步，也不采集产品遥测。
 
-登录 qywork 账号后可使用云端提供的对话模型与图像、视频、音频生成模型：对话按 token 用量、生成按张数或时长扣除积分，
+登录 QyWork 账号后可使用云端提供的对话模型与图像、视频、音频生成模型：对话按 token 用量、生成按张数或时长扣除积分，
 可在应用内充值。桌面和浏览器共用同一内核；开启远程访问后，可在手机或其他电脑的浏览器中登录同一账号，经云端使用本机，
 可以预览文件、使用画布与内置浏览器；文件、工具与命令仍在本机执行。
 开启远程访问期间，云端可以取得本机接口的令牌，具备与本机界面相同的全部能力，包括修改配置与切换权限模式。
@@ -131,7 +131,7 @@ Graph 由 Agent 根据任务生成，不需要事先写固定流程。临时子 
 ## 快速开始
 
 1. 从 [GitHub Releases](https://github.com/qingxueyanshang/qywork-qingyan-harness/releases/latest) 下载对应系统与架构的安装包：Windows x64 `.exe`、macOS Intel / Apple Silicon `.dmg`、Linux x64 `.deb` 或 `.AppImage`。
-2. 首次启动时登录 qywork 账号即可使用内置模型；也可选择“使用自己的 API key”，在“系统设置”中填写接口地址、API Key 和模型名称。
+2. 首次启动时登录 QyWork 账号即可使用内置模型；也可选择“使用自己的 API key”，在“系统设置”中填写接口地址、API Key 和模型名称。
 3. 点击“新建 work”，选择项目目录，输入任务。
 
 git、ripgrep、Node.js、Python 与 Office 文档库可在“系统设置 → 通用 → 运行环境”中安装：Windows 使用 winget，

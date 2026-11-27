@@ -1,5 +1,5 @@
 /**
- * `personalize`：读取与修改 qywork 界面的个性化（只有一套）。
+ * `personalize`：读取与修改 QyWork 界面的个性化（只有一套）。
  *
  * 读写经 `PersonalizationPort` 端口完成，个性化位于 `~/.qywork/personalization/`，文件工具在 `auto` 下
  * 无法写入该目录。保存即由服务端广播，所有屏幕重新读取，没有单独的切换动作。
@@ -82,9 +82,9 @@ async function withImage(
 
 export const personalizeTool: ToolSpec = {
   name: 'personalize',
-  deferred: { brief: '读取或修改 qywork 界面的个性化设置（背景、透明度、强调色、字体等）' },
+  deferred: { brief: '读取或修改 QyWork 界面的个性化设置（背景、透明度、强调色、字体等）' },
   description:
-    '读取与修改 qywork 界面的个性化。个性化由背景、流动雾面、界面不透明度、强调色与流动色组成，' +
+    '读取与修改 QyWork 界面的个性化。个性化由背景、流动雾面、界面不透明度、强调色与流动色组成，' +
     '作用于界面外框、会话区与右侧面板；浅色或深色由用户的主题设置决定，不属于个性化。' +
     '只有一套个性化，保存后所有屏幕立即生效。' +
     'action=read 读取当前参数；save 只写入需要修改的字段：background 的 kind 不变时逐字段合并，kind 改变时整组替换，' +

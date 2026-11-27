@@ -166,7 +166,7 @@ test('隧道断开时显示原因；协议版本过旧时提示更新应用', as
 test('被另一个进程接管时提供重新连接，点击后恢复已连接且不切换开关', async () => {
   const { host } = await mount(signedIn({ state: 'replaced' }))
   await waitFor(
-    () => (host.textContent ?? '').includes('已由另一个 qywork 进程接管'),
+    () => (host.textContent ?? '').includes('已由另一个 QyWork 进程接管'),
     () => host.innerHTML,
   )
   host.querySelector<HTMLButtonElement>('.pair-toggle button')!.click()

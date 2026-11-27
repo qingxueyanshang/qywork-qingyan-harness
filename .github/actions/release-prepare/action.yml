@@ -1,4 +1,4 @@
-name: Prepare qywork release
+name: Prepare QyWork release
 description: 校验发布来源、读取本版更新说明、写入带更新公钥的打包配置。三条发布工作流共用此 action。
 
 # 这三项工作与打包平台无关。各工作流分别实现时，修改 master 判定、说明文件命名或更新配置的结构

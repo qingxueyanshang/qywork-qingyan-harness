@@ -220,9 +220,9 @@ export const readSkillTool: ToolSpec = {
 
 export const writeSkillTool: ToolSpec = {
   name: 'write_skill',
-  deferred: { brief: '新增或更新一个 qywork 技能' },
+  deferred: { brief: '新增或更新一个 QyWork 技能' },
   description:
-    '创建或更新一个 qywork 技能。默认写入项目层；用户明确要求全局时 scope 必须传 global。content 是 SKILL.md 的正文，不含前置元信息；附带脚本或模板放在 files。',
+    '创建或更新一个 QyWork 技能。默认写入项目层；用户明确要求全局时 scope 必须传 global。content 是 SKILL.md 的正文，不含前置元信息；附带脚本或模板放在 files。',
   parameters: {
     type: 'object',
     properties: {

@@ -146,5 +146,5 @@ export async function serveStatic(web: WebAssets, pathname: string): Promise<Res
  * macOS 与 Linux 上从图形界面启动的进程中没有它。
  */
 export function hostLabel(): string {
-  return hostname() || 'qywork'
+  return hostname() || 'QyWork'
 }

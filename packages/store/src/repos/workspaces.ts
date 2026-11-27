@@ -39,7 +39,7 @@ export function upsertWorkspace(store: Store, rootPath: string, name: string): W
        RETURNING *`,
     )
     .get(newWorkspaceId(), name, normalizeWorkspaceRoot(rootPath), now, now)
-  if (!row) throw new Error('[qywork] 写入工作区未返回行')
+  if (!row) throw new Error('[QyWork] 写入工作区未返回行')
   return rowToWorkspace(row)
 }
 

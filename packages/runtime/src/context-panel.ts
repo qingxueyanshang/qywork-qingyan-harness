@@ -68,7 +68,7 @@ export interface ContextPanel {
 /**
  * provider 回报的上下文占用。
  *
- * 四项相加而不是只取 `inputTokens`：qywork 的三个适配器已将 `inputTokens`
+ * 四项相加而不是只取 `inputTokens`：QyWork 的三个适配器已将 `inputTokens`
  * 统一为排除缓存的口径（见 `openai-compat.ts` 中的相关注释），
  * 只取它会遗漏命中缓存的部分；冻结前缀设计下第二轮起的主要部分正是
  * cache_read，遗漏后 100k 的会话会显示为不到 1%。

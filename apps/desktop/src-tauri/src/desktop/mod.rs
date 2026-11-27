@@ -66,7 +66,7 @@ const REPLACE_READY_WAIT: Duration = Duration::from_secs(20);
 /// 轮询间隔。取消展开时等待在途请求终结、退出时等待 worker 结束都使用该值。
 const POLL_MS: u64 = 25;
 
-/// 进程内唯一的桌面宿主。一个 qywork 进程只持有一份桌面执行权。
+/// 进程内唯一的桌面宿主。一个 QyWork 进程只持有一份桌面执行权。
 static HOST: OnceLock<Arc<DesktopHost>> = OnceLock::new();
 
 fn now_ms() -> i64 {
@@ -192,7 +192,7 @@ pub fn start_with_worker(worker_path: PathBuf, port: u16, key: String) -> Arc<De
 /// 最多等待 `EXIT_WAIT`，不要在主线程调用：应用退出时由 `exit.rs` 的后台任务调用。
 pub fn shutdown() {
     let Some(host) = HOST.get() else { return };
-    host.stop_dispatch_and_settle("qywork 正在退出");
+    host.stop_dispatch_and_settle("QyWork 正在退出");
     host.wait_for_worker_exit(EXIT_WAIT);
     let sender = {
         let mut state = host.state.lock().expect("桌面宿主状态锁被污染");

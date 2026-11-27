@@ -89,7 +89,7 @@ export function systemPowerPort(): PowerPort | null {
       return childPort([
         'systemd-inhibit',
         '--what=idle:sleep',
-        '--who=qywork',
+        '--who=QyWork',
         '--why=任务运行中',
         'tail',
         `--pid=${process.pid}`,

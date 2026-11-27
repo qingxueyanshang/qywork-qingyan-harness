@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "qywork",
+  "productName": "QyWork",
   "mainBinaryName": "qywork",
   "version": "0.3.30",
   "identifier": "dev.qywork.desktop",
@@ -27,6 +27,7 @@
   "bundle": {
     "createUpdaterArtifacts": false,
     "active": true,
+    "publisher": "QyWork",
     "targets": ["nsis", "dmg", "app", "deb", "appimage"],
     "license": "Apache-2.0",
     "licenseFile": "../../../LICENSE",
@@ -50,6 +51,8 @@
     "linux": {
       "deb": {
         "depends": ["at-spi2-core"],
+        "conflicts": ["qywork"],
+        "replaces": ["qywork"],
         "recommends": ["libpipewire-0.3-0t64 | libpipewire-0.3-0", "xdg-desktop-portal"]
       }
     },

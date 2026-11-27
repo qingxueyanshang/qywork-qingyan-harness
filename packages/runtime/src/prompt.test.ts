@@ -643,10 +643,10 @@ describe('能力段', () => {
    * 原始失败形状：「自动审批」下模型可以用电脑控制点击 qywork 输入区的权限模式开关，把会话切换为完全访问。
    * 该行只写定义：自身窗口在两种模式下各自可做什么，不写禁令。
    */
-  test('桌面一行定义 qywork 自身窗口在两种权限模式下的可操作范围', () => {
+  test('桌面一行定义 QyWork 自身窗口在两种权限模式下的可操作范围', () => {
     const prompt = buildSystemPrompt(new Set(['run_command', 'desktop_windows']))
     expect(prompt).toContain(
-      'qywork 自身的窗口在「自动审批」模式下可观察、不可操作，在「完全访问」模式下可观察、可操作。',
+      'QyWork 自身的窗口在「自动审批」模式下可观察、不可操作，在「完全访问」模式下可观察、可操作。',
     )
     expect(prompt).not.toContain('观察与操作 qywork 窗口')
   })

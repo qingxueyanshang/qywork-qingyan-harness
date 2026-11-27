@@ -1,8 +1,8 @@
 /**
- * 运行环境中的「内置浏览器」（macOS 与 Linux）：下载 qywork 专用的 Chromium，宿主以无头方式运行它，页面在面板中以画面显示。
+ * 运行环境中的「内置浏览器」（macOS 与 Linux）：下载 QyWork 专用的 Chromium，宿主以无头方式运行它，页面在面板中以画面显示。
  *
- * - 版本与各平台压缩包的大小、SHA-256 写在 `BUILDS`，随 qywork 发版更新。压缩包是 Google 的 Chrome for Testing，
- *   下载自 npmmirror 的镜像（国内可访问）；完整性只由 SHA-256 判定，与镜像是否可信无关。qywork 不托管这些文件：
+ * - 版本与各平台压缩包的大小、SHA-256 写在 `BUILDS`，随 QyWork 发版更新。压缩包是 Google 的 Chrome for Testing，
+ *   下载自 npmmirror 的镜像（国内可访问）；完整性只由 SHA-256 判定，与镜像是否可信无关。QyWork 不托管这些文件：
  *   未查到 Chrome for Testing 允许第三方再分发的条款。
  * - 安装到全局数据目录的 `browser/chromium/<版本>/`，最后写入 `browser/chromium/installed.json`（`version`、`exe`），
  *   宿主据此查找（`chromium/launch.rs` 的 `dedicated`）。该文件在解压完成后才以改名方式写入：宿主读取到它时目录已完整。

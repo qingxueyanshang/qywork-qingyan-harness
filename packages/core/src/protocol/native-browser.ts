@@ -114,7 +114,7 @@ export interface HostReadyFrame {
 /**
  * 宿主当前没有可用的浏览器。`not_found` 表示本机未找到 Chrome、Edge 或 Chromium；
  * `exited` 表示浏览器进程已退出，宿主正在重启或已停止重启；`in_use` 表示浏览器配置目录已被本机另一个
- * qywork 进程占用，该进程退出并重新启动本应用之前不会恢复。
+ * QyWork 进程占用，该进程退出并重新启动本应用之前不会恢复。
  */
 export type BrowserUnavailableReason = 'not_found' | 'exited' | 'in_use'
 

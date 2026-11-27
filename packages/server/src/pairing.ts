@@ -21,7 +21,7 @@ export class Pairing {
   /** `token` 由外部提供（桌面外壳经标准输入交付），未提供时随进程生成。 */
   constructor(opts: { token?: string; deviceName?: string } = {}) {
     this.token = opts.token || generateToken()
-    this.deviceName = opts.deviceName ?? 'qywork'
+    this.deviceName = opts.deviceName ?? 'QyWork'
   }
 
   /**

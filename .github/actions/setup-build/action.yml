@@ -1,4 +1,4 @@
-name: Set up qywork build
+name: Set up QyWork build
 description: 安装 Bun、Rust、Linux 系统库与项目依赖，编译 sidecar。三个平台的 CI 与发布工作流共用此 action。
 
 # 第三方 action 固定的提交与 sidecar 的编译时机只在此处定义。各工作流分别复制一份时，

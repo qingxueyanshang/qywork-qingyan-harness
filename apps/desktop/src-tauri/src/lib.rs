@@ -1,4 +1,4 @@
-//! qywork 桌面外壳。
+//! QyWork 桌面外壳。
 //!
 //! **这一层不持有任何业务状态。** 会话、账本、权限、缓存全部位于 `qy serve`；
 //! Tauri 只负责原生窗口与 sidecar 的生命周期。
@@ -220,7 +220,7 @@ fn window_is_maximized(window: tauri::Window) -> Result<bool, String> {
 /// 用于去除边框线，投影须另行恢复，见 `extend_frame_for_shadow`。
 fn build_main_window(app: &AppHandle, script: &str) -> tauri::Result<()> {
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
-        .title("qywork")
+        .title("QyWork")
         .decorations(false)
         .shadow(false)
         .inner_size(1280.0, 820.0)
@@ -303,7 +303,7 @@ pub(crate) fn dev_webview_dir(app: &AppHandle) -> Option<PathBuf> {
 /// 先给出可取消的等待窗口。业务页面仍只在取得后台就绪回执后加载。
 fn build_startup_window(app: &AppHandle) -> tauri::Result<()> {
     let window = WebviewWindowBuilder::new(app, "startup", WebviewUrl::App("startup.html".into()))
-        .title("qywork 正在启动")
+        .title("QyWork 正在启动")
         .inner_size(420.0, 190.0)
         .resizable(false)
         .maximizable(false)
@@ -372,7 +372,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&open, &quit])?;
     TrayIconBuilder::new()
         .icon(icon)
-        .tooltip("qywork")
+        .tooltip("QyWork")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -603,7 +603,7 @@ pub fn run() {
     if log::set_logger(&LOGGER).is_ok() {
         log::set_max_level(log::LevelFilter::Info);
     }
-    log::info!("qywork 启动 version={} pid={}", env!("CARGO_PKG_VERSION"), std::process::id());
+    log::info!("QyWork 启动 version={} pid={}", env!("CARGO_PKG_VERSION"), std::process::id());
     // 在启动任何线程之前读取，读取时从环境中移除凭据，见 `take_dev_launch`。
     let dev = tauri::is_dev().then(sidecar::take_dev_launch);
 

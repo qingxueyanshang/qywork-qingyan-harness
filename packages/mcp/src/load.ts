@@ -31,7 +31,7 @@ export interface LoadedServer {
   /** server 握手时声明的能力，供 `qy mcp` 显示。 */
   capabilities: McpServerCapabilities
   /**
-   * server 已声明而 qywork 未实现的能力名。
+   * server 已声明而 QyWork 未实现的能力名。
    *
    * 该字段用于消除一种静默失败：只提供 `prompts` 的 server
    * 会连接成功、握手成功、`tools/list` 返回空、注册 0 个工具，且不报告任何错误。
@@ -254,7 +254,7 @@ export async function loadMcpServers(
     const unsupported = unsupportedCapabilities(item.client.capabilities)
     if (unsupported.length > 0) {
       options.onLog?.(
-        `[mcp:${item.name}] server 声明了 qywork 尚未接入的能力：${unsupported.join('、')}。` +
+        `[mcp:${item.name}] server 声明了 QyWork 尚未接入的能力：${unsupported.join('、')}。` +
           `这些能力提供的内容不会出现在工具列表中。`,
       )
     }
@@ -280,7 +280,7 @@ export async function loadMcpServers(
           (declared.length === 0
             ? 'server 没有声明任何能力，也没有响应 tools/list。'
             : `server 声明的能力是：${declared.join('、')}${
-                unsupported.length ? `，其中 ${unsupported.join('、')} qywork 尚未支持` : ''
+                unsupported.length ? `，其中 ${unsupported.join('、')} QyWork 尚未支持` : ''
               }。`),
       })
     }

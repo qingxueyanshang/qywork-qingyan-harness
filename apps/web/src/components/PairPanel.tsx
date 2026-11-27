@@ -123,7 +123,7 @@ export default function PairPanel() {
                   <Status tone="warning" text="需要更新应用" />
                 </Match>
                 <Match when={d().tunnel?.state === 'replaced'}>
-                  <Status tone="warning" text="已由另一个 qywork 进程接管" />
+                  <Status tone="warning" text="已由另一个 QyWork 进程接管" />
                   <button
                     type="button"
                     class="btn-ghost sm"

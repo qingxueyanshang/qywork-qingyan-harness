@@ -292,6 +292,20 @@ describe('桌面发布清单', () => {
   })
 
   /**
+   * 快捷方式的文件名即桌面与开始菜单上显示的名称。更新模式不创建快捷方式，在同名文件上创建时
+   * 文件名保持创建时的大小写，因此产品名只改变大小写时，安装后须把快捷方式改名为自身的名称。
+   */
+  test('Windows 安装包把快捷方式的文件名改为产品名的大小写', () => {
+    const text = readFileSync(join(ROOT, 'apps/desktop/src-tauri/nsis/hooks.nsh'), 'utf8')
+    const body = /!macro NSIS_HOOK_POSTINSTALL([\s\S]*?)!macroend/.exec(text)?.[1] ?? ''
+
+    for (const dir of ['$DESKTOP', '$SMPROGRAMS']) {
+      const lnk = `"${dir}\\\${PRODUCTNAME}.lnk"`
+      expect(body).toContain(`Rename ${lnk} ${lnk}`)
+    }
+  })
+
+  /**
    * 全新的 runner 上没有这些外部二进制，而 `bun run gate` 中的 `cargo check` 会运行 tauri 的
    * 构建脚本：`tauri.conf.json` 的 `externalBin` 声明的文件不存在时以 101 退出。
    *
@@ -357,6 +371,23 @@ describe('桌面发布清单', () => {
     ) as { bundle: { linux?: { deb?: { depends?: string[] } } } }
 
     expect(config.bundle.linux?.deb?.depends).toEqual(['at-spi2-core'])
+  })
+
+  /**
+   * deb 的包名取产品名的 kebab 形式：`QyWork` 得到 `qy-work`，0.3.30 及之前版本的包名是 `qywork`。
+   * 两个包都包含 `/usr/bin/qywork`，不声明 Conflicts 与 Replaces 时 dpkg 拒绝覆盖该文件，升级安装失败。
+   */
+  test('deb 取代包名为 qywork 的已安装版本', () => {
+    const config = JSON.parse(
+      readFileSync(join(ROOT, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    ) as {
+      productName: string
+      bundle: { linux?: { deb?: { conflicts?: string[]; replaces?: string[] } } }
+    }
+
+    expect(config.productName).toBe('QyWork')
+    expect(config.bundle.linux?.deb?.conflicts).toEqual(['qywork'])
+    expect(config.bundle.linux?.deb?.replaces).toEqual(['qywork'])
   })
 
   /**

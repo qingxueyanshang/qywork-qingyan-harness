@@ -188,7 +188,7 @@ export interface DesktopCapability {
 export interface EnvDependency {
   /** 稳定 id，安装路由据此查询常量表。 */
   id: string
-  /** 由 qywork 自行下载安装、正在进行时的进度（0–1）；其余情况不给出。 */
+  /** 由 QyWork 自行下载安装、正在进行时的进度（0–1）；其余情况不给出。 */
   progress?: number
   /** 界面上显示的名称。 */
   label: string

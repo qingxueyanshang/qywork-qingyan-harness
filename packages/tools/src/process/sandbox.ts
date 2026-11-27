@@ -300,7 +300,7 @@ export function defaultMaskPaths(home = homedir(), globalRoot = globalScopeRoot(
     join(home, '.kube'),
     join(home, '.config', 'gh'),
     join(home, '.config', 'gcloud'),
-    // qywork 的全局数据目录：其中保存 provider 的明文 API Key。按实际位置列出，
+    // QyWork 的全局数据目录：其中保存 provider 的明文 API Key。按实际位置列出，
     // `QYWORK_HOME` 指向别处时家目录中的 `.qywork` 仍可能保存着密钥，两处都屏蔽。
     join(home, '.qywork'),
     ...(globalRoot.startsWith('/') ? [globalRoot] : []),

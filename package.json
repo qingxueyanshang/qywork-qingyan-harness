@@ -3,7 +3,7 @@
   "version": "0.3.30",
   "private": true,
   "type": "module",
-  "description": "qywork：多模型接入、多 Agent 协作的轻量化开源 Agent Harness",
+  "description": "QyWork：多模型接入、多 Agent 协作的轻量化开源 Agent Harness",
   "license": "Apache-2.0",
   "packageManager": "bun@1.4.2",
   "engines": {

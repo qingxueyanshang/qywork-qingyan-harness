@@ -499,7 +499,7 @@ describe('正文链接交给内置浏览器', () => {
   })
 
   // 原始失败形状：同时运行两个 qywork 时，后启动的一个提示「尚未连接，请稍后重试」，而等待不会恢复。
-  test('浏览器配置被另一个 qywork 占用：提示原因，不提示稍后重试', () => {
+  test('浏览器配置被另一个 QyWork 占用：提示原因，不提示稍后重试', () => {
     reset()
     const invokes: Invoke[] = []
     restore = asShell(invokes)
@@ -511,7 +511,7 @@ describe('正文链接交给内置浏览器', () => {
 
     openLinkInPanel('page.html')
 
-    expect(state.notice?.message).toBe('另一个 qywork 正在使用内置浏览器。')
+    expect(state.notice?.message).toBe('另一个 QyWork 正在使用内置浏览器。')
     expect(invokes.some((i) => i.cmd === 'browser_open')).toBe(false)
   })
 })

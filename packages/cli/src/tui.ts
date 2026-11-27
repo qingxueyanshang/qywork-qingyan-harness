@@ -100,7 +100,7 @@ export async function runTui(workspaceRoot: string): Promise<number> {
   process.on('SIGINT', onSigint)
 
   process.stdout.write(
-    `${BOLD}qywork${RESET} ${DIM}${workspaceRoot}${RESET}\n` +
+    `${BOLD}QyWork${RESET} ${DIM}${workspaceRoot}${RESET}\n` +
       `${DIM}模型 ${model ?? '未配置（使用 /model 选择，或在设置中配置）'} · /help 查看命令${RESET}\n\n`,
   )
 

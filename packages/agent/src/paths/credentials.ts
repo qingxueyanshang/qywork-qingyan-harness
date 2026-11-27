@@ -28,7 +28,7 @@ const CREDENTIAL_FILE =
   /(?:\.ssh[\\/]|\bid_rsa\b|\bid_ed25519\b|\bid_ecdsa\b|\.aws[\\/]credentials|\.config[\\/]gcloud[\\/]|\.kube[\\/]config|\.npmrc\b|\.netrc\b|\.pgpass\b|\.docker[\\/]config\.json|(?:\.qywork|\$\{?QYWORK_HOME\}?|\$env:QYWORK_HOME|%QYWORK_HOME%)[\\/](?:config|mcp)\.json)/i
 
 /** 拒绝理由中对这类文件的称呼，两侧共用。 */
-export const CREDENTIAL_FILES = '凭证文件（SSH 私钥、云服务凭据、包管理器令牌或 qywork 配置）'
+export const CREDENTIAL_FILES = '凭证文件（SSH 私钥、云服务凭据、包管理器令牌或 QyWork 配置）'
 
 /** 上一次构造的全局配置文件模式及其所依据的目录。`grep` 逐个文件判定，不为每个文件重新解析目录。 */
 let built: { root: string; pattern: RegExp | null } | null = null

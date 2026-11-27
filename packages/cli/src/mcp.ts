@@ -54,7 +54,7 @@ export async function runMcp(args: string[]): Promise<number> {
        */
       if (s.unsupported.length > 0) {
         process.stderr.write(
-          `${YELLOW}  ⚠ 该 server 另外声明了 qywork 尚未支持的能力：${s.unsupported.join('、')}` +
+          `${YELLOW}  ⚠ 该 server 另外声明了 QyWork 尚未支持的能力：${s.unsupported.join('、')}` +
             `（它们提供的内容不会出现在工具列表中）${RESET}\n`,
         )
       }

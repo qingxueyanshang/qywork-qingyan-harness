@@ -81,7 +81,7 @@ export function browserUnavailableText(): string | null {
     case 'exited':
       return '浏览器已退出'
     case 'in_use':
-      return '另一个 qywork 正在使用内置浏览器'
+      return '另一个 QyWork 正在使用内置浏览器'
     default:
       return null
   }

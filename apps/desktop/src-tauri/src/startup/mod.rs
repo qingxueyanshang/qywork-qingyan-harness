@@ -125,7 +125,7 @@ impl Report {
         } else if self.translated {
             "这台 Mac 使用 Apple 芯片，当前安装的是 Intel 版本。请下载 Apple 芯片版本（文件名含 aarch64）后重新安装。"
         } else {
-            "qywork 启动失败。"
+            "QyWork 启动失败。"
         }
     }
 
@@ -138,7 +138,7 @@ impl Report {
 pub(crate) fn report_and_show(error: &(dyn Error + 'static)) {
     #[allow(unused_mut)]
     let mut report = Report::from_error(error);
-    log::error!("qywork 启动失败：{error}");
+    log::error!("QyWork 启动失败：{error}");
     #[cfg(windows)]
     {
         report.system_checks =
@@ -187,7 +187,7 @@ fn show(details: &str) {
     }
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
-        .set_title("qywork 启动失败")
+        .set_title("QyWork 启动失败")
         .set_description(details)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
@@ -226,7 +226,7 @@ mod tests {
     fn translated_intel_build_names_the_matching_package() {
         let error = std::io::Error::other("qy serve 在输出令牌前退出，code=None");
         let mut report = Report::from_error(&error);
-        assert_eq!(report.summary(), "qywork 启动失败。");
+        assert_eq!(report.summary(), "QyWork 启动失败。");
         report.translated = true;
         assert!(report.summary().contains("aarch64"));
     }

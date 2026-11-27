@@ -214,7 +214,7 @@ pub(super) fn show(report: &Report, details: &str, location: &str) {
     let config = TASKDIALOGCONFIG {
         cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
         dwFlags: TDF_ALLOW_DIALOG_CANCELLATION,
-        pszWindowTitle: w!("qywork 启动失败"),
+        pszWindowTitle: w!("QyWork 启动失败"),
         pszMainInstruction: PCWSTR(summary.as_ptr()),
         pszContent: PCWSTR(content.as_ptr()),
         Anonymous1: TASKDIALOGCONFIG_0 {
@@ -233,7 +233,7 @@ pub(super) fn show(report: &Report, details: &str, location: &str) {
         log::error!("启动诊断对话框创建失败：{error}");
         let message = HSTRING::from(format!("{}\n{}", report.summary(), content));
         unsafe {
-            MessageBoxW(None, &message, w!("qywork 启动失败"), MB_OK | MB_ICONERROR);
+            MessageBoxW(None, &message, w!("QyWork 启动失败"), MB_OK | MB_ICONERROR);
         }
     }
 }

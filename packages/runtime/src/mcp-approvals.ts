@@ -7,7 +7,7 @@
  * 确认记录保存在用户一侧（`~/.qywork/mcp-approvals.json`），按「项目根 → 服务名 → 内容摘要」存放。
  * 不要存放在仓库中：仓库内的记录可由仓库内容写入，相当于由待确认的一方自行确认。内容改变后摘要不一致，回到待确认。
  *
- * 经 qywork 写入的项目层服务（设置页新增与导入、`write_mcp_server`、`move_mcp_server`）在写入时一并确认：
+ * 经 QyWork 写入的项目层服务（设置页新增与导入、`write_mcp_server`、`move_mcp_server`）在写入时一并确认：
  * 写入由用户或用户委托的模型发起，auto 下其命令已经过 `decideCommand`。
  */
 

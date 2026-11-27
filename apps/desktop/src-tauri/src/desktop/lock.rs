@@ -1,13 +1,13 @@
-//! 桌面执行权的本机互斥：一台机器的一个登录会话中只有一个 qywork 进程能操作桌面。
+//! 桌面执行权的本机互斥：一台机器的一个登录会话中只有一个 QyWork 进程能操作桌面。
 //!
-//! 物理桌面只有一个，两个 qywork 进程各自认为独占桌面时会互相打断动作序列。无法取得该锁
+//! 物理桌面只有一个，两个 QyWork 进程各自认为独占桌面时会互相打断动作序列。无法取得该锁
 //! 的进程如实上报电脑控制不可用，不更换作用域继续操作：更换作用域等于两个进程同时
 //! 操作同一个桌面，而界面上无法察觉。
 //!
 //! 锁随进程退出由 OS 释放，不写入磁盘、不留下标记：保留文件状态就必须处理崩溃后的残留，
 //! 而残留会使下一次启动永久无法取得锁。
 
-/// 生产环境的作用域名。同一个登录会话中的所有 qywork 进程争用该作用域。
+/// 生产环境的作用域名。同一个登录会话中的所有 QyWork 进程争用该作用域。
 const SCOPE: &str = "qywork-desktop";
 
 /// 持有中的桌面执行权。丢弃它即释放。
@@ -30,7 +30,7 @@ impl Drop for DesktopLock {
     }
 }
 
-/// 占用桌面执行权。已被本会话的另一个 qywork 进程占用时返回原因。
+/// 占用桌面执行权。已被本会话的另一个 QyWork 进程占用时返回原因。
 pub fn acquire() -> Result<DesktopLock, String> {
     acquire_scoped(SCOPE)
 }
@@ -50,7 +50,7 @@ fn acquire_scoped(scope: &str) -> Result<DesktopLock, String> {
         unsafe {
             let _ = CloseHandle(handle);
         }
-        return Err("本机已有另一个 qywork 进程持有桌面执行权".to_owned());
+        return Err("本机已有另一个 QyWork 进程持有桌面执行权".to_owned());
     }
     Ok(DesktopLock {
         handle: handle.0 as isize,
@@ -80,7 +80,7 @@ fn acquire_scoped(scope: &str) -> Result<DesktopLock, String> {
         .map_err(|e| format!("无法打开桌面执行权锁文件：{e}"))?;
     // SAFETY: fd 来自上方仍然有效的 File，操作码是 flock 定义的常量。
     if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
-        return Err("本机已有另一个 qywork 进程持有桌面执行权".to_owned());
+        return Err("本机已有另一个 QyWork 进程持有桌面执行权".to_owned());
     }
     Ok(DesktopLock { _file: file })
 }
@@ -91,7 +91,7 @@ mod tests {
 
     /// 第二次占用必须被拒绝，而不是静默让两个进程都认为自己独占桌面。
     ///
-    /// 作用域名包含 pid：使用生产环境的作用域名时，本机正在运行的 qywork 会使该用例失败。
+    /// 作用域名包含 pid：使用生产环境的作用域名时，本机正在运行的 QyWork 会使该用例失败。
     #[test]
     fn a_second_acquire_in_the_same_session_is_refused() {
         let scope = format!("qywork-desktop-test-{}", std::process::id());

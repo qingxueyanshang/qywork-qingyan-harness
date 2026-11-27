@@ -33,7 +33,7 @@ fn builder<'a>(
     url: &str,
 ) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
-        .title("qywork 宠物")
+        .title("QyWork 宠物")
         .decorations(false)
         .shadow(false)
         .always_on_top(true)

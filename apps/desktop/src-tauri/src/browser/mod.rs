@@ -61,7 +61,7 @@ use crate::hostkey::new_host_key;
 use crate::ws::WsSender;
 
 #[cfg(desktop)]
-/// 进程内唯一的宿主。一个 qywork 进程只打开一份 profile，该静态变量即是唯一权威。
+/// 进程内唯一的宿主。一个 QyWork 进程只打开一份 profile，该静态变量即是唯一权威。
 static HOST: OnceLock<Arc<BrowserHost>> = OnceLock::new();
 
 /// 一次下载的裁决结果，由引擎的下载钩子执行。

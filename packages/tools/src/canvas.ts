@@ -1119,7 +1119,7 @@ export const exportTimelineTool: ToolSpec = backgroundable(
     description:
       '把画布上的一条时间线导出为成片并等待完成：由界面执行与「导出」按钮相同的编码（界面会打开该画布并显示进度），' +
       '成片保存为 generated/<时间线名称>.mp4（重名时加 -2），时间线右侧新增引用它的视频卡。' +
-      '片段按 clips 的顺序与入点、出点拼接；先用 edit_canvas 整理好片段再导出。qywork 界面未打开该项目时无法导出。',
+      '片段按 clips 的顺序与入点、出点拼接；先用 edit_canvas 整理好片段再导出。QyWork 界面未打开该项目时无法导出。',
     parameters: {
       type: 'object',
       properties: {

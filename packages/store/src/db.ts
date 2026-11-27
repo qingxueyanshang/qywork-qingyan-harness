@@ -149,7 +149,7 @@ export class Store {
       const file = this.db.filename
       this.db.close()
       throw new Error(
-        `数据库的结构版本 ${newest} 高于本程序的 ${SCHEMA_VERSION}，请升级 qywork 后再打开：${file}`,
+        `数据库的结构版本 ${newest} 高于本程序的 ${SCHEMA_VERSION}，请升级 QyWork 后再打开：${file}`,
       )
     }
     for (const m of MIGRATIONS) {

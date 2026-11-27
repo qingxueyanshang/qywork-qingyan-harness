@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * 把已公开的版本安装到本机：从官网下载 `VERSION` 对应的 Windows 安装包，按 SHA256SUMS 核对，
- * 备份数据库后静默安装到已安装 qywork 的位置。正式发布公开、官网同步之后运行（服务器每 10 分钟同步一次）：
+ * 备份数据库后静默安装到已安装 QyWork 的位置。正式发布公开、官网同步之后运行（服务器每 10 分钟同步一次）：
  *
  *   bun run install:release
  *
@@ -21,8 +21,8 @@ import { join } from 'node:path'
 const ROOT = join(import.meta.dir, '..')
 const DOWNLOAD = 'https://qywork.io/download'
 const UNINSTALL_KEYS = [
-  'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\qywork',
-  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\qywork',
+  'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QyWork',
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QyWork',
 ]
 /** 安装前的数据库备份只保留最近一份：数据库有数百 MB，每次发版各留一份会持续占用磁盘。 */
 const BACKUP_PREFIX = 'qywork-before-install-'
@@ -109,14 +109,14 @@ async function main(): Promise<void> {
   if (process.platform !== 'win32') fail('只支持 Windows')
   const version = (await Bun.file(join(ROOT, 'VERSION')).text()).trim()
   const current = installed()
-  if (!current) fail('本机没有安装 qywork，未找到安装位置')
+  if (!current) fail('本机没有安装 QyWork，未找到安装位置')
   // NSIS 的 /D= 必须是最后一个参数且不加引号，进程启动时含空格的参数会被加上引号。
   if (/\s/.test(current.dir)) fail(`安装位置含空格，无法静默安装：${current.dir}`)
   const running = runningIn(current.dir)
   if (running.length)
-    fail(`安装版正在运行（进程 ${running.join('、')}），先退出 ${current.dir} 中的 qywork`)
+    fail(`安装版正在运行（进程 ${running.join('、')}），先退出 ${current.dir} 中的 QyWork`)
 
-  const file = `qywork_${version}_x64-setup.exe`
+  const file = `QyWork_${version}_x64-setup.exe`
   const sums = new TextDecoder().decode(
     await download(`${DOWNLOAD}/v${version}/SHA256SUMS-windows-x86_64.txt`),
   )

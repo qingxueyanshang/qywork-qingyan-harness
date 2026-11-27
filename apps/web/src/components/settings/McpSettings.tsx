@@ -136,7 +136,7 @@ export default function McpSettings() {
                           将成为无法查明原因的现象。 */}
                         <Show when={s.unsupported.length > 0}>
                           <div class="entry-extra bad">
-                            该 server 还声明了 {s.unsupported.join(' / ')}，qywork 未实现，
+                            该 server 还声明了 {s.unsupported.join(' / ')}，QyWork 未实现，
                             这些能力不会生效
                           </div>
                         </Show>

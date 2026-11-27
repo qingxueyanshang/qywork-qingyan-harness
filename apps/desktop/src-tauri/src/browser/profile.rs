@@ -1,6 +1,6 @@
 //! 浏览器配置目录及其本机占用锁。
 //!
-//! 同一份用户数据目录同一时间只能由一个 qywork 进程打开。该锁必须由 qywork 自行持有：
+//! 同一份用户数据目录同一时间只能由一个 QyWork 进程打开。该锁必须由 QyWork 自行持有：
 //! UDF 与 options 均相同的第二个 WebView2 environment 会并入同一个会话（跨宿主进程同样如此），
 //! 使用同一份 `--user-data-dir` 的第二个 Chromium 进程会把请求转交给第一个进程后退出，
 //! 两种引擎自身都不会拒绝。
@@ -15,7 +15,7 @@ pub fn profile_dir() -> Option<PathBuf> {
     Some(crate::logfile::data_dir()?.join("browser").join("profiles").join("default"))
 }
 
-/// profile 已被另一个 qywork 进程占用时 `host.unavailable` 的原因，
+/// profile 已被另一个 QyWork 进程占用时 `host.unavailable` 的原因，
 /// 与 `native-browser.ts` 的 `BrowserUnavailableReason` 逐字一致。
 pub const IN_USE: &str = "in_use";
 

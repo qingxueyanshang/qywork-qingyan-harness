@@ -296,7 +296,7 @@ async function checkMcp(workspaceRoot: string): Promise<Line[]> {
       level: s.unsupported.length ? 'warn' : 'ok',
       text: `${s.name} · ${s.client.transportKind} · ${tools} 个工具`,
       ...(s.unsupported.length
-        ? { detail: `server 另外声明了 qywork 尚未支持的能力：${s.unsupported.join('、')}` }
+        ? { detail: `server 另外声明了 QyWork 尚未支持的能力：${s.unsupported.join('、')}` }
         : {}),
     })
   }

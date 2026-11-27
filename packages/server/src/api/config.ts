@@ -125,7 +125,7 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
        *
        * 保存流程是「读取完整配置 → 修改一项 → 整体写回」，此处返回的内容会被下一次 PUT
        * 写入文件。若返回启动时的配置，进程运行期间由其他来源写入文件的改动
-       * （`qy probe` 写入的校准结果、手动编辑的 JSON、另一个 qywork 实例）会在用户下一次
+       * （`qy probe` 写入的校准结果、手动编辑的 JSON、另一个 QyWork 实例）会在用户下一次
        * 修改任意设置项时被整体覆盖，且没有提示。
        *
        * 进程内不存在仅在内存中、磁盘上没有的配置状态：全仓只有 `writeConfig` 写入 `d.config`，
@@ -163,7 +163,7 @@ export const handleConfigApi: ApiHandler = async (url, req, d) => {
        * 读取并重放本次修改。未携带 baseVersion 的旧客户端不受此校验限制。
        *
        * 比较基准是磁盘上的当前内容（`writeConfig` 先读取磁盘）。不要只与进程内的配置比较：它只在 GET 时刷新，
-       * 两次请求之间其他进程（`qy probe`、另一个 qywork 实例）写入文件的改动会被整体覆盖。
+       * 两次请求之间其他进程（`qy probe`、另一个 QyWork 实例）写入文件的改动会被整体覆盖。
        */
       if (typeof body.baseVersion === 'string' && body.baseVersion !== configVersion(current)) {
         return json({ error: 'conflict', message: '配置已在其他位置修改，已基于最新内容重试' }, 409)

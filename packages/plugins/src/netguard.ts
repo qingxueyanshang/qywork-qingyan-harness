@@ -82,7 +82,7 @@ export const BLOCKED_MODULES = [
 export function netGuardSource(): string {
   const blocked = JSON.stringify(BLOCKED_MODULES)
   return `'use strict'
-// qywork 网络访问限制。由宿主生成，在插件进程启动时注入。
+// QyWork 网络访问限制。由宿主生成，在插件进程启动时注入。
 const BLOCKED = new Set(${blocked})
 
 function bare(spec) {
@@ -93,7 +93,7 @@ function bare(spec) {
 
 function deny(name) {
   const e = new Error(
-    '[qywork] 插件不能直接使用 ' + name + '：网络访问请使用 host.net.fetch（经过 SSRF 防护与权限校验）'
+    '[QyWork] 插件不能直接使用 ' + name + '：网络访问请使用 host.net.fetch（经过 SSRF 防护与权限校验）'
   )
   e.code = 'ERR_QYWORK_NET_BLOCKED'
   return e

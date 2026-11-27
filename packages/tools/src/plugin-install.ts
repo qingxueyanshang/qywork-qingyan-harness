@@ -21,7 +21,7 @@ import { PluginPort } from './plugin-install/port.ts'
 
 export const installPluginTool: ToolSpec = {
   name: 'install_plugin',
-  deferred: { brief: '把编写好的插件目录安装为 qywork 插件' },
+  deferred: { brief: '把编写好的插件目录安装为 QyWork 插件' },
   description:
     '把工作区中已编写好的插件目录安装到本机的插件目录。' +
     '目录中必须有合法的 qywork.plugin.json。安装后从下一条消息起生效，不立即生效。' +
@@ -33,7 +33,7 @@ export const installPluginTool: ToolSpec = {
     '回复以 message 事件返回 {type:"qywork",id,ok,result} 或 {type:"qywork",id,ok:false,error}。' +
     'method：tool.call（params {tool,args}，调用本插件 contributes.tools 中的工具，result 为工具返回值）、' +
     'panel.open（params {path}，在面板打开工作区文件）、composer.insert（params {text}，把文字放入输入框）。' +
-    '页面调用的工具最迟在 qywork 重启后加载，尚未加载时调用返回该原因。',
+    '页面调用的工具最迟在 QyWork 重启后加载，尚未加载时调用返回该原因。',
   parameters: {
     type: 'object',
     properties: {

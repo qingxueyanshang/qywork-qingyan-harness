@@ -27,7 +27,7 @@ import { type MediaModelEntry, mediaModelLabel } from './config.ts'
  * 「CRITICAL / YOU MUST / 如有疑问就用 X」式写法会造成过度触发。只需写明应做什么。
  */
 
-export const SYSTEM_LAYER = `你是 qywork 的 harness agent，运行在用户本机，读写用户工作区中的文件，调用工具完成用户交付的任务。
+export const SYSTEM_LAYER = `你是 QyWork 的 harness agent，运行在用户本机，读写用户工作区中的文件，调用工具完成用户交付的任务。
 
 你的输出渲染在图形界面中，界面显示每一次工具调用及其结果。
 
@@ -149,9 +149,9 @@ const CAPABILITY_LINES: { tool: string; line: string }[] = [
     line:
       '- 电脑控制：已有桌面窗口及其内容属于用户。操作本机应用应使用 desktop_windows → desktop_observe → desktop_act，不得通过 run_command 截图或注入鼠标、键盘事件。' +
       '执行命令、启动应用优先使用 run_command；任务针对已打开终端中正在运行的程序（等待输入的提示、需要停止的服务、已登录的远程会话），或用户指定该终端窗口时，才用电脑控制操作终端。' +
-      'qywork 自身的画布、文件与生成模型以上下文（界面右侧面板当前打开的文件、「可用的生成模型」）与对应的工具为准，优先使用这些来源；' +
-      'qywork 的界面本身是任务对象时（排查界面问题、核对布局与显示效果），使用电脑控制观察 qywork 窗口。' +
-      'qywork 自身的窗口在「自动审批」模式下可观察、不可操作，在「完全访问」模式下可观察、可操作。' +
+      'QyWork 自身的画布、文件与生成模型以上下文（界面右侧面板当前打开的文件、「可用的生成模型」）与对应的工具为准，优先使用这些来源；' +
+      'QyWork 的界面本身是任务对象时（排查界面问题、核对布局与显示效果），使用电脑控制观察 QyWork 窗口。' +
+      'QyWork 自身的窗口在「自动审批」模式下可观察、不可操作，在「完全访问」模式下可观察、可操作。' +
       '操作前，应依据最新观察确认目标。系统窗口标题仅用于识别窗口，不作为当前页面或会话的确认依据。' +
       '桌面结果中的 foregroundEnabled 表示当前前台操作开关；为 false 时只使用可用的后台动作，任务必须使用前台操作时把该项标为 blocked（user_only），不得重试或自行更改设置。' +
       '前台操作开启且自绘界面缺少可操作控件时，使用观察结果附带的截图定位。截图包含同一应用位于该窗口之上的下拉框、菜单与搜索结果等弹出窗口，回执写明其位置；输入文字后依据回执附带的截图查看弹出的内容，再按图点击其中的项目。同一窗口内的连续动作使用 desktop_act_sequence。' +
@@ -504,7 +504,7 @@ export function buildTailNotes(input: {
   tempDir?: string
   /**
    * 工作区根目录中仓库写给编码 agent 的说明文件（AGENTS.md、CLAUDE.md）与行数。只列文件，不放正文：
-   * 快照每轮写入一份，正文放入时每轮重复一次（qywork 的 CLAUDE.md 约 5 万字节）。
+   * 快照每轮写入一份，正文放入时每轮重复一次（QyWork 的 CLAUDE.md 约 5 万字节）。
    */
   projectInstructions?: { file: string; lines: number }[]
   /** 运行环境一节（`environment.ts` 的 `describeEnvironment`），每轮读取本机目录生成。 */

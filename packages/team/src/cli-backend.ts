@@ -8,7 +8,7 @@
  * 才能执行**（codex 需要 OPENAI_API_KEY，claude 需要 ANTHROPIC_API_KEY），因此不能像 `run_command`
  * 那样按名称一律剥离。
  *
- * qywork 自身配置中的 key 对该后端没有用处，按**值**剥离即可：
+ * QyWork 自身配置中的 key 对该后端没有用处，按**值**剥离即可：
  * 用户在 `~/.qywork/config.json` 中配置的 DeepSeek key 没有理由出现在
  * codex 的进程中。剥离的是多余的凭证，不影响后端正常工作。
  *
@@ -104,7 +104,7 @@ export async function runCli(
      */
     resume?: string
     /**
-     * qywork 自身的凭证，按值剥离：后端不使用这些凭证，因此不应取得。
+     * QyWork 自身的凭证，按值剥离：后端不使用这些凭证，因此不应取得。
      * 不传入表示没有已知凭证，不表示无需剥离。
      */
     secrets?: { values: string[] }

@@ -1283,7 +1283,7 @@ pub fn classify_input(sent: u32, requested: u32) -> (Dispatch, Option<String>) {
             Dispatch::NotDispatched,
             Some(format!(
                 "input_blocked: {requested} 个输入事件均未送达目标窗口，\
-                 目标窗口的进程完整性可能高于 qywork"
+                 目标窗口的进程完整性可能高于 QyWork"
             )),
         );
     }

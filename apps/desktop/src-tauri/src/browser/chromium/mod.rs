@@ -1,5 +1,5 @@
 //! macOS 与 Linux 的浏览器引擎：运行环境安装的专用 Chromium（无头，页面由客户端以画面显示），
-//! 或本机已安装的 Chrome / Edge / Chromium（独立窗口）。安装专用 Chromium 后由 `restart` 换用，不需要重启 qywork。
+//! 或本机已安装的 Chrome / Edge / Chromium（独立窗口）。安装专用 Chromium 后由 `restart` 换用，不需要重启 QyWork。
 //!
 //! 外壳以专用 profile 启动浏览器，并与其保持一条自身的 CDP 连接，只承担宿主职责；
 //! 页内观察与动作由服务端按 `host.ready` 中的调试端口另建一条 CDP 连接执行。
@@ -190,7 +190,7 @@ impl Inner {
                         (Some(lock), Status::Starting)
                     }
                     None => {
-                        log::warn!("浏览器配置已被另一个 qywork 进程占用，浏览器控制不可用");
+                        log::warn!("浏览器配置已被另一个 QyWork 进程占用，浏览器控制不可用");
                         (None, Status::Unavailable(profile::IN_USE))
                     }
                 }

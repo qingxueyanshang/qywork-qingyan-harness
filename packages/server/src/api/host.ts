@@ -56,7 +56,7 @@ import {
 import { type ApiHandler, json } from './types.ts'
 
 /**
- * 一次探测读取的外部状态：Python 按配置查找（`officePython`、qywork 的虚拟环境或 PATH），
+ * 一次探测读取的外部状态：Python 按配置查找（`officePython`、QyWork 的虚拟环境或 PATH），
  * 文档库缺项取自 Office 宿主最近一次探测的结果；`restartBrowser` 在内置浏览器安装完成后请求宿主换用它，
  * 没有浏览器宿主时为 `null`（不提供内置浏览器的安装）。
  */
@@ -223,7 +223,7 @@ const DEPS: DepSpec[] = [
       winget: ['Python.Python.3.12'],
       brew: ['python@3.12'],
       xcode: [],
-      // 文档库安装在 qywork 的虚拟环境中（`pipCommand`），Debian 系另需 venv 模块。
+      // 文档库安装在 QyWork 的虚拟环境中（`pipCommand`），Debian 系另需 venv 模块。
       apt: ['python3', 'python3-venv', 'python3-pip'],
       dnf: ['python3', 'python3-pip'],
       pacman: ['python', 'python-pip'],
@@ -339,7 +339,7 @@ export function probeEnvironment(ctx: EnvProbeContext): EnvDependency[] {
  * - Windows：系统解释器安装到用户目录（`--user`，无需管理员权限）；虚拟环境（解释器所在目录或上一级目录有
  *   `pyvenv.cfg`）安装到环境本身，虚拟环境中 pip 拒绝 `--user`。清单使用相对路径：解释器与清单路径都含空格时
  *   命令行有四个引号，`cmd /k` 会去掉首尾两个，命令被拆开。
- * - macOS 与 Linux：先建立 qywork 的虚拟环境（`officeVenv`）再安装到其中，`findPython` 随后取用它；
+ * - macOS 与 Linux：先建立 QyWork 的虚拟环境（`officeVenv`）再安装到其中，`findPython` 随后取用它；
  *   已在虚拟环境中的解释器直接安装。系统 Python 标记为外部管理时 `pip install --user` 被拒绝。
  */
 export function pipCommand(python: string, platform: string = process.platform): string[] {
@@ -412,7 +412,7 @@ export const handleHostApi: ApiHandler = async (url, req, d) => {
     return json({
       started: true,
       command: argv.join(' '),
-      // 文档库安装到解释器自身或 qywork 的虚拟环境，不修改 PATH；重新检测即可生效。
+      // 文档库安装到解释器自身或 QyWork 的虚拟环境，不修改 PATH；重新检测即可生效。
       note: '安装窗口已打开。安装完成后重新打开本页即显示结果。',
     })
   }
@@ -430,6 +430,6 @@ export const handleHostApi: ApiHandler = async (url, req, d) => {
     started: true,
     command: command.display,
     // 必须提示重启：本进程的 PATH 取自启动时，不重启则无法探测到新安装的程序。
-    note: '安装窗口已打开，完成后重启 qywork 生效。',
+    note: '安装窗口已打开，完成后重启 QyWork 生效。',
   })
 }

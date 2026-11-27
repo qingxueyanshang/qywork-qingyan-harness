@@ -38,7 +38,7 @@ export function LoginForm() {
     <form class="account-form" onSubmit={submit}>
       <div class="account-form-head">
         <img class="account-mark" src={mark} width="44" height="44" alt="" />
-        <h2 class="account-form-title">qywork 账号</h2>
+        <h2 class="account-form-title">QyWork 账号</h2>
       </div>
       <div class="seg account-form-mode" role="tablist">
         <button

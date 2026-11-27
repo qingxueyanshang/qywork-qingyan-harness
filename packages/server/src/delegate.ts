@@ -646,7 +646,7 @@ export function makeDelegate(ctx: {
           signal,
           ...(conversation.externalSession ? { resume: conversation.externalSession } : {}),
           ...(resolved.effort ? { effort: resolved.effort } : {}),
-          // 外部 CLI 使用自身的 key 执行；qywork 配置中的 key 对它没有用途，按值剥离。
+          // 外部 CLI 使用自身的 key 执行；QyWork 配置中的 key 对它没有用途，按值剥离。
           secrets: collectSecrets(deps.config),
           ...(stepId
             ? {

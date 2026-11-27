@@ -170,7 +170,7 @@ export const handlePluginsApi: ApiHandler = async (url, req, d) => {
       if (!plugin) {
         const installed = (await stat(join(globalPluginsDir(), id)).catch(() => null)) !== null
         return installed
-          ? json({ error: '插件的工具尚未加载，重启 qywork 后可用' }, 409)
+          ? json({ error: '插件的工具尚未加载，重启 QyWork 后可用' }, 409)
           : json({ error: `插件不存在：${id}` }, 404)
       }
       if (!plugin.host || !plugin.manifest.contributes.tools?.some((t) => t.name === tool)) {

@@ -161,7 +161,7 @@ impl Drop for WindowRequest {
 
 /// 本进程的 WebView2 environment：profile 占用、回环 CDP 端口与运行时版本。
 pub struct Engine {
-    /// `None` 表示 profile 已被另一个 qywork 进程占用：引擎不创建任何子视图，`settled` 报告 `IN_USE`。
+    /// `None` 表示 profile 已被另一个 QyWork 进程占用：引擎不创建任何子视图，`settled` 报告 `IN_USE`。
     profile: Option<ProfileLock>,
     debug_port: u16,
     runtime_version: String,
@@ -196,7 +196,7 @@ impl Engine {
                 "浏览器宿主已就绪 profile={} debugPort={debug_port} runtime={runtime_version}",
                 profile.dir().display()
             ),
-            None => log::warn!("浏览器配置已被另一个 qywork 进程占用，浏览器控制不可用"),
+            None => log::warn!("浏览器配置已被另一个 QyWork 进程占用，浏览器控制不可用"),
         }
         Ok(Engine {
             profile,
@@ -252,7 +252,7 @@ impl Engine {
         requested: String,
         window: Option<WindowRequest>,
     ) -> Result<Opened, String> {
-        let profile = self.profile.as_ref().ok_or("浏览器配置已被另一个 qywork 进程占用")?;
+        let profile = self.profile.as_ref().ok_or("浏览器配置已被另一个 QyWork 进程占用")?;
         let main = app
             .get_window("main")
             .ok_or("主窗口不存在，无法创建子视图")?;

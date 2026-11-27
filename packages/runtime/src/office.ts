@@ -58,7 +58,7 @@ export function officeDir(): string | null {
 }
 
 /**
- * qywork 自己的 Python 虚拟环境（全局数据目录的 `python/`）。macOS 与 Linux 上运行环境把文档库安装到这里：
+ * QyWork 自己的 Python 虚拟环境（全局数据目录的 `python/`）。macOS 与 Linux 上运行环境把文档库安装到这里：
  * 较新的发行版与 Homebrew 的系统 Python 标记为外部管理（PEP 668），拒绝 `pip install --user`。
  */
 export function officeVenv(): string {
@@ -66,7 +66,7 @@ export function officeVenv(): string {
 }
 
 /**
- * Python 解释器：配置中指定时使用指定值，其次是 qywork 的虚拟环境（`officeVenv`），最后在 PATH 中查找。
+ * Python 解释器：配置中指定时使用指定值，其次是 QyWork 的虚拟环境（`officeVenv`），最后在 PATH 中查找。
  *
  * Windows 上排除 `WindowsApps` 目录：该目录中的 `python.exe` 是商店别名，未安装 Python 时
  * 运行它会打开商店页面而不是报错。

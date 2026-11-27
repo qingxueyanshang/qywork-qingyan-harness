@@ -122,7 +122,7 @@ export function NewProjectDialog(props: {
                     </button>
                   </Show>
                   {/* 边界声明完整保留（B7）：不写时「留空会怎样」没有任何提示。 */}
-                  <span class="np-hint">留空则在 qywork 数据目录下新建文件夹</span>
+                  <span class="np-hint">留空则在 QyWork 数据目录下新建文件夹</span>
                 </div>
               }
             >

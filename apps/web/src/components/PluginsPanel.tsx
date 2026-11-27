@@ -59,7 +59,7 @@ function dirName(dir: string): string {
 
 /** 「新增」时交给模型的初始指令。不自动发送：用户可以修改后再发送。 */
 const NEW_PLUGIN =
-  '新建一个插件。请先说明插件在 qywork 中如何加载、运行在何处、可获得哪些权限，以及目录需包含哪些文件；然后询问该插件要提供哪些工具。'
+  '新建一个插件。请先说明插件在 QyWork 中如何加载、运行在何处、可获得哪些权限，以及目录需包含哪些文件；然后询问该插件要提供哪些工具。'
 
 export function PluginsPanel() {
   // 会话中的 `install_plugin` 完成后 `extensionsRevision` 递增，本页随之重新读取。

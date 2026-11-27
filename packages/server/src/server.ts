@@ -179,7 +179,7 @@ const MAX_HTTP_REQUEST_BODY_BYTES = 1024 * 1024 * 1024
  *    它与侧栏顺序无关：侧栏按「置顶 > 添加先后」稳定排列，不随切换重排。
  * 3. 没有任何项目：在 `~/.qywork/workspaces/默认工作区/` 创建一个。
  *
- * 第 3 条不能省略：无条件登记启动目录时，桌面端的启动目录是 qywork 的源码树，
+ * 第 3 条不能省略：无条件登记启动目录时，桌面端的启动目录是 QyWork 的源码树，
  * 首次运行得到的默认项目将是本仓库。
  *
  * 使用 `mkdirSync` 创建目录：账本行与目录必须同时存在，异步创建会产生一段
@@ -319,7 +319,7 @@ export function serve(opts: ServeOptions) {
    * 3. 没有任何项目（首次运行）：创建默认工作区。
    *
    * 第 3 条不能省略：无条件登记 `opts.workspaceRoot` 时，首次运行使用的是启动目录，
-   * 而桌面端的启动目录是本仓库，用户得到的默认项目将是 qywork 的源码树。
+   * 而桌面端的启动目录是本仓库，用户得到的默认项目将是 QyWork 的源码树。
    */
   const workspaceRoot = bootstrapWorkspace(opts.store, opts.workspaceRoot)
 
@@ -748,7 +748,7 @@ export function serve(opts: ServeOptions) {
         const served = await opts.web(url)
         if (served) return served
       }
-      return new Response('qywork server', { status: 200 })
+      return new Response('QyWork server', { status: 200 })
     },
 
     websocket: {

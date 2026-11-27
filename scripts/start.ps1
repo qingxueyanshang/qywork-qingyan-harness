@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  qywork 一键启动。
+  QyWork 一键启动。
 
 .DESCRIPTION
   两种模式：
@@ -49,7 +49,7 @@ function Clear-DevPort([int]$Port) {
     $proc = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue
     $name = if ($proc) { $proc.ProcessName } else { '<已退出>' }
     if ($proc -and $proc.ProcessName -notin @('node', 'bun', 'vite', 'qy', 'qywork-dev')) {
-      throw "端口 $Port 被 $name (pid $($c.OwningProcess)) 占用，判定不是 qywork 的开发进程，脚本不结束该进程。请自行确认后处理。"
+      throw "端口 $Port 被 $name (pid $($c.OwningProcess)) 占用，判定不是 QyWork 的开发进程，脚本不结束该进程。请自行确认后处理。"
     }
     Warn "端口 $Port 被 $name (pid $($c.OwningProcess)) 占用，正在结束该进程"
     try { Stop-Process -Id $c.OwningProcess -Force -ErrorAction Stop } catch { }

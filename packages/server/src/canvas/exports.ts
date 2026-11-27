@@ -112,7 +112,7 @@ export class CanvasExports {
           this.settleExport(
             key,
             new CanvasFailure(
-              '没有界面开始导出：qywork 界面未打开该项目，或画布无法在界面中打开；界面打开后重新导出',
+              '没有界面开始导出：QyWork 界面未打开该项目，或画布无法在界面中打开；界面打开后重新导出',
               409,
             ),
           )

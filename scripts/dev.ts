@@ -27,7 +27,7 @@
  * **替换代码的判据是「文件已变化，且没有进行中的 run」。** 不要改为 `bun --watch`：它的判据只有文件 mtime，
  * 不感知进程是否有进行中的任务，因此保存一次源码即会中断正在运行的一轮。实测形状：
  * 账本中三条 run 因此中断，其中两条中断于工具执行期间，整轮不可信（`recoverStaleRuns` 判定为
- * `internal_guard`）。agent 修改 qywork 自身源码时问题更严重：写完第一个文件即触发自身重启，
+ * `internal_guard`）。agent 修改 QyWork 自身源码时问题更严重：写完第一个文件即触发自身重启，
  * 其余文件尚未写入。
  *
  * 采用两条判据后，两个场景均正确：运行中的那一轮执行完毕后才替换代码，替换后的下一轮即为新代码。
@@ -80,7 +80,7 @@ const UPDATE_KEY = randomBytes(24).toString('hex')
  */
 const HOST_KEY = randomBytes(24).toString('hex')
 
-/** 判断该端口上是否有**能应答的** qywork。用于等待就绪，不用于判定占用。 */
+/** 判断该端口上是否有**能应答的** QyWork。用于等待就绪，不用于判定占用。 */
 async function answers(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
@@ -113,7 +113,7 @@ async function bindable(port: number): Promise<boolean> {
 /**
  * 端口被占用时直接报错，不静默更换端口：更换后 WebView 持有的 base 即为错误值。
  *
- * 两种占用分开提示，因为后续处理不同：有 qywork 在运行 → 先停止该实例（两个进程争用
+ * 两种占用分开提示，因为后续处理不同：有 QyWork 在运行 → 先停止该实例（两个进程争用
  * 同一份 SQLite 的 WAL 锁）；无法绑定且无应答 → 是更早遗留的后台进程仍持有该
  * 监听句柄（`qy serve` 将命令置于 runner 之下，不会产生新的遗留进程），
  * 结束该进程即可。
@@ -121,7 +121,7 @@ async function bindable(port: number): Promise<boolean> {
 if (!(await bindable(PORT))) {
   process.stderr.write(
     (await answers(PORT))
-      ? `端口 ${PORT} 已被另一个 qywork 实例占用。请先停止该实例，或设置 QYWORK_PORT=<其它端口> 后重试。
+      ? `端口 ${PORT} 已被另一个 QyWork 实例占用。请先停止该实例，或设置 QYWORK_PORT=<其它端口> 后重试。
 `
       : `端口 ${PORT} 被一个不响应的进程占用，通常是此前遗留的后台进程仍持有监听句柄，` +
           `netstat 显示的 PID 可能已经不存在。请结束该进程，或设置 QYWORK_PORT=<其它端口> 后重试。
@@ -241,7 +241,7 @@ function spawnAgent() {
       String(process.pid),
       '--credentials-stdin',
       // **不传入 --cwd**：传入即把本仓库登记为项目，而开发态不需要该默认值
-      // （否则用户的第一个项目会是 qywork 的源码树）。不传时由服务端决定：
+      // （否则用户的第一个项目会是 QyWork 的源码树）。不传时由服务端决定：
       // 账本中有项目则使用最近打开的项目，没有任何项目时才创建默认工作区。
     ],
     { cwd: ROOT, env, stdout: 'inherit', stderr: 'inherit', stdin: 'pipe', ...HIDE },

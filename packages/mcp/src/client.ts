@@ -63,7 +63,7 @@ const KNOWN_VERSIONS = new Set<string>(KNOWN_VERSION_LIST)
 /**
  * 从该版本起，能力声明不在 `initialize` 的结果中，改由 `server/discover` 提供。
  *
- * 该差异不能推迟处理：qywork 是否注册 resource 工具、
+ * 该差异不能推迟处理：QyWork 是否注册 resource 工具、
  * 是否报告「已声明但未接入的能力」，都依据 `capabilities`。
  * 只读取 initialize 时，现代 server 上该字段为空，因此
  * 不会注册任何 resource 工具，也不报告任何错误，形成静默失败。
@@ -86,7 +86,7 @@ export interface McpServerCapabilities {
   [k: string]: unknown
 }
 
-/** qywork 当前实际消费的能力。其余能力即使已声明，也只会被报告为未接入。 */
+/** QyWork 当前实际消费的能力。其余能力即使已声明，也只会被报告为未接入。 */
 export const SUPPORTED_CAPABILITIES = ['tools', 'resources'] as const
 
 /**
@@ -429,7 +429,7 @@ export class McpClient {
         ?.send({
           jsonrpc: '2.0',
           id: msg.id,
-          error: { code: -32601, message: `qywork 未实现该方法：${msg.method}` },
+          error: { code: -32601, message: `QyWork 未实现该方法：${msg.method}` },
         })
         .catch(() => {
           // 连「不支持」的响应都发送失败，说明连接已断开。该情况由 onClose 处理，

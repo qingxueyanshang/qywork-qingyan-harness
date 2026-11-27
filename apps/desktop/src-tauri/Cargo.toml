@@ -4,7 +4,7 @@ name = "qywork"
 # `VERSION` 同时写入，不要手工修改：只修改其中一处时，带 `--locked` 的门禁检查以退出码 101 失败。
 version = "0.3.30"
 description = "多模型接入、多 Agent 协作的轻量化开源 Agent Harness"
-authors = ["qywork"]
+authors = ["QyWork"]
 edition = "2021"
 rust-version = "1.80"
 

@@ -239,17 +239,17 @@ function replay(store: Store, goalId: string): Goal {
   for (const [i, row] of rows.entries()) {
     if (row.revision !== i + 1) {
       throw new Error(
-        `[qywork] 目标 ${goalId} 的 revision 断号：期望 ${i + 1}，实际为 ${row.revision}`,
+        `[QyWork] 目标 ${goalId} 的 revision 断号：期望 ${i + 1}，实际为 ${row.revision}`,
       )
     }
     const snapshot = JSON.parse(row.snapshot) as Goal
     if (goal && !ALLOWED[goal.status].includes(snapshot.status)) {
       throw new Error(
-        `[qywork] 目标 ${goalId} 出现非法转移：${goal.status} → ${snapshot.status}（revision ${row.revision}）`,
+        `[QyWork] 目标 ${goalId} 出现非法转移：${goal.status} → ${snapshot.status}（revision ${row.revision}）`,
       )
     }
     goal = snapshot
   }
-  if (!goal) throw new Error(`[qywork] 目标 ${goalId} 没有任何事件`)
+  if (!goal) throw new Error(`[QyWork] 目标 ${goalId} 没有任何事件`)
   return goal
 }

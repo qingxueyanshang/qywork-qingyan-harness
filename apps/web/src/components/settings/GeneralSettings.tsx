@@ -61,7 +61,7 @@ const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
 ]
 
 /**
- * 运行环境：qywork 需要调用的外部程序是否已安装。
+ * 运行环境：QyWork 需要调用的外部程序是否已安装。
  *
  * 状态分为三种：已安装 / 需要安装 / 未安装（可选）。「未安装（可选）」这一档不能省略：缺少 rg 只会使搜索变慢
  * （由内置遍历替代），node 只在安装插件时使用；若把它们也标为「需要安装」，首次打开设置页时显示
@@ -71,7 +71,7 @@ const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
  * 四行路径，而不是四段说明（B7：删除这句后用户是否仍能使用？能 → 删除）。
  *
  * 按钮只在服务端声明可以安装时出现（`canInstall`：本机有可用的包管理器与终端、该依赖有包名），
- * 不提供点击即报错的按钮（B5）。由 qywork 自行下载的一项（内置浏览器）在下载期间显示进度，每秒重新读取一次。
+ * 不提供点击即报错的按钮（B5）。由 QyWork 自行下载的一项（内置浏览器）在下载期间显示进度，每秒重新读取一次。
  */
 function EnvironmentRows() {
   void reloadEnvironment()

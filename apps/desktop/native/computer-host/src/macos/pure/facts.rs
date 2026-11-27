@@ -365,14 +365,14 @@ pub fn error_name(value: i32) -> String {
 /// 服务循环按该原因码即时查询授权事实，原因码写错会使运行中撤销的授权无法报告。
 pub fn not_trusted() -> String {
     format!(
-        "{ACCESSIBILITY_NOT_TRUSTED}: 系统设置的「隐私与安全性 › 辅助功能」中未允许 qywork，无法读取控件树，也无法执行控件动作"
+        "{ACCESSIBILITY_NOT_TRUSTED}: 系统设置的「隐私与安全性 › 辅助功能」中未允许 QyWork，无法读取控件树，也无法执行控件动作"
     )
 }
 
 /// 屏幕录制授权缺失时截图的拒绝原因。原因码取 `SCREEN_RECORDING_NOT_GRANTED`，理由同上。
 pub fn no_screen_recording() -> String {
     format!(
-        "{SCREEN_RECORDING_NOT_GRANTED}: 系统设置的「隐私与安全性」中未授予 qywork 屏幕录制权限，无法截图"
+        "{SCREEN_RECORDING_NOT_GRANTED}: 系统设置的「隐私与安全性」中未授予 QyWork 屏幕录制权限，无法截图"
     )
 }
 

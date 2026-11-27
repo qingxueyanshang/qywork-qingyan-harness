@@ -1,5 +1,5 @@
 /**
- * `pet`：读取、创建与切换 qywork 的宠物。
+ * `pet`：读取、创建与切换 QyWork 的宠物。
  *
  * 读写经 `PetPort` 端口完成，宠物库位于 `~/.qywork/pets/`。`apply` 只核对宠物存在并返回 id，
  * 切换由界面在当前会话收到成功结果后执行：当前屏幕选用哪只宠物只由界面记录，服务端与本工具均不记录。
@@ -29,9 +29,9 @@ const summaryOf = (e: PetEntry) => `「${e.pack.name}」（${e.id}）`
 
 export const petTool: ToolSpec = {
   name: 'pet',
-  deferred: { brief: '查看、新建或切换 qywork 界面上的宠物形象与动画' },
+  deferred: { brief: '查看、新建或切换 QyWork 界面上的宠物形象与动画' },
   description:
-    '读取、创建与切换 qywork 的宠物。宠物显示在侧栏底部，用五个状态表现任务进度：' +
+    '读取、创建与切换 QyWork 的宠物。宠物显示在侧栏底部，用五个状态表现任务进度：' +
     'desktop（AI 正在操作电脑）、failed（任务出错）、working（任务运行中）、done（任务完成）、idle（空闲）。' +
     '每个状态是一组循环播放的帧图片，只有一帧时界面自动加上呼吸、跳动等基础动作。' +
     'action=list 列出宠物；read 读取一只宠物的完整参数；' +

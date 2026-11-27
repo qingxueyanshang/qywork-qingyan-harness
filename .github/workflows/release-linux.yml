@@ -58,7 +58,7 @@ jobs:
           tauriScript: bun run tauri
           args: --target x86_64-unknown-linux-gnu --bundles deb,appimage --config ../../.tmp/updater-config.json
           tagName: v__VERSION__
-          releaseName: qywork v__VERSION__
+          releaseName: QyWork v__VERSION__
           releaseCommitish: ${{ github.sha }}
           releaseDraft: true
           prerelease: false
