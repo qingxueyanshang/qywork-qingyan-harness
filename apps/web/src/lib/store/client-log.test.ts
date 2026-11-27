@@ -84,3 +84,25 @@ test('慢请求与未收到响应的请求上报，快速请求与上报自身�
     { level: 'warn', message: '请求未收到响应', fields: { path: '/api/workspaces', status: 0 } },
   ])
 })
+
+/**
+ * 原始失败形状：「Stale read from <Show>」的记录只保留了前三帧，三帧都在框架内部，无法定位到组件。
+ * 保留十余帧并去掉每帧的协议与主机，压缩后不超过服务端的字段上限。
+ */
+test('未处理错误的调用栈保留十余帧，去掉协议与主机', () => {
+  const frames = [
+    'se (http://tauri.localhost/assets/Icons-BRUc0Znz.js:1:7876)',
+    'Ae (http://tauri.localhost/assets/Icons-BRUc0Znz.js:1:7959)',
+    'ft (http://tauri.localhost/assets/Icons-BRUc0Znz.js:1:5762)',
+    'onClick (http://tauri.localhost/assets/Transcript-Ab12Cd34.js:1:40211)',
+    'http://tauri.localhost/assets/index-Zz99.js:3:120',
+    ...Array.from({ length: 12 }, (_, i) => `f${i} (http://tauri.localhost/assets/x.js:1:${i})`),
+  ]
+  const stack = ['Error: Stale read from <Show>.', ...frames.map((f) => `    at ${f}`)].join('\n')
+  const got = log.compactStack(stack)
+  expect(got.split(' | ')).toHaveLength(13)
+  expect(got).toContain('at onClick (assets/Transcript-Ab12Cd34.js:1:40211)')
+  expect(got).toContain('at assets/index-Zz99.js:3:120')
+  expect(got).not.toContain('tauri.localhost')
+  expect(got.length).toBeLessThan(1000)
+})

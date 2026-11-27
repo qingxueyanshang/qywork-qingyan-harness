@@ -84,16 +84,24 @@ export function reportRequest(t: RequestTiming): void {
   else if (t.ms >= SLOW_REQUEST_MS) report('info', '慢请求', { ...t })
 }
 
+/** 调用栈保留的帧数。前几帧常在框架内部（如 Solid 的 `Show`），只保留三帧时无法定位到组件。 */
+const STACK_FRAMES = 12
+
+/** 调用栈压缩为一行：去掉每帧地址中的协议与主机，保留函数名、文件名与行列号。 */
+export function compactStack(stack: string): string {
+  return stack
+    .split('\n')
+    .slice(0, STACK_FRAMES + 1)
+    .map((line) => line.trim().replace(/[a-z][\w+.-]*:\/\/[^/\s)]+\//gi, ''))
+    .join(' | ')
+}
+
 /** 未处理的错误与拒绝。返回解除监听的函数。 */
 export function observeClientErrors(): () => void {
   const record = (message: string, stack: string | undefined) => {
     if (errors >= ERRORS_PER_PAGE) return
     errors++
-    report(
-      'error',
-      message,
-      stack ? { stack: stack.split('\n').slice(0, 4).join(' | ') } : undefined,
-    )
+    report('error', message, stack ? { stack: compactStack(stack) } : undefined)
   }
   const onError = (e: ErrorEvent) => record(`未处理的错误：${e.message}`, e.error?.stack)
   const onRejection = (e: PromiseRejectionEvent) => {

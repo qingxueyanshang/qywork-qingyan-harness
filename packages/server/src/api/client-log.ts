@@ -17,7 +17,8 @@ import { json } from './types.ts'
 
 const MAX_MESSAGE = 500
 const MAX_FIELDS = 12
-const MAX_VALUE = 300
+/** 字段值的上限：容纳十余帧压缩后的调用栈（界面一侧 `client-log.ts` 的 `compactStack`）。 */
+const MAX_VALUE = 1000
 const LEVELS: readonly LogLevel[] = ['info', 'warn', 'error']
 
 function clip(text: string, max: number): string {
