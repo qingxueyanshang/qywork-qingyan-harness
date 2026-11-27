@@ -16,23 +16,16 @@
  * 该响应头只出现一次，错过后每条请求都会被视为新会话。
  */
 
+import { isHttpSpec, type McpServerSpec } from '@qywork/core'
 import pkg from '../package.json' with { type: 'json' }
 import type { McpResourceContents, McpResourceDef } from './resources.ts'
-import {
-  HttpTransport,
-  isHttpSpec,
-  type McpServerSpec,
-  type McpTransport,
-  StdioTransport,
-} from './transport.ts'
+import { HttpTransport, type McpTransport, StdioTransport } from './transport.ts'
 
 /**
  * 本包版本。真源是根目录的 `VERSION`，由 `bun run scripts/sync-version.ts` 写入
  * 各包的 package.json；手写字面量不在该脚本的覆盖范围内，升级版本时不会被更新。
  */
 const PKG_VERSION: string = pkg.version
-
-export type { HttpServerSpec, McpServerSpec, StdioServerSpec } from './transport.ts'
 
 /** 请求超过时限仍未收到应答。工具结果据此写错误类别 `timeout`，工具行显示「超时」。 */
 export class McpTimeoutError extends Error {}

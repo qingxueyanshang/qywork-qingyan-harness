@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openBatchBudget, type SinkPort, type ToolContext, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
-import { parseMcpConfig } from '@qywork/mcp'
+import { parseMcpConfig } from '@qywork/core'
 import {
   acquireExtensions,
   globalPluginsDir,

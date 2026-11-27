@@ -13,7 +13,7 @@
  */
 
 import { readFile } from 'node:fs/promises'
-import { parseMcpConfig } from '@qywork/mcp'
+import { parseMcpConfig } from '@qywork/core'
 import { MCP_CONFIG, mergeMcpServers } from '@qywork/runtime'
 import { type ApiHandler, json } from './types.ts'
 

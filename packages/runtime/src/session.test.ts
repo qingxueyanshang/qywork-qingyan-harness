@@ -24,7 +24,7 @@ import {
   textFeatures,
 } from '@qywork/ai'
 import type { AgentEvent, ConversationId } from '@qywork/core'
-import { parseMcpConfig } from '@qywork/mcp'
+import { parseMcpConfig } from '@qywork/core'
 import {
   appendMessage,
   appendStep,

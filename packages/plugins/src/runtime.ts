@@ -23,7 +23,7 @@
  */
 
 import { pathToFileURL } from 'node:url'
-import type { PluginPermission } from './manifest.ts'
+import type { PluginPermission } from '@qywork/core'
 import { ensureNetGuardScript, netGuardDir, supportsNetGuard } from './netguard.ts'
 
 export interface PluginRuntime {

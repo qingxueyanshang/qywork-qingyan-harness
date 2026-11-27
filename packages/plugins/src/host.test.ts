@@ -2,9 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { PluginManifest } from '@qywork/core'
 import { until } from '@qywork/core/until.test-helper'
 import { checkPermission, type HostCallContext, PluginHost, requiredPermissions } from './host.ts'
-import type { PluginManifest } from './manifest.ts'
 
 /** 在临时目录中写入真实的插件入口。mock 无法验证进程隔离。 */
 async function pluginWith(body: string): Promise<{ dir: string; entry: string }> {

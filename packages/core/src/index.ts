@@ -183,6 +183,15 @@ export {
 } from './domain/ids.ts'
 export { type ImageSize, imageSizeOf } from './domain/image-size.ts'
 export { matroskaMetadataOf } from './domain/matroska.ts'
+// MCP server 配置：电脑端加载与写入、云端创作广场的校验共用
+export {
+  type HttpServerSpec,
+  isHttpSpec,
+  type McpConfig,
+  type McpServerSpec,
+  parseMcpConfig,
+  type StdioServerSpec,
+} from './domain/mcp-config.ts'
 export {
   BUILTIN_MEDIA_KINDS,
   type BuiltinMediaKind,
@@ -358,6 +367,20 @@ export {
   type CacheMissCompaction,
   type CacheMissRequest,
 } from './domain/monitor/cache-miss.ts'
+// 插件清单：电脑端加载与安装、云端创作广场的校验共用
+export {
+  isPanelEntry,
+  MANIFEST_VERSION,
+  ManifestError,
+  type PanelContribution,
+  type PluginManifest,
+  type PluginPermission,
+  type PreviewerContribution,
+  type ProviderContribution,
+  parseManifest,
+  type RoleContribution,
+  type ToolContribution,
+} from './domain/plugin-manifest.ts'
 export {
   RECOVERY_WAITS_MS,
   RESEND_LIMIT,

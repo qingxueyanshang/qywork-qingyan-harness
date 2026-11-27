@@ -9,14 +9,8 @@
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { globalScopeRoot, type ToolSpec } from '@qywork/agent'
-import { EFFORT_ORDER, isEffortLevel } from '@qywork/core'
-import {
-  loadMcpServers,
-  type McpConfig,
-  type McpRegistry,
-  parseMcpConfig,
-  toolNamePrefix,
-} from '@qywork/mcp'
+import { EFFORT_ORDER, isEffortLevel, type McpConfig, parseMcpConfig } from '@qywork/core'
+import { loadMcpServers, type McpRegistry, toolNamePrefix } from '@qywork/mcp'
 import { loadPlugins, type PluginRegistry, pluginToolPrefix } from '@qywork/plugins'
 import type { Role, TeamRules } from '@qywork/team'
 import {

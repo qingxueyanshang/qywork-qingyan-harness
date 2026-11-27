@@ -1,5 +1,5 @@
 /**
- * 插件清单。
+ * 插件清单。电脑端加载与安装插件、云端校验创作广场中的插件都经由本文件解析。
  *
  * 设计取舍：能力采用声明而不是探测。插件必须在清单中列出提供的能力与所需的权限；
  * 宿主据此在加载前决定是否允许，而不是先运行插件再观察其行为。
@@ -9,7 +9,7 @@
  * （或自带渲染器）。
  */
 
-import type { ProviderKind } from '@qywork/core'
+import type { ProviderKind } from './model.ts'
 
 export const MANIFEST_VERSION = 1
 

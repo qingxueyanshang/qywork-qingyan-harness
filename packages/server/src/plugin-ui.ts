@@ -10,8 +10,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
-import { PLUGIN_UI_SANDBOX } from '@qywork/core'
-import { parseManifest } from '@qywork/plugins'
+import { PLUGIN_UI_SANDBOX, parseManifest } from '@qywork/core'
 import { globalPluginsDir } from '@qywork/runtime'
 
 export const PLUGIN_UI_PREFIX = '/plugin-ui/'

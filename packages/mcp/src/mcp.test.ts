@@ -11,8 +11,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openBatchBudget, type SinkPort, ToolRegistry } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { parseMcpConfig } from '@qywork/core'
 import { McpClient } from './client.ts'
-import { loadMcpServers, parseMcpConfig } from './load.ts'
+import { loadMcpServers } from './load.ts'
 import { permissionLabel, renderContent, specFor, toolName } from './register.ts'
 
 /**

@@ -22,20 +22,20 @@ import {
   type ToolSpec,
 } from '@qywork/agent'
 import {
-  CALL_TIMEOUT_MS,
-  checkPermission,
-  type HostCallContext,
-  PluginHost,
-  PluginTimeoutError,
-} from './host.ts'
-import {
   ManifestError,
   type PluginManifest,
   type PreviewerContribution,
   type ProviderContribution,
   parseManifest,
   type RoleContribution,
-} from './manifest.ts'
+} from '@qywork/core'
+import {
+  CALL_TIMEOUT_MS,
+  checkPermission,
+  type HostCallContext,
+  PluginHost,
+  PluginTimeoutError,
+} from './host.ts'
 
 export interface LoadedPlugin {
   manifest: PluginManifest

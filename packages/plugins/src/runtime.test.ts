@@ -17,8 +17,8 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { PluginManifest, PluginPermission } from '@qywork/core'
 import { PluginHost } from './host.ts'
-import type { PluginManifest, PluginPermission } from './manifest.ts'
 import { resolvePluginRuntime, sandboxArgs } from './runtime.ts'
 
 const req = (permissions: PluginPermission[] = []) => ({

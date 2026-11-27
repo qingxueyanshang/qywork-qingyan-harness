@@ -7,7 +7,8 @@
 
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { type McpConfig, parseMcpConfig, toolNamePrefix } from '@qywork/mcp'
+import { type McpConfig, parseMcpConfig } from '@qywork/core'
+import { toolNamePrefix } from '@qywork/mcp'
 import {
   formatCommandLine,
   type McpActivation,

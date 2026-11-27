@@ -45,8 +45,8 @@
 
 import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
+import type { PluginManifest, PluginPermission } from '@qywork/core'
 import { createLineFramer } from '@qywork/core'
-import type { PluginManifest, PluginPermission } from './manifest.ts'
 import { type PluginRuntime, resolvePluginRuntime } from './runtime.ts'
 
 /** 插件调用超过时限仍未返回。工具结果据此写错误类别 `timeout`，工具行显示「超时」。 */

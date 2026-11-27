@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { MANIFEST_VERSION, parseManifest } from './manifest.ts'
+import { MANIFEST_VERSION, parseManifest } from './plugin-manifest.ts'
 
 const base = {
   manifestVersion: MANIFEST_VERSION,

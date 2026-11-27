@@ -17,6 +17,7 @@
 
 import { cp, mkdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import { parseManifest } from '@qywork/core'
 import type { PluginRegistry } from '@qywork/plugins'
 import { globalPluginsDir, pluginToolPrefix } from '@qywork/runtime'
 import { listWorkbenches } from '../plugin-ui.ts'
@@ -78,7 +79,6 @@ export async function readPluginDir(src: string): Promise<{
   const raw = await readFile(manifestPath, 'utf8').catch(() => null)
   if (raw === null) return { ok: false, error: `目录中没有 qywork.plugin.json：${src}` }
   try {
-    const { parseManifest } = await import('@qywork/plugins')
     const m = parseManifest(JSON.parse(raw), manifestPath)
     // 工作台的入口文件必须在目录中：缺少时安装后看板上没有该工作台，且没有任何提示。
     for (const panel of m.contributes.panels ?? []) {

@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { globalScopeRoot } from '@qywork/agent'
-import type { McpConfig } from '@qywork/mcp'
+import type { McpConfig } from '@qywork/core'
 import { normalizeWorkspaceRoot } from '@qywork/store'
 import { withFileLocks } from '@qywork/tools'
 

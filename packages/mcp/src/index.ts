@@ -6,8 +6,8 @@
  * 工具名前缀，不直接依赖本包。
  */
 
-// 加载与解析：runtime 读取三层 mcp.json 并连接全部 server
-export { loadMcpServers, type McpConfig, type McpRegistry, parseMcpConfig } from './load.ts'
+// 加载：runtime 读取三层 mcp.json（解析在 `@qywork/core` 的 `parseMcpConfig`）并连接全部 server
+export { loadMcpServers, type McpRegistry } from './load.ts'
 // 工具名前缀。必须使用该函数，不要自行拼接 `mcp__<name>__`：注册名经过清洗，
 // 用未清洗的 server 名拼接前缀将无法匹配任何工具，`qy mcp` 的工具计数会恒为 0。
 export { toolNamePrefix } from './register.ts'

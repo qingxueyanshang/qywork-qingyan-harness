@@ -12,7 +12,7 @@
  */
 
 import { type ChildProcess, spawn } from 'node:child_process'
-import { createLineFramer } from '@qywork/core'
+import { createLineFramer, type HttpServerSpec, type StdioServerSpec } from '@qywork/core'
 
 /**
  * stdio 与 SSE 的单行上限（字符）。一条 JSON-RPC 消息占一行，图片以 base64 内嵌其中：
@@ -20,28 +20,6 @@ import { createLineFramer } from '@qywork/core'
  * 取 64 Mi 字符，容纳四张达到上限的图片与正文。超过时以溢出原因断开，进行中的请求得到失败。
  */
 const MAX_LINE_CHARS = 64 * 1024 * 1024
-
-export interface StdioServerSpec {
-  transport?: 'stdio'
-  command: string
-  args?: string[]
-  env?: Record<string, string>
-  /** 工作目录，相对于工作区。默认为工作区根目录。 */
-  cwd?: string
-}
-
-export interface HttpServerSpec {
-  transport: 'http'
-  url: string
-  /** 请求头，例如鉴权头。远端 server 通常需要。 */
-  headers?: Record<string, string>
-}
-
-export type McpServerSpec = StdioServerSpec | HttpServerSpec
-
-export function isHttpSpec(spec: McpServerSpec): spec is HttpServerSpec {
-  return (spec as HttpServerSpec).transport === 'http'
-}
 
 export interface TransportHandlers {
   onMessage(msg: Record<string, unknown>): void

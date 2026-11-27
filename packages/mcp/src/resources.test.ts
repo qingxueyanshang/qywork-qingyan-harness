@@ -11,8 +11,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openBatchBudget } from '@qywork/agent'
 import { DEFAULT_DENSITY } from '@qywork/ai'
+import { parseMcpConfig } from '@qywork/core'
 import { CLIENT_PROTOCOL_VERSION, KNOWN_VERSION_LIST } from './client.ts'
-import { loadMcpServers, parseMcpConfig, unsupportedCapabilities } from './load.ts'
+import { loadMcpServers, unsupportedCapabilities } from './load.ts'
 
 interface ServerShape {
   /** 握手时声明的能力。`undefined` 表示不发送 capabilities 字段。 */
