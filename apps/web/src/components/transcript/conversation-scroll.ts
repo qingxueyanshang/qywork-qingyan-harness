@@ -11,6 +11,16 @@ const scrollRestored = new Set<string>()
 /** 从会话索引定位到一条消息的滚动动画时长。 */
 const REVEAL_MS = 260
 
+/** 滚动键的方向：-1 向上，1 向下。Space 按 Shift 区分，在 `onKeyDown` 中判定。 */
+const KEY_DIRECTION: Partial<Record<string, -1 | 1>> = {
+  ArrowUp: -1,
+  PageUp: -1,
+  Home: -1,
+  ArrowDown: 1,
+  PageDown: 1,
+  End: 1,
+}
+
 /** 会话未跟随底部时距底部的距离（像素）的记录键；跟随底部时没有记录。 */
 const scrollKey = (id: string) => `qywork.scroll:${id}`
 
@@ -26,7 +36,14 @@ export function createConversationScroll(conversationId: () => string | null) {
   createEffect(() => {
     if (scroller) scroller.style.overflowAnchor = pinned() ? 'none' : 'auto'
   })
-  let scrollIntent = false
+  /**
+   * 最近一次滚轮或滚动键的方向：-1 向上，1 向下，0 表示没有待消耗的意图。
+   *
+   * 必须区分方向：滚轮在底部继续向下滚动时本容器不派发 scroll，意图保留到下一次 scroll，
+   * 而下一次可能是浏览器在布局变化后收紧滚动位置、向上移动。不区分方向时，这次移动被判为
+   * 用户向上滚动并关闭跟随，此后发送的消息与回复都位于视口下方。
+   */
+  let scrollIntent: -1 | 0 | 1 = 0
   let scrollbarDrag = false
   /**
    * 一次触摸手势是否已发生滑动：`touchmove` 置位，下一次 `touchstart` 复位。
@@ -79,6 +96,7 @@ export function createConversationScroll(conversationId: () => string | null) {
    *
    * 因此 wheel、滚动键与拖动滚动条先记录一次滚动意图，其后的 scroll 事件才能修改
    * `pinned`；触摸滑动的标记在整个手势及其惯性滚动期间有效（见 `touchScroll`）。
+   * 关闭跟随只接受向上的意图：滚轮与滚动键记录方向（见 `scrollIntent`），拖动滚动条与触摸滑动不区分方向。
    * 没有手势来源的 scroll 保持原状态，内容增长时继续跟随底部。
    *
    * 实测（真实服务端与前端，测试 provider 驱动一轮四步）：跟随在第 5 秒被关闭，
@@ -86,7 +104,7 @@ export function createConversationScroll(conversationId: () => string | null) {
    * 不要用 `position: sticky` 固定读数条：被固定的只有读数条，滚动位置仍距底部
    * 两百余像素，正文仍不可见，跳动变为每次内容变矮时回弹一次。
    *
-   * 关闭跟随须同时满足：有手势来源、scrollTop 不是 `writeTop` 写入的值、且比上一次已知的值小。
+   * 关闭跟随须同时满足：有向上的手势来源、scrollTop 不是 `writeTop` 写入的值、且比上一次已知的值小。
    * 不要只按 `gap > 2` 关闭：scroll 事件晚于写入一帧派发，其间新内容使 scrollHeight 增加，
    * `writeTop` 写入后派发的那次 scroll 读取的 `gap` 已大于 2，而 scrollTop 没有变化。
    * `writeTop` 写入派发的 scroll 不消耗 `scrollIntent`，否则手势自身的 scroll 到达时已没有意图标记，
@@ -99,11 +117,11 @@ export function createConversationScroll(conversationId: () => string | null) {
     const top = scroller.scrollTop
     const mine = Math.abs(top - followTop) < 1
     const gap = scroller.scrollHeight - top - scroller.clientHeight
-    const gesture = scrollIntent || scrollbarDrag || touchScroll
+    const upward = scrollIntent < 0 || scrollbarDrag || touchScroll
     if (gap <= 2) {
-      if (gesture || !mine) setPinned(true)
-    } else if (gesture && !mine && top < lastTop) setPinned(false)
-    if (!mine) scrollIntent = false
+      if (upward || scrollIntent > 0 || !mine) setPinned(true)
+    } else if (upward && !mine && top < lastTop) setPinned(false)
+    if (!mine) scrollIntent = 0
     lastTop = top
     const id = conversationId()
     if (id) writeSession(scrollKey(id), pinned() ? undefined : gap)
@@ -158,7 +176,7 @@ export function createConversationScroll(conversationId: () => string | null) {
     )
   const reveal = async (id: string) => {
     setPinned(false)
-    scrollIntent = false
+    scrollIntent = 0
     const run = ++revealRun
     const conversation = conversationId()
     let found = userRow(id)
@@ -192,8 +210,9 @@ export function createConversationScroll(conversationId: () => string | null) {
     step()
   }
 
-  const onWheel = () => {
-    scrollIntent = true
+  const onWheel = (event: WheelEvent) => {
+    // 只有横向分量的滚轮不移动本容器的纵向位置，不记录意图。
+    if (event.deltaY !== 0) scrollIntent = event.deltaY < 0 ? -1 : 1
   }
   const onTouchStart = () => {
     touchScroll = false
@@ -215,17 +234,8 @@ export function createConversationScroll(conversationId: () => string | null) {
       // Space 在这些控件上表示点击或展开，不表示翻页；用键盘展开思考不得关闭底部跟随。
       return
     }
-    if (
-      event.key === 'ArrowUp' ||
-      event.key === 'ArrowDown' ||
-      event.key === 'PageUp' ||
-      event.key === 'PageDown' ||
-      event.key === 'Home' ||
-      event.key === 'End' ||
-      event.key === ' '
-    ) {
-      scrollIntent = true
-    }
+    const direction = event.key === ' ' ? (event.shiftKey ? -1 : 1) : KEY_DIRECTION[event.key]
+    if (direction) scrollIntent = direction
   }
 
   /*

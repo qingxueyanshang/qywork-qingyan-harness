@@ -120,6 +120,7 @@ export function Composer(props: { empty: boolean }) {
    */
   holdOverlay(() => panelMaximized() && (panelDockOpen() || panelDockFocused()))
   let ta!: HTMLTextAreaElement
+  let body!: HTMLDivElement
   let wrap: HTMLDivElement | undefined
   let stopVoiceForSubmit = () => {}
   let panelDockCloseTimer: ReturnType<typeof setTimeout> | undefined
@@ -344,9 +345,18 @@ export function Composer(props: { empty: boolean }) {
     executeSlash(cmd)
   }
 
+  /**
+   * 输入框按正文高度伸缩，上限 200px。
+   *
+   * 测量期间固定 `.composer-body` 的高度：测量前须把输入框高度设为 auto，这次强制布局中输入区变矮、
+   * 会话流变高，浏览器随之收紧会话流的滚动位置；测量后高度复原，会话流的尺寸没有净变化，
+   * ResizeObserver 不触发，贴底的会话流停在距底部数行处。
+   */
   const autosize = () => {
+    body.style.minHeight = `${body.offsetHeight}px`
     ta.style.height = 'auto'
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
+    body.style.minHeight = ''
   }
   createEffect(
     on(
@@ -620,7 +630,7 @@ export function Composer(props: { empty: boolean }) {
           <FollowUpCards onEdit={editFollowUp} thumbProps={thumbProps} />
         </div>
 
-        <div class="composer-body">
+        <div class="composer-body" ref={body}>
           {/* 待发送附件属于本次输入，放在输入框内部，而不是另起一张外部卡片。
             图片显示可辨认的缩略图；普通文件保留文件名卡片。区域最多两行，超出后在内部滚动。 */}
           <PendingAttachments

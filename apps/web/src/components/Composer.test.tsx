@@ -90,6 +90,32 @@ function input(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }))
 }
 
+/**
+ * 原始失败形状：输入框测量高度前先设为 auto，这次强制布局中输入区变矮、会话流变高，浏览器收紧会话流的
+ * 滚动位置；测量后高度复原，会话流尺寸没有净变化，贴底的会话流停在距底部数行处。
+ */
+test('输入框测量高度期间输入区外框高度不变，测量后解除', async () => {
+  const { dispose, host, textarea } = await mountComposer(false)
+  try {
+    const body = host.querySelector<HTMLElement>('.composer-body')!
+    Object.defineProperty(body, 'offsetHeight', { configurable: true, get: () => 96 })
+    const measuredWith: string[] = []
+    Object.defineProperty(textarea, 'scrollHeight', {
+      configurable: true,
+      get: () => {
+        measuredWith.push(body.style.minHeight)
+        return 84
+      },
+    })
+    input(textarea, '第一行\n第二行\n第三行')
+    expect(measuredWith).toEqual(['96px'])
+    expect(body.style.minHeight).toBe('')
+    expect(textarea.style.height).toBe('84px')
+  } finally {
+    dispose()
+  }
+})
+
 test('切换会话与项目时草稿各自保留，发送只清空当前会话', async () => {
   const store = await import('../lib/store/index.ts')
   const conversationsBefore = [...store.state.conversations]

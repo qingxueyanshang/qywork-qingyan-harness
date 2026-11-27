@@ -377,6 +377,63 @@ test('按下发送即开始计时，开始事件到达时计时连续且不重�
 })
 
 /**
+ * 原始失败形状：开始事件把乐观插入的消息改写为账本 id 后，该行整行重建。浏览器中新元素先按
+ * `content-visibility` 的 80px 占位参与布局，贴底的会话流被收紧滚动位置，高度没有净变化，
+ * 刚发送的消息停在输入框下方，直到首个回复内容到达。
+ */
+test('开始事件改写发送消息的 id 后仍是同一行，刻度 id 随之更新', async () => {
+  const store = await import('../lib/store/index.ts')
+  const { render } = await import('solid-js/web')
+  const { Transcript } = await import('./Transcript.tsx')
+  const workspaceBefore = store.workspace()
+  const connectionBefore = store.state.connection
+  const sendBefore = store.client.send
+  const id = 'cv_sent_row'
+  ;(store.client as unknown as { send: typeof sendBefore }).send = () => {}
+  store.setState({
+    activeConversation: id,
+    busyConversations: [],
+    connection: 'ready',
+    views: {},
+    lastRunId: null,
+  })
+  store.openView(id)
+  const host = document.createElement('div')
+  document.body.append(host)
+  const dispose = render(() => <Transcript />, host as unknown as HTMLElement)
+  try {
+    const { LOCAL_ID_PREFIX } = await import('../lib/store/state.ts')
+    store.sendMessage('第一行\n第二行')
+    const row = host.querySelector<HTMLElement>('.row.user')
+    expect(row?.dataset.turn?.startsWith(LOCAL_ID_PREFIX)).toBe(true)
+    store.applyEvent({
+      seq: 1,
+      at: Date.now(),
+      conversationId: id,
+      event: {
+        type: 'run.started',
+        conversationId: id,
+        runId: 'rn_sent_row',
+        model: 'm',
+        userMessageId: 'msg_sent_row',
+        userMessage: { content: '第一行\n第二行' },
+        startedAt: Date.now(),
+      },
+    } as never)
+    expect(host.querySelectorAll('.row.user')).toHaveLength(1)
+    expect(host.querySelector('.row.user')).toBe(row)
+    expect(row?.dataset.turn).toBe('msg_sent_row')
+  } finally {
+    dispose()
+    host.remove()
+    ;(store.client as unknown as { send: typeof sendBefore }).send = sendBefore
+    await resetStore()
+    store.setWorkspace(workspaceBefore)
+    store.setState('connection', connectionBefore)
+  }
+})
+
+/**
  * 原始失败形状：一轮运行期间写入待办后整轮状态条出现，`.transcript-inner` 的下内边距随之增加，
  * 待办全部完成后又减少，贴底的正文与读数条随之上下移动（逐帧实测 4px；输入框顶部有排队消息时 32px）。
  * 留白由 `.transcript-inner` 的类名与内联样式决定，两者在一轮的各个阶段都不变，即留白不变。
@@ -2128,6 +2185,15 @@ describe('子会话与主会话共用流式外壳', () => {
       height = 480
       resize(inner)
       expect(scroller.scrollTop).toBe(480)
+
+      // 原始失败形状：滚轮在底部继续向下滚动不产生 scroll；此后浏览器因布局变化收紧滚动位置，
+      // 这次向上的移动不得关闭跟随，之后发送的消息与回复仍跟随到底部。
+      scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }))
+      scroller.scrollTop = 300
+      scroller.dispatchEvent(new Event('scroll'))
+      height = 560
+      resize(inner)
+      expect(scroller.scrollTop).toBe(560)
 
       // 用户主动向上滚动后保留阅读位置，后续内容增长时不再滚动到底部。
       scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
