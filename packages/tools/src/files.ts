@@ -37,6 +37,13 @@ import { badIntMessage, intArg } from './args.ts'
 import { CanvasPort } from './canvas/port.ts'
 import { cloudReadOnly, cloudTarget, listCloudDir, readCloudFile } from './cloud-skills/source.ts'
 import { dominantEol, eolInsensitivePattern, fromLf, toLf } from './eol.ts'
+import {
+  decodeText,
+  strictDecoder,
+  UTF8,
+  undecodableMessage,
+  unencodableMessage,
+} from './files/encoding.ts'
 import { FileReadPort } from './files/port.ts'
 import { matchQuoteStyle, quoteInsensitive, straightQuotes } from './files/quotes.ts'
 import { readTokens } from './files/read-size.ts'
@@ -57,6 +64,7 @@ import {
   resolveWritablePath,
   rootsOf,
 } from './paths.ts'
+import { localCharset } from './process/decode.ts'
 import { redactSecrets } from './secrets.ts'
 import { deliverReadable, MIN_DELIVERY_BYTES } from './sink.ts'
 
@@ -223,18 +231,44 @@ function approxTokens(tokens: number): string {
 }
 
 /**
- * 把文件正文按 UTF-8 流式解码为字符串片段。
+ * 把文件正文按 UTF-8 流式解码为字符串片段，`invalid.found` 记录是否遇到非法序列。
  *
  * 使用 `StringDecoder` 而不是 `TextDecoder`：前者与 `readFile(abs, 'utf8')` 规则相同（保留 BOM、
- * 非法字节的替换方式相同），写入与编辑一侧按后者计算哈希，两侧解码不一致时会始终判定为读取之后已被修改。
+ * 非法字节的替换方式相同），与 `decodeText` 的有损解码一致；两侧解码不一致时会始终判定为读取之后已被修改。
  */
-async function* decodeFile(abs: string): AsyncGenerator<string> {
+async function* decodeFile(abs: string, invalid: { found: boolean }): AsyncGenerator<string> {
   const decoder = new StringDecoder('utf8')
+  const strict = strictDecoder('utf-8')
   for await (const chunk of createReadStream(abs)) {
+    if (!invalid.found) {
+      try {
+        strict.decode(chunk as Buffer, { stream: true })
+      } catch {
+        invalid.found = true
+      }
+    }
     const text = decoder.write(chunk as Buffer)
     if (text) yield text
   }
+  if (!invalid.found) {
+    try {
+      strict.decode()
+    } catch {
+      invalid.found = true
+    }
+  }
   const rest = decoder.end()
+  if (rest) yield rest
+}
+
+/** 按代码页严格解码的流式版本，遇到非法序列即抛出异常。判定顺序见 `decodeText`。 */
+async function* decodeCodePage(abs: string, charset: string): AsyncGenerator<string> {
+  const decoder = strictDecoder(charset)
+  for await (const chunk of createReadStream(abs)) {
+    const text = decoder.decode(chunk as Buffer, { stream: true })
+    if (text) yield text
+  }
+  const rest = decoder.decode()
   if (rest) yield rest
 }
 
@@ -518,11 +552,10 @@ export const readFileTool: ToolSpec = withSubject(
          * 此处不记录时，模型读取图片后对同一路径执行 `write_file` 会被拒绝为「尚未读取」，
          * 按提示重新读取后仍被拒绝，该提示即为错误陈述。
          *
-         * 按 utf8 解码后再计算哈希，不按原始字节计算。判据是与校验方计算的值是否相同：
-         * `write_file` 一侧按 utf8 读取（`readFile(abs, 'utf8')`）。
-         * 对二进制而言该解码有损，但它是确定性的，两侧计算结果一致即可。
+         * 按 `decodeText` 解码后再计算哈希，不按原始字节计算。判据是与校验方计算的值是否相同：
+         * `write_file` 一侧按 `decodeText` 解码。对二进制而言该解码有损，但它是确定性的，两侧计算结果一致即可。
          */
-        readHashes(ctx).set(abs, hash(await readFile(abs, 'utf8')))
+        readHashes(ctx).set(abs, hash(decodeText(new Uint8Array(await readFile(abs))).text))
         /*
          * 超出上限时才缩放，在上限内原样通过，不要读取图像后无条件重编码：
          * 一张 1440×900 的网页截图重编码后体积增大到 2.4 倍（实测，见 `image.ts`）。
@@ -617,13 +650,26 @@ export const readFileTool: ToolSpec = withSubject(
 
       // 只保留本轮额度能容纳的行：保留量取余量折算为字节后的上界，计量后不超额度的前缀必然在其范围内。
       const keepBytes = Math.max(MIN_DELIVERY_BYTES, tokensToMaxBytes(deliveryCap(ctx)))
-      const scan = await scanLines(
-        pdf === null ? decodeFile(abs) : oneChunk(pdf),
+      const invalid = { found: false }
+      let scan = await scanLines(
+        pdf === null ? decodeFile(abs, invalid) : oneChunk(pdf),
         offset,
         limit,
         keepBytes,
       )
       if (scan === 'binary') return notText(String(args.path), ctx.port(OfficePort) !== null)
+      // 不是 UTF-8 时按本机代码页重新读取，判定顺序与 `decodeText` 相同；代码页同样无法解码时保留 UTF-8 的有损结果。
+      let encodingNote = ''
+      const charset = localCharset()
+      if (invalid.found && charset !== 'utf-8') {
+        const again = await scanLines(decodeCodePage(abs, charset), offset, limit, keepBytes).catch(
+          () => null,
+        )
+        if (again !== null && again !== 'binary') {
+          scan = again
+          encodingNote = `，${charset} 编码`
+        }
+      }
       const slice = scan.lines
       const totalLines = scan.total
       const shown = displayPath(ctx.workspaceRoot, abs)
@@ -661,11 +707,11 @@ export const readFileTool: ToolSpec = withSubject(
         const complete = n === slice.length && scan.complete
         return {
           message: complete
-            ? `读取 ${shown}（${n} 行${end < totalLines ? `，已截断；共 ${totalLines} 行${sizeNote()}` : ''}）`
+            ? `读取 ${shown}（${n} 行${encodingNote}${end < totalLines ? `，已截断；共 ${totalLines} 行${sizeNote()}` : ''}）`
             : opening
-              ? `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${sizeNote()}）。` +
+              ? `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${encodingNote}${sizeNote()}）。` +
                 `文件较大，先返回开头部分；从 offset=${end + 1} 续读，或用 offset/limit 读取指定范围。`
-              : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${sizeNote()}）。` +
+              : `读取 ${shown} 第 ${offset}–${end} 行（共 ${totalLines} 行${encodingNote}${sizeNote()}）。` +
                 `超出上下文剩余空间，从 offset=${end + 1} 续读；已读取的段落在压缩时会被折叠，要点写在回复中。`,
           data: {
             content: redactSecrets(numbered, secrets),
@@ -890,7 +936,8 @@ export async function writeWholeFile(
   }
   if (!created) {
     abs = await resolveWritablePath(rootsOf(ctx), requested, { mustExist: true })
-    existing = await readFile(abs, 'utf8')
+    const decoded = decodeText(new Uint8Array(await readFile(abs)))
+    existing = decoded.text
     const seen = readHashes(ctx).get(abs)
     if (seen === null) {
       return {
@@ -909,11 +956,25 @@ export async function writeWholeFile(
       }
     }
     bytes = fromLf(content, dominantEol(existing))
+    // 写回沿用原有编码。无法按字符串写回的文件（`codec` 为 null）整份替换为 UTF-8：覆盖不保留任何原有内容，与新建相同。
+    const encoded = (decoded.codec ?? UTF8).encode(bytes)
+    if (!(encoded instanceof Uint8Array)) {
+      return {
+        status: 'failure',
+        executed: false,
+        message: unencodableMessage(
+          requested,
+          decoded.codec?.charset ?? 'utf-8',
+          encoded.unencodable,
+        ),
+        errorKind: 'unencodable_text',
+      }
+    }
     // r+ 不创建文件：目标被并发删除时不能把覆盖修改变成新建。
     const file = await open(abs, 'r+')
     try {
-      await file.writeFile(bytes, 'utf8')
-      await file.truncate(Buffer.byteLength(bytes, 'utf8'))
+      await file.writeFile(encoded)
+      await file.truncate(encoded.byteLength)
     } finally {
       await file.close()
     }
@@ -998,7 +1059,7 @@ export const editFileTool: ToolSpec = {
       return { status: 'failure', message: 'edits 不能为空', errorKind: 'invalid_tool_arguments' }
     }
 
-    const current = await readFile(abs, 'utf8')
+    const { text: current, codec } = decodeText(new Uint8Array(await readFile(abs)))
     const seen = readHashes(ctx).get(abs)
     if (seen === null) {
       return {
@@ -1012,6 +1073,13 @@ export const editFileTool: ToolSpec = {
         status: 'failure',
         message: `${args.path} 在读取之后已被修改。请重新 read_file。`,
         errorKind: 'stale_write',
+      }
+    }
+    if (!codec) {
+      return {
+        status: 'failure',
+        message: undecodableMessage(String(args.path)),
+        errorKind: 'unsupported_encoding',
       }
     }
 
@@ -1074,7 +1142,15 @@ export const editFileTool: ToolSpec = {
     if (skipped.length === edits.length && first) {
       return { status: 'failure', message: notes.join('\n'), errorKind: first.errorKind }
     }
-    await writeFile(abs, next, 'utf8')
+    const encoded = codec.encode(next)
+    if (!(encoded instanceof Uint8Array)) {
+      return {
+        status: 'failure',
+        message: unencodableMessage(String(args.path), codec.charset, encoded.unencodable),
+        errorKind: 'unencodable_text',
+      }
+    }
+    await writeFile(abs, encoded)
     readHashes(ctx).set(abs, hash(next))
 
     const change: FileChange = {

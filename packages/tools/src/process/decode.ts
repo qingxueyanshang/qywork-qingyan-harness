@@ -24,18 +24,18 @@ let cachedCharset: string | null = null
  * 类型断言的正确性由构造本身保证：无法识别的标签在此处立即抛出异常，调用方捕获后回退到 UTF-8，
  * 无效标签不会进入解码阶段。
  */
-function decoderFor(label: string): TextDecoder {
+export function decoderFor(label: string): TextDecoder {
   return new TextDecoder(label as ConstructorParameters<typeof TextDecoder>[0])
 }
 
 /**
- * 本机原生程序向管道写入字节时使用的字符集。
+ * 本机原生程序向管道写入字节时使用的字符集，也是本机按「ANSI」保存的文本文件的编码。
  *
  * Windows 下读取注册表中的 ACP：`chcp` 取得的是控制台代码页，而 sidecar 由外壳启动时
  * 没有控制台，该方式的结果不稳定。探测失败、无法拼接标签或不是 Windows 时，
  * 一律按 UTF-8 处理。
  */
-function consoleCharset(): string {
+export function localCharset(): string {
   if (cachedCharset !== null) return cachedCharset
   cachedCharset = 'utf-8'
   if (process.platform !== 'win32') return cachedCharset
@@ -100,7 +100,7 @@ function decodeSegment(bytes: Uint8Array): string {
     if (ch === '�') invalid++
     else if ((ch.codePointAt(0) ?? 0) >= 0x80) valid++
   }
-  return valid > invalid ? lossy : decoderFor(consoleCharset()).decode(bytes)
+  return valid > invalid ? lossy : decoderFor(localCharset()).decode(bytes)
 }
 
 /** 按行解码：先整体尝试严格 UTF-8，失败时逐行判定，一行中的截断不影响其他行。 */

@@ -44,6 +44,7 @@ import {
   type WorkspaceRoots,
 } from './paths.ts'
 import { BASH_PATH_ENV, commandShell } from './process/command-shell.ts'
+import { localCharset } from './process/decode.ts'
 import { setCommandRunner } from './process/spawn.ts'
 import { startCommandRunner } from './runner.ts'
 
@@ -873,6 +874,96 @@ describe('文件工具', () => {
     const out = await registry().execute('read_file', { path: 'a.txt' }, ctx(root))
     expect(out.status).toBe('success')
     expect(String(out.data?.content)).toContain('1\thello')
+  })
+
+  /**
+   * 原始失败形状：GBK 编码的 `start.bat` 经 read_file → edit_file 只修改一行英文，工具回执成功，
+   * 文件中全部汉字的字节被替换为 U+FFFD 的 UTF-8 编码，无法恢复。
+   * 写回沿用文件原有的编码；本机代码页不能无损解码该文件时拒绝修改，原字节不变。
+   */
+  describe('非 UTF-8 文本文件的读写', () => {
+    // 「启动服务」「停止服务」的 GBK 字节
+    const START = [0xc6, 0xf4, 0xb6, 0xaf, 0xb7, 0xfe, 0xce, 0xf1]
+    const STOP = [0xcd, 0xa3, 0xd6, 0xb9, 0xb7, 0xfe, 0xce, 0xf1]
+    const ascii = (text: string) => [...Buffer.from(text, 'ascii')]
+    const bat = (port: string) =>
+      Buffer.from([...ascii('@echo off\r\nREM '), ...START, ...ascii(`\r\nset PORT=${port}\r\n`)])
+    const gbkMachine = localCharset() === 'gb18030'
+
+    const setup = async () => {
+      const root = await workspace()
+      await writeFile(join(root, 'start.bat'), bat('3000'))
+      const r = registry()
+      const c = ctx(root)
+      const read = await r.execute('read_file', { path: 'start.bat' }, c)
+      return { root, r, c, read }
+    }
+
+    test('修改其中一行英文：其余字节不变；不能无损解码时拒绝修改，文件不变', async () => {
+      const { root, r, c, read } = await setup()
+      const out = await r.execute(
+        'edit_file',
+        { path: 'start.bat', edits: [{ old_string: 'PORT=3000', new_string: 'PORT=4000' }] },
+        c,
+      )
+      const after = await readFile(join(root, 'start.bat'))
+      if (out.status === 'success') expect(after).toEqual(bat('4000'))
+      else {
+        expect(out.errorKind).toBe('unsupported_encoding')
+        expect(after).toEqual(bat('3000'))
+      }
+      if (gbkMachine) {
+        expect(String(read.data?.content)).toContain('REM 启动服务')
+        expect(read.message).toContain('gb18030 编码')
+        expect(out.status).toBe('success')
+      }
+    })
+
+    test('修改中文与整份覆盖都按 GBK 写回', async () => {
+      if (!gbkMachine) return
+      const { root, r, c } = await setup()
+      const edited = await r.execute(
+        'edit_file',
+        { path: 'start.bat', edits: [{ old_string: 'REM 启动服务', new_string: 'REM 停止服务' }] },
+        c,
+      )
+      expect(edited.status).toBe('success')
+      const stop = Buffer.from([
+        ...ascii('@echo off\r\nREM '),
+        ...STOP,
+        ...ascii('\r\nset PORT=3000\r\n'),
+      ])
+      expect(await readFile(join(root, 'start.bat'))).toEqual(stop)
+
+      const written = await r.execute(
+        'write_file',
+        {
+          path: 'start.bat',
+          mode: 'overwrite',
+          content: '@echo off\nREM 启动服务\nset PORT=3000\n',
+        },
+        c,
+      )
+      expect(written.status).toBe('success')
+      expect(await readFile(join(root, 'start.bat'))).toEqual(bat('3000'))
+    })
+
+    test('新内容中有该编码无法表示的字符时不写入', async () => {
+      if (!gbkMachine) return
+      const { root, r, c } = await setup()
+      const out = await r.execute(
+        'edit_file',
+        {
+          path: 'start.bat',
+          edits: [{ old_string: 'REM 启动服务', new_string: 'REM 启动服务 🚀' }],
+        },
+        c,
+      )
+      expect(out.status).toBe('failure')
+      expect(out.errorKind).toBe('unencodable_text')
+      expect(out.message).toContain('🚀')
+      expect(await readFile(join(root, 'start.bat'))).toEqual(bat('3000'))
+    })
   })
 
   /**
@@ -2854,16 +2945,19 @@ describe('read_file 读取大文本', () => {
   /**
    * 读取一侧在读取过程中计算哈希，编辑一侧对整份正文计算：两侧解码不同（BOM、非法字节）或分行不同（CRLF）时，
    * 读取过的文件会被判为「读取之后被修改」而始终无法编辑。
+   * 含非法字节的文件不得按字符串写回：本机代码页能无损解码时只改动替换处，否则拒绝修改，字节不变。
    */
-  test('带 BOM、CRLF 与非法字节的文件读取后可以编辑', async () => {
+  test('带 BOM、CRLF 与非法字节的文件读取后编辑不被判为已修改，非法字节不被改写', async () => {
     const root = await mkdtemp(join(tmpdir(), 'qywork-odd-bytes-'))
-    const bytes = Buffer.concat([
-      Buffer.from([0xef, 0xbb, 0xbf]),
-      Buffer.from('first\r\nsecond '),
-      Buffer.from([0xff, 0xfe]),
-      Buffer.from(' tail\r\nthird\r\n'),
-    ])
-    await writeFile(join(root, 'odd.txt'), bytes)
+    const odd = (third: string) =>
+      Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from('first\r\nsecond '),
+        Buffer.from([0xff, 0xfe]),
+        Buffer.from(` tail\r\n${third}\r\n`),
+      ])
+    await writeFile(join(root, 'odd.txt'), odd('third'))
+    await writeFile(join(root, 'bom.txt'), '﻿first\r\nthird\r\n', 'utf8')
     const r = registry()
     const c = ctx(root)
     const read = await r.execute('read_file', { path: 'odd.txt' }, c)
@@ -2872,7 +2966,18 @@ describe('read_file 读取大文本', () => {
     expect(content).not.toContain('\r')
     expect(content.split('\n')[2]).toBe('3\tthird')
     const edit = { path: 'odd.txt', edits: [{ old_string: 'third', new_string: 'THIRD' }] }
-    expect((await r.execute('edit_file', edit, c)).status).toBe('success')
+    const out = await r.execute('edit_file', edit, c)
+    if (out.status === 'success')
+      expect(await readFile(join(root, 'odd.txt'))).toEqual(odd('THIRD'))
+    else {
+      expect(out.errorKind).toBe('unsupported_encoding')
+      expect(await readFile(join(root, 'odd.txt'))).toEqual(odd('third'))
+    }
+
+    await r.execute('read_file', { path: 'bom.txt' }, c)
+    const bom = { path: 'bom.txt', edits: [{ old_string: 'third', new_string: 'THIRD' }] }
+    expect((await r.execute('edit_file', bom, c)).status).toBe('success')
+    expect(await readFile(join(root, 'bom.txt'), 'utf8')).toBe('﻿first\r\nTHIRD\r\n')
   })
 })
 
