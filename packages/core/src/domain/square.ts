@@ -110,6 +110,26 @@ export interface SquareMineItem {
   /** 有已上架的版本：新版本审核期间仍提供该版本。 */
   listed: boolean
   updatedAt: string
+  /** GitHub 收录的条目没有手动发布的新版本：新版本由云端定时检查仓库的标签生成。 */
+  source: 'upload' | 'github'
+}
+
+/** 可从 GitHub 仓库收录的类型：仓库（或其中的子目录）的内容即快照的布局。 */
+export const SQUARE_GITHUB_KINDS = ['plugin', 'skill', 'pet', 'skin', 'canvas'] as const
+
+export type SquareGithubKind = (typeof SQUARE_GITHUB_KINDS)[number]
+
+/** 收录 GitHub 仓库的请求（`POST /v1/square/github`）。 */
+export interface SquareGithubRequest {
+  kind: SquareGithubKind
+  /** `https://github.com/<owner>/<repo>` 或 `<owner>/<repo>`。 */
+  url: string
+  /** 标签或分支。 */
+  ref: string
+  /** 仓库内的子目录；缺省为仓库根目录。 */
+  path?: string
+  title: string
+  summary: string
 }
 
 /**
