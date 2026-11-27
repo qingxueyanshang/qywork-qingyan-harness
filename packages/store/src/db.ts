@@ -179,8 +179,8 @@ export class Store {
   /**
    * 执行一批尚未完成的分批迁移（`Migration.background`），返回是否仍有未完成的分批迁移。
    *
-   * 每批一个 IMMEDIATE 事务，批与批之间由调用方让出事件循环。最后一批完成后执行 VACUUM 收回空间，
-   * 成功之后才登记该迁移：VACUUM 因其他连接占用而失败时不登记，下次启动重新扫描（已迁移的行很小）并再次整理。
+   * 每批一个 IMMEDIATE 事务，批与批之间由调用方让出事件循环。声明 `vacuum` 的迁移在最后一批完成后执行 VACUUM
+   * 收回空间，成功之后才登记该迁移：VACUUM 因其他连接占用而失败时不登记，下次启动重新扫描（已迁移的行很小）并再次整理。
    */
   migrateInBackground(content: ContentStore): boolean {
     const done = (id: number) => !!this.db.query('SELECT 1 FROM _migrations WHERE id = ?').get(id)
@@ -194,9 +194,11 @@ export class Store {
       return true
     }
     this.backgroundCursor.delete(m.id)
-    // 截断 WAL：VACUUM 经 WAL 写入整个新文件，不截断时 -wal 文件保持该大小。
-    this.db.exec('VACUUM')
-    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    if (m.vacuum) {
+      // 截断 WAL：VACUUM 经 WAL 写入整个新文件，不截断时 -wal 文件保持该大小。
+      this.db.exec('VACUUM')
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    }
     this.db
       .transaction(() => {
         if (!done(m.id)) {

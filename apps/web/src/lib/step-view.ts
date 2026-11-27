@@ -96,17 +96,23 @@ export const TARGET_MAX = 48
  */
 export function sanitizeTarget(target: string): string {
   const clean = target.replace(/\s+/g, ' ').trim()
-  return clean.length <= TARGET_MAX ? clean : `${clean.slice(0, TARGET_MAX - 1)}…`
+  // 按码点截取：按 UTF-16 单元截取会把表情等代理对从中切开，留下无法显示的半个字符。
+  const chars = Array.from(clean)
+  return chars.length <= TARGET_MAX ? clean : `${chars.slice(0, TARGET_MAX - 1).join('')}…`
 }
 
 /**
  * 失败时按错误类别取的状态词，未列出的类别为「失败」。新增一个会改变状态词的错误类别时在此登记一行。
+ * - 已中断：用户停止（含浏览器与电脑控制停止后不再操作，`aborted`）。
+ * - 超时：等待或生成超过时限（生成的静默超时为 `media_timeout`）。
  * - 已拒绝：权限裁决拒绝，以及路径边界、凭证文件、受保护目录与网络安全策略拒绝，均未执行。
  * - 结果不明：网页与电脑控制的动作已发出（或部分发出），无法确认执行结果。
  */
 const FAILURE_WORDS: Record<string, string> = {
   interrupted: '已中断',
+  aborted: '已中断',
   timeout: '超时',
+  media_timeout: '超时',
   desktop_wait_timeout: '超时',
   permission_denied: '已拒绝',
   path_out_of_workspace: '已拒绝',

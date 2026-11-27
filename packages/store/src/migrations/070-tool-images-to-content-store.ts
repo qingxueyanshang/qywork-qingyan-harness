@@ -51,4 +51,5 @@ export const migration070: Migration = {
    * 主库降至 0.21 GB，正文库 1.76 GB（13,651 张引用去重为 8,872 份）；迁移前后每个会话重建出的请求历史逐字节相同。
    */
   background: moveToolImagesBatch,
+  vacuum: true,
 }

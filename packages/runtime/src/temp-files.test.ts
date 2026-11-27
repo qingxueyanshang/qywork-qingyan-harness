@@ -3,7 +3,7 @@
  * `officeRunDir` 的路径约定。
  *
  * 锁定「任务是否完成只读取账本与运行表」：待办全部完成且正常结束才删除整个会话目录，
- * 有后台任务运行时两个目录都保留，其余情形只删除本轮的 Office 目录。
+ * 其余情形只删除 Office 目录；仍有后台任务的轮次的 Office 目录保留。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -65,7 +65,12 @@ type Fixture = Awaited<ReturnType<typeof fixture>>
 
 function release(
   f: Fixture,
-  over: Partial<{ stopReason: StopReason; topLevel: boolean; backgroundRunning: boolean }> = {},
+  over: Partial<{
+    stopReason: StopReason
+    topLevel: boolean
+    backgroundRunning: boolean
+    heldRuns: string[]
+  }> = {},
 ) {
   return releaseRunTemp({
     store: f.store,
@@ -75,6 +80,7 @@ function release(
     stopReason: 'completed',
     topLevel: true,
     backgroundRunning: false,
+    heldRuns: [],
     ...over,
   })
 }
@@ -97,6 +103,7 @@ describe('一轮结束时的临时目录', () => {
     ['本轮没有待办', null, {}],
     ['等待用户回复', done, { stopReason: 'awaiting_user' as const }],
     ['被中断', done, { stopReason: 'user_interrupt' as const }],
+    ['仍有子 agent 或后台任务在运行', done, { backgroundRunning: true }],
     ['子会话的轮次', done, { topLevel: false }],
   ])('%s：只删除本轮的 Office 目录，会话临时目录保留', async (_, todos, over) => {
     const f = await fixture(todos)
@@ -106,12 +113,24 @@ describe('一轮结束时的临时目录', () => {
     expect(existsSync(join(conversationTempDir(f.root, f.child), 'crop.png'))).toBe(true)
   })
 
-  test('仍有子 agent 或后台任务在运行：本轮的 Office 目录与会话临时目录都保留', async () => {
+  /**
+   * 原始失败形状：本轮转入后台的 write_office 仍在本轮的 Office 目录中执行，本轮结束时目录被移走，任务以 ENOENT 失败。
+   * 另一形状：有任何后台任务时整体跳过，以 background 启动的服务运行期间每一轮的 Office 目录都留在磁盘上。
+   */
+  test('仍有后台任务的轮次保留 Office 目录；其余轮次（含此前保留、任务已结束的）删除', async () => {
     const f = await fixture(done)
-    await release(f, { backgroundRunning: true })
+    const older = 'rn_older' as RunId
+    await mkdir(officeRunDir(f.root, f.parent, older), { recursive: true })
+    await writeFile(join(officeRunDir(f.root, f.parent, older), 'cache.png'), 'x')
+
+    await release(f, { backgroundRunning: true, heldRuns: [f.run, older] })
+    expect(existsSync(join(officeRunDir(f.root, f.parent, f.run), 'candidate.pptx'))).toBe(true)
+    expect(existsSync(join(officeRunDir(f.root, f.parent, older), 'cache.png'))).toBe(true)
+
+    await release(f, { backgroundRunning: true, heldRuns: [f.run] })
+    expect(existsSync(officeRunDir(f.root, f.parent, older))).toBe(false)
     expect(existsSync(join(officeRunDir(f.root, f.parent, f.run), 'candidate.pptx'))).toBe(true)
     expect(existsSync(join(conversationTempDir(f.root, f.parent), 'crop.png'))).toBe(true)
-    expect(existsSync(join(conversationTempDir(f.root, f.child), 'crop.png'))).toBe(true)
   })
 })
 

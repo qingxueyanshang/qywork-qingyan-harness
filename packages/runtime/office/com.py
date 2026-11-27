@@ -489,23 +489,38 @@ def _settle_marker(call_dir, marker, status):
     util.write_json(_instances_path(call_dir), items)
 
 
-def _adopt_unregistered(items, starting) -> list:
-    """把 starting 记录之后启动、未登记的自动化进程补登记为本调用的进程，规则取自该记录。
+def _adopt_unregistered(items, starting, ended_at=None) -> list:
+    """把 starting 记录之后、worker 结束（ended_at）之前启动且未登记的自动化进程补登记为本调用的进程，规则取自该记录；
+    宿主进程号（host_of）指向已补登记进程的 WPS 组件进程一并补登记，不论启动时刻：宿主在 worker 结束之后仍会启动组件。
 
-    调用方须持有 Lock：持锁期间不会有其他调用启动实例，启动前快照之外的新自动化进程只能来自本调用。
+    调用方须持有 Lock：持锁期间不会有其他调用启动实例。worker 被结束后、清理取得锁之前，其他调用可能已持锁启动并
+    退出（或留下仍有文档的实例），这些进程晚于 ended_at 启动且宿主不是本调用的进程，不补登记。
     """
     known = {e.get("pid") for e in items}
     procs = _procs()
     for m in starting:
         before = set(m.get("before") or [])
-        for pid, p in procs.items():
+        fields = {k: m.get(k) for k in ("label", "progid", "product", "version", "rule")}
+
+        def ours(pid, p, adopted):
             if pid in before or pid in known or p["create_time"] < m["started_at"] - 1:
-                continue
+                return False
             if "/automation" not in p["cmdline"].lower():
-                continue
-            items.append({**{k: m.get(k) for k in ("label", "progid", "product", "version", "rule")},
-                          "role": "unregistered", "method": "starting record", "status": "running",
-                          "pid": pid, "create_time": p["create_time"], "cmdline": p["cmdline"][:240]})
+                return False
+            in_window = ended_at is None or p["create_time"] <= ended_at
+            return in_window or host_of(p["cmdline"]) in adopted
+
+        adopted = set()
+        # 两遍：第一遍按时间窗取得宿主，第二遍补上其后启动的组件。
+        for _ in range(2):
+            for pid, p in procs.items():
+                if pid not in adopted and ours(pid, p, adopted):
+                    adopted.add(pid)
+        for pid in sorted(adopted):
+            p = procs[pid]
+            items.append({**fields, "role": "unregistered", "method": "starting record",
+                          "status": "running", "pid": pid, "create_time": p["create_time"],
+                          "cmdline": p["cmdline"][:240]})
             known.add(pid)
         m["status"] = "resolved"
     return items
@@ -519,10 +534,10 @@ def _update_instances(call_dir, pids, status):
     util.write_json(_instances_path(call_dir), items)
 
 
-def cleanup(call_dir, lock_timeout_s: float = 20) -> list:
+def cleanup(call_dir, lock_timeout_s: float = 20, ended_at=None) -> list:
     """worker 被结束后按登记处理残留：规则为 end 且 PID 与创建时间均一致时才结束进程，其余只报告。
 
-    有未完成的 starting 记录（进程启动后、登记前被结束）时先持锁补登记，再按同一规则处理；
+    有未完成的 starting 记录（进程启动后、登记前被结束）时先持锁补登记（只取 ended_at 之前启动的），再按同一规则处理；
     lock_timeout_s 内未取得锁时这些进程只报告。
     """
     import psutil
@@ -541,7 +556,7 @@ def cleanup(call_dir, lock_timeout_s: float = 20) -> list:
                 report.append({**m, "pid": None, "action": "reported"})
     try:
         if lock is not None:
-            items = _adopt_unregistered(items, starting)
+            items = _adopt_unregistered(items, starting, ended_at)
         report += _end_registered(items, psutil)
     finally:
         if lock is not None:

@@ -66,6 +66,14 @@ const HEADS: Record<string, string> = {
   move_mcp_server: 'MCP 管理',
   enable_mcp_server: 'MCP 管理',
   install_plugin: '插件管理',
+  // 已删除的旧工具：历史中仍有这些工具行，按其所属领域归类，不落入「会话读取」。
+  canvas: '画布读写',
+  office: '文档读写',
+  retrieve_video: '媒体生成',
+  skin: '外观管理',
+  define_subagent: '任务派发',
+  create_goal: '目标管理',
+  list_skills: '技能管理',
 }
 
 /** 动词所属的动作，按迁移时的动词表冻结。 */
@@ -371,15 +379,26 @@ function verbAndObject(
     case 'list_schedules':
       return ['列出', '定时任务']
     default:
-      if (tool.includes('__')) return ['调用', externalObject(target, tool)]
+      if (tool.includes('__')) return ['调用', externalObject(target, tool, a)]
       return [OLD_KIND_VERBS[oldKind] ?? '调用', target]
   }
 }
 
-/** 外部工具的旧目标是权限范围（`mcp:server/tool`、`plugin:id/tool`），显示为「server／tool」。 */
-function externalObject(target: string | null, tool: string): string {
-  const scope = target?.replace(/^(?:mcp|plugin):/, '') ?? tool.replace(/^mcp__/, '')
-  return scope.replace('/', '／')
+/**
+ * 外部工具的对象，与注册时的 `object` 相同：「server／工具」「插件／工具」，MCP 资源读取为资源地址。
+ * 旧目标是权限范围（`mcp:server/tool`、`plugin:id/tool`）；MCP 资源工具的旧目标是资源地址或 `mcp:server/resource`，
+ * 不能按权限范围拆分：`file:///a.md` 会被改写为「file:／//a.md」。
+ */
+function externalObject(target: string | null, tool: string, a: Args): string {
+  const resource = /__(list_resources|fetch_resource)$/.exec(tool)?.[1]
+  if (resource === 'fetch_resource' && str(a.uri)) return str(a.uri)!
+  const scope = /^(?:mcp|plugin):/.test(target ?? '')
+    ? target!.replace(/^(?:mcp|plugin):/, '')
+    : tool.replace(/^mcp__/, '').replace('__', '/')
+  const slash = scope.indexOf('/')
+  const owner = slash < 0 ? scope : scope.slice(0, slash)
+  const name = resource ?? (slash < 0 ? '' : scope.slice(slash + 1))
+  return name ? `${owner}／${name}` : owner
 }
 
 function headOf(tool: string): string {

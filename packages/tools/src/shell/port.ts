@@ -6,8 +6,8 @@ import type { FileChange } from '@qywork/core'
  * 收到用户的「调整方向」消息时，这次执行交给装配方的进程级任务表持有。
  *
  * 任务表跨越多轮存在，回执经由会话的投递入口送达，二者都在 server，因此实现由 server 注入。
- * 端口按会话绑定，方法不带会话参数：其他会话的后台命令在此不可见。只注入顶层会话：
- * 回执须能发起该会话的一轮。
+ * 端口按会话绑定，方法不带会话参数：其他会话的后台命令在此不可见。顶层会话、成员会话与命令行执行（`qy exec`）
+ * 都注入：顶层会话的回执发起该会话的一轮，成员会话与命令行执行的回执在本次执行内作为下一轮的消息执行（`settleAfterRound`）。
  *
  * 任务的启动、等待与收尾只在发起它的工具中执行，任务表只持有转入后台之后的句柄：
  * 任务结束时先把转入后台之后的文件改动追加到 `stepId` 的 `outcome.fileChanges`，再投递回执；
@@ -27,6 +27,8 @@ export interface CommandPort {
     command: string
     /** 发起该任务的工具调用的 step。转入后台之后的文件改动归属它。 */
     stepId: string
+    /** 发起该任务的轮次。该轮的 Office 目录在任务结束之前保留（`heldRuns`）。 */
+    runId: string
     output(): CommandOutput
     /**
      * 标准输入。只有以 `background: true` 启动的命令才有；由前台转入后台的命令启动时没有输入管道，为 null。
@@ -43,6 +45,8 @@ export interface CommandPort {
   }): string
   /** 本会话正在后台运行的命令。 */
   list(): { id: string; command: string }[]
+  /** 本会话仍有后台任务在运行的轮次（`adopt` 的 `runId`），不重复。 */
+  heldRuns(): string[]
   /** 某条后台命令至今的输出。不在本会话的任务表中（已结束、已停止或编号有误）时为 null。 */
   output(id: string): ({ command: string } & CommandOutput) | null
   /** 停止某条后台命令，返回其命令文本；不在任务表中时为 null。被停止的命令不发送回执。 */

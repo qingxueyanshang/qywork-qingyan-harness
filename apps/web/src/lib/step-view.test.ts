@@ -156,6 +156,10 @@ describe('target 截断方向', () => {
     expect(cut.startsWith('读取 .agents/skills/flow-video-script/')).toBe(true)
     expect(cut.endsWith('…')).toBe(true)
 
+    const emoji = sanitizeTarget(`点击 a${'😀'.repeat(60)}`)
+    expect(emoji.endsWith('😀…')).toBe(true)
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(emoji)).toBe(false)
+
     const pattern = `搜索 ${'8'.repeat(60)}|abc`
     const cut2 = sanitizeTarget(pattern)
     expect(cut2.length).toBe(TARGET_MAX)

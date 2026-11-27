@@ -736,6 +736,7 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
         const id = owner.port.adopt({
           command,
           stepId: owner.stepId,
+          runId: ctx.runId,
           output: keptOutput,
           input: input ? textInput(input) : null,
           stop: () => halt.abort(),

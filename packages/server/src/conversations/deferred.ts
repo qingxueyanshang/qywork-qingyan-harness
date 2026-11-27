@@ -5,9 +5,9 @@
  * 历史页随每次切换会话与项目经远程隧道传输，实测其中约四成字节是文件正文、命令输出、匹配列表与
  * 浏览器、桌面观察的元素表，而它们只在展开条目后才显示（界面的 `StepBody`），元素表从不显示。
  *
- * 约束：只推迟 `DEFERRABLE_KEYS` 中的字段，不按大小推迟任意字段。卡片标题、派发任务图与 workflow 卡片
- * 在折叠状态下读取 `data` 的其他字段（读取范围、窗口标题、`workflowId`、`dispatched`、`output`），
- * 按大小推迟会使这些卡片在展开之前缺少内容。新增展开后才显示的正文字段时加入本表。
+ * 约束：只推迟 `DEFERRABLE_KEYS` 中的字段，不按大小推迟任意字段。派发任务图与 workflow 卡片在折叠状态下
+ * 读取 `data` 的其他字段（`workflowId`、`dispatched`、`output`），按大小推迟会使这些卡片在展开之前缺少内容；
+ * 工具行标题读取 `outcome.subject`，不读取 `data`。新增展开后才显示的正文字段时加入本表。
  */
 
 import type { ToolOutcomeWire } from '@qywork/core'

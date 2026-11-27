@@ -659,6 +659,38 @@ describe('后台命令结束时的回执', () => {
   }, 30_000)
 })
 
+describe('删除会话', () => {
+  /**
+   * 原始失败形状：删除会话时只检查本轮是否在执行，后台任务继续运行；生成照常计费并写入工作区，
+   * 回执投递给已删除的会话。
+   */
+  test('删除会话时停止其后台任务，不投递回执', async () => {
+    const cv = conversation()
+    script.push(
+      callsTurn([run('call_k', { command: hold('K1'), background: true })]),
+      textTurn('已在后台运行。'),
+    )
+    void startRun(cv, '后台运行', undefined, deps())
+    const pid = await pidOf('K1')
+    await until(() => commands.listOf(cv).length === 1, '后台命令登记')
+    await idle(cv)
+    const { handleConversationsApi } = await import('../api/conversations.ts')
+    const url = `http://127.0.0.1/api/conversations/${cv}`
+    const res = await handleConversationsApi(new URL(url), new Request(url, { method: 'DELETE' }), {
+      store,
+      runs,
+      commands,
+      closeBrowserPages: async () => {},
+      collectGarbage: () => {},
+    } as never)
+    expect(res?.status).toBe(200)
+    await until(() => !alive(pid), '后台命令被停止')
+    await until(() => commands.listOf(cv).length === 0, '任务移出任务表')
+    await Bun.sleep(100)
+    expect(bodies.length).toBe(2)
+  }, 30_000)
+})
+
 describe('在本轮内等待后台命令', () => {
   test('background_command 带 wait_seconds 时等到命令结束才返回，回执在同一轮作为下一条消息送达', async () => {
     const cv = conversation()

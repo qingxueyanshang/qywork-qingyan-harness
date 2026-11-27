@@ -363,7 +363,7 @@ export const readOfficeGuideTool: ToolSpec = {
   category: 'office',
   facet: '文档',
   summary: '获取 Word / PPT / Excel 制作说明',
-  targetExtractor: (a) => (typeof a.format === 'string' ? a.format : null),
+  // 不声明 targetExtractor：格式名不是文件，写入目标时被上下文压缩计入「涉及的文件」。
   permissionEffect: 'read',
   parallelSafe: true,
   requires: [OfficePort],

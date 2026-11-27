@@ -548,6 +548,13 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
       if (!conversation)
         return json({ error: 'conversation not found', message: '会话不存在' }, 404)
       if (d.runs.isBusy(id)) return json({ error: '该会话正在执行，请先中断再删除' }, 409)
+      /*
+       * 停止该会话与其子会话的后台任务（命令、生成、制作文档等），不送达回执：会话删除之后回执无处投递，
+       * 生成仍会计费并写入工作区，制作文档所在的临时目录随即被删除。`isBusy` 不含后台任务。
+       */
+      for (const cv of [id, ...listChildConversations(d.store, id).map((c) => c.id)]) {
+        d.commands.stopOf(cv)
+      }
       // 先关闭该会话名下的内置浏览器 AI 页面：会话删除后页面归属无从追溯，保留即成为孤立页面。
       await d.closeBrowserPages(id)
       // 临时目录在删除账本记录之前删除：子会话随父会话级联删除后无法再列出它们的目录。

@@ -97,6 +97,15 @@ export class CommandTaskTable {
     )
   }
 
+  /** 该会话仍有后台任务在运行的轮次，见 `CommandPort.heldRuns`。 */
+  heldRunsOf(conversationId: ConversationId): string[] {
+    return [
+      ...new Set(
+        [...(this.byConversation.get(conversationId)?.values() ?? [])].map((t) => t.runId),
+      ),
+    ]
+  }
+
   /** 该会话正在后台运行的命令，按登记顺序。 */
   listOf(conversationId: ConversationId): BackgroundCommand[] {
     return [...(this.byConversation.get(conversationId) ?? new Map<string, Task>())].map(
@@ -255,6 +264,7 @@ export function commandPortOf(
     },
     adopt: (task) => table.adopt(conversationId, task, deliver),
     list: () => table.listOf(conversationId),
+    heldRuns: () => table.heldRunsOf(conversationId),
     output: (id) => table.output(conversationId, id),
     stop: (id) => table.stop(conversationId, id),
     write: (id, text, end) => table.write(conversationId, id, text, end),

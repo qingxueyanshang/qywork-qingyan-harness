@@ -6,7 +6,8 @@
  *
  * 目录的生命周期：worker 给出结果且调用方读取完其中的文件后，调用方以 `releaseCall` 删除调用目录；
  * 写入未提交、超时、取消时保留，供本轮查看候选文件与处理残留进程。渲染缓存位于同一 run 目录下，
- * 本轮结束时 `Session` 删除整个 `office/<runId>`。不要把缓存改为按会话或按工作区共用：
+ * 本轮结束时删除整个 `office/<runId>`（该轮仍有后台任务时保留到任务结束之后，见 runtime 的 `releaseRunTemp`）。
+ * 不要把缓存改为按会话或按工作区共用：
  * 每个中间版本都会留下一整套页面图片，且没有回收路径。
  */
 
@@ -143,7 +144,11 @@ export async function runWorker(
   let cleanup: WorkerResponse | null = null
   if (main.got.timedOut || aborted || main.response === null) {
     // 清理不受本次调用的取消信号控制：用户停止执行后，残留的办公软件进程仍需处理。
-    cleanup = (await invoke({ action: 'cleanup' }, CLEANUP_TIMEOUT_MS)).response
+    // worker 结束的时刻随请求传入：其后启动的办公软件进程属于其他调用，清理不补登记它们。
+    const workerEndedAt = Date.now() / 1000
+    cleanup = (
+      await invoke({ action: 'cleanup', worker_ended_at: workerEndedAt }, CLEANUP_TIMEOUT_MS)
+    ).response
   }
   const secrets = ctx.secrets ?? { values: [] }
   return {
@@ -156,7 +161,7 @@ export async function runWorker(
   }
 }
 
-/** 一轮的 Office 目录：本轮各次调用的目录与渲染缓存。本轮结束时 `Session` 删除它。 */
+/** 一轮的 Office 目录：本轮各次调用的目录与渲染缓存。本轮结束时删除，该轮仍有后台任务时保留到任务结束之后。 */
 export function officeRunDir(workspaceRoot: string, conversationId: string, runId: string): string {
   return join(conversationTempDir(workspaceRoot, conversationId), 'office', runId)
 }
@@ -164,7 +169,7 @@ export function officeRunDir(workspaceRoot: string, conversationId: string, runI
 /**
  * 删除一次调用的目录。只在 worker 给出结果、调用方已读取完其中的文件之后调用。
  *
- * 删除失败（办公软件仍占用其中的文件）不影响本次结果：本轮结束时整个 run 目录会再删除一次。
+ * 删除失败（办公软件仍占用其中的文件）不影响本次结果：整个 run 目录在之后的一轮结束时再删除一次。
  */
 export async function releaseCall(run: WorkerRun): Promise<void> {
   await rm(run.callDir, { recursive: true, force: true }).catch(() => {})

@@ -611,7 +611,7 @@
   opacity: 1;
 }
 
-/* 唯一的文本容器：依次包含动作名、状态词、目标与增删行数。
+/* 唯一的文本容器：依次包含开头、目标、增删行数与状态词。
    只有目标会被截断：它是唯一长度不定的项，其余各项短且定长；各项分别截断时
    会出现两个省略号。 */
 .fold-summary {
@@ -626,8 +626,11 @@
   flex: none;
   white-space: nowrap;
 }
+/* 只有失败行的状态词标红，与分组标题只给失败计数着色一致；「部分完成」「图片未发送」不是失败。 */
 .fold-word {
   flex: none;
+}
+.fold.failed .fold-word {
   color: var(--danger);
 }
 .fold-failure-count {

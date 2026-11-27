@@ -19,6 +19,11 @@ export interface Migration {
    * 等待握手的时限后进程被终止，事务回滚，每次启动都从头开始。迁移完成之前的行与之后的行读取方都必须能读取。
    */
   background?: (db: Database, content: ContentStore, after: number) => number | null
+  /**
+   * 分批迁移完成后执行 VACUUM 收回空间。只用于移出或删除大量数据的迁移：VACUUM 重写整个账本文件，
+   * 在服务线程上同步执行，账本数百 MB 时耗时以秒计；只改写少量行的迁移不收回任何空间。
+   */
+  vacuum?: true
 }
 
 export function parsedObject(raw: string | null): Record<string, unknown> | null {
@@ -33,8 +38,17 @@ export function parsedObject(raw: string | null): Record<string, unknown> | null
   }
 }
 
-/** 改写工具开头的迁移每批读取的候选行数。候选行按 payload 中的旧开头预先筛选，数量远少于全部工具行。 */
-const HEAD_BATCH_ROWS = 500
+/**
+ * 按 rowid 区间分批的迁移每批覆盖的行数。不要改为按匹配行数分批（`LIMIT`）：候选行稀疏时，
+ * 一批要扫描到表尾才凑满，整张表的扫描在一个写事务中完成，期间服务线程阻塞。
+ */
+export const SCAN_ROWS = 5_000
+
+/** 区间 `(after, after + SCAN_ROWS]` 之后是否还有行：有时返回下一批的起点，否则返回 null。 */
+export function nextWindow(db: Database, after: number): number | null {
+  const end = after + SCAN_ROWS
+  return db.query('SELECT 1 FROM steps WHERE rowid > ? LIMIT 1').get(end) ? end : null
+}
 
 /**
  * 工具类目改名后改写历史工具行中已写入的开头（payload 的 `action.head`，迁移 81 写入）的一批。
@@ -47,13 +61,11 @@ export function renameToolHeadBatch(
   to: string,
 ): number | null {
   const rows = db
-    .query<{ rid: number; id: string; payload: string | null }, [number, string, number]>(
-      `SELECT rowid AS rid, id, payload FROM steps
-       WHERE rowid > ? AND kind = 'tool_action' AND instr(payload, ?) > 0
-       ORDER BY rowid LIMIT ?`,
+    .query<{ id: string; payload: string | null }, [number, number, string]>(
+      `SELECT id, payload FROM steps
+       WHERE rowid > ? AND rowid <= ? AND kind = 'tool_action' AND instr(payload, ?) > 0`,
     )
-    .all(after, from, HEAD_BATCH_ROWS)
-  if (!rows.length) return null
+    .all(after, after + SCAN_ROWS, from)
   const write = db.query('UPDATE steps SET payload = ? WHERE id = ?')
   for (const row of rows) {
     const payload = parsedObject(row.payload)
@@ -61,7 +73,7 @@ export function renameToolHeadBatch(
     if (!payload || action?.head !== from) continue
     write.run(JSON.stringify({ ...payload, action: { ...action, head: to } }), row.id)
   }
-  return rows.at(-1)!.rid
+  return nextWindow(db, after)
 }
 
 /** 旧服务为临时子 agent 设定的显示名。迁移 41 沿用该名称，不以任务正文作为名字。 */

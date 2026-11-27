@@ -60,7 +60,7 @@ import {
 // 参数判定与电脑控制共用一份（`given` 的理由见文件头第 3 条）：两份判据会逐渐不一致，同一个填充值在两类工具中结论不同。
 import { ArgError, blank, given, oneOf, str } from './desktop/shared/args.ts'
 import { resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
-import { backgroundable, endsOnMessage } from './shell/detach.ts'
+import { endsOnMessage } from './shell/detach.ts'
 
 /** 单次等待的上限。超过该值的请求按上限截断，不接受任意时长。 */
 const MAX_WAIT_MS = 60_000
@@ -181,6 +181,18 @@ const ACT_VERBS: Record<BrowserActionKind, ToolVerb> = {
   press: '按键',
   drag: '拖动',
   dialog: '操作',
+}
+
+/**
+ * 调用时记录的对象不具体（标签页、网页、元素、网址）时，执行后以该页的标题作为对象。下载路径、上传的文件名、
+ * 输入或选择的文字、对话框、等待的选择器是具体对象，保持不变：以标题替换后无法判断操作的对象。
+ */
+const TITLE_SUBJECT: Record<string, (args: Record<string, unknown>) => boolean> = {
+  browser_tabs: () => true,
+  browser_navigate: () => true,
+  browser_observe: () => true,
+  browser_act: (args) => !['type', 'select', 'dialog'].includes(String(args.action)),
+  browser_wait: (args) => !(typeof args.selector === 'string' && args.selector),
 }
 
 /** 回执中的元素文字是这些动作的直接对象；输入与选择的对象是文字本身，不取元素。 */
@@ -1322,54 +1334,55 @@ export const browserUploadTool: ToolSpec = {
     }),
 }
 
-export const browserDownloadTool: ToolSpec = backgroundable(
-  {
-    ...BASE,
-    name: 'browser_download',
-    description:
-      '点击下载链接或按钮，把文件保存到工作区内的指定路径。目标文件已存在时拒绝。' +
-      '结果含 blocked 表示下载被宿主拦截，原因随结果返回。' +
-      '结果不附带观察，需要读取页面状态时再调用 browser_observe。',
-    parameters: {
-      type: 'object',
-      properties: {
-        tabId: { type: 'string' },
-        ref: { type: 'string', description: '触发下载的元素编号' },
-        path: { type: 'string', description: '工作区内的目标路径' },
-      },
-      required: ['tabId', 'ref', 'path'],
-      additionalProperties: false,
+/**
+ * 下载不转入后台：下载经本轮的浏览器控制完成，本轮结束时控制撤销（`BrowserPort.release`），
+ * 尚未确认终态的下载随之失败。等待有上限（`timeoutMs`），收到「调整方向」的消息时等到下载结束再注入。
+ */
+export const browserDownloadTool: ToolSpec = {
+  ...BASE,
+  name: 'browser_download',
+  description:
+    '点击下载链接或按钮，把文件保存到工作区内的指定路径。目标文件已存在时拒绝。' +
+    '结果含 blocked 表示下载被宿主拦截，原因随结果返回。' +
+    '结果不附带观察，需要读取页面状态时再调用 browser_observe。',
+  parameters: {
+    type: 'object',
+    properties: {
+      tabId: { type: 'string' },
+      ref: { type: 'string', description: '触发下载的元素编号' },
+      path: { type: 'string', description: '工作区内的目标路径' },
     },
-    verb: '下载',
-    object: (args) => (typeof args.path === 'string' ? args.path : '文件'),
-    summary: '触发下载并保存到工作区路径',
-    targetExtractor: tabTarget,
-
-    fn: (args, ctx) =>
-      onBrowser(ctx, async (browser, send) => {
-        // 先裁决路径再触发：授权按该绝对路径登记；顺序颠倒时，网站会先开始下载，
-        // 之后才判断能否写入磁盘。
-        const absolutePath = await resolveWritablePath(rootsOf(ctx), str(args.path, 'path'))
-        const input = {
-          tabId: str(args.tabId, 'tabId'),
-          ref: str(args.ref, 'ref'),
-          absolutePath,
-          timeoutMs: DOWNLOAD_TIMEOUT_MS,
-        }
-        const r = await send(() => browser.download(input))
-        if (r.blocked) {
-          return {
-            status: 'failure',
-            message: `下载被拦截：${r.blocked}${r.suggestedName ? `（${r.suggestedName}）` : ''}`,
-            data: { ...r },
-            errorKind: 'download_blocked',
-          }
-        }
-        return { status: 'success', message: `已保存到 ${r.path}，${r.bytes} 字节`, data: { ...r } }
-      }),
+    required: ['tabId', 'ref', 'path'],
+    additionalProperties: false,
   },
-  (args) => `下载${typeof args.path === 'string' ? ` ${args.path}` : '文件'}`,
-)
+  verb: '下载',
+  object: (args) => (typeof args.path === 'string' ? args.path : '文件'),
+  summary: '触发下载并保存到工作区路径',
+  targetExtractor: tabTarget,
+
+  fn: (args, ctx) =>
+    onBrowser(ctx, async (browser, send) => {
+      // 先裁决路径再触发：授权按该绝对路径登记；顺序颠倒时，网站会先开始下载，
+      // 之后才判断能否写入磁盘。
+      const absolutePath = await resolveWritablePath(rootsOf(ctx), str(args.path, 'path'))
+      const input = {
+        tabId: str(args.tabId, 'tabId'),
+        ref: str(args.ref, 'ref'),
+        absolutePath,
+        timeoutMs: DOWNLOAD_TIMEOUT_MS,
+      }
+      const r = await send(() => browser.download(input))
+      if (r.blocked) {
+        return {
+          status: 'failure',
+          message: `下载被拦截：${r.blocked}${r.suggestedName ? `（${r.suggestedName}）` : ''}`,
+          data: { ...r },
+          errorKind: 'download_blocked',
+        }
+      }
+      return { status: 'success', message: `已保存到 ${r.path}，${r.bytes} 字节`, data: { ...r } }
+    }),
+}
 
 /** 注册顺序在此处确定。七个工具声明同一个端口，整组注册或整组不注册。 */
 export const browserTools: ToolSpec[] = [
@@ -1383,8 +1396,8 @@ export const browserTools: ToolSpec[] = [
 ].map(withSubject)
 
 /**
- * 补上执行后确定的对象（`subject`）：点击、悬停、填写、拖动取回执中的元素文字，其余取该页执行后的标题。
- * 调用时记录的目标是标签页编号，不能直接显示。无法取得标题时不写，工具行显示调用时记录的对象。
+ * 补上执行后确定的对象（`subject`）：点击、悬停、填写、拖动取回执中的元素文字；对象不具体的调用取该页执行后的标题
+ * （`TITLE_SUBJECT`）。无法取得标题时不写，工具行显示调用时记录的对象。
  */
 function withSubject(spec: ToolSpec): ToolSpec {
   return {
@@ -1395,6 +1408,7 @@ function withSubject(spec: ToolSpec): ToolSpec {
       if (typeof element === 'string' && element && ELEMENT_SUBJECT.has(String(args.action))) {
         return { ...out, subject: element }
       }
+      if (!TITLE_SUBJECT[spec.name]?.(args)) return out
       const tab = out.data?.tab as { tabId?: unknown } | undefined
       const tabId = typeof args.tabId === 'string' ? args.tabId : tab?.tabId
       const browser = ctx.port(BrowserPort)

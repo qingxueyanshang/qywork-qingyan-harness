@@ -155,6 +155,43 @@ async function workspace(): Promise<string> {
 
 const data = (r: ToolOutcome): Record<string, unknown> => r.data ?? {}
 
+/**
+ * 原始失败形状：执行后一律以页面标题作为对象，「下载 out.bin」「输入「会议纪要」」「等待 #submit」都显示为「下载 A」等，
+ * 无法判断操作的对象。只有调用时的对象不具体（标签页、网页、元素）时才取标题。
+ */
+describe('执行后的对象', () => {
+  const wrapped = (name: string) => browserTools.find((t) => t.name === name)!
+
+  test('下载、上传、输入、等待选择器保留调用时的对象；查看网页取页面标题', async () => {
+    const root = await workspace()
+    const { port } = fakeBrowser()
+    const ctx = ctxWith(root, port)
+    const download = await wrapped('browser_download').fn(
+      { tabId: 'bt_1', ref: 'e1', path: 'out.bin' },
+      ctx,
+    )
+    expect(download.status).toBe('success')
+    expect(download.subject).toBeUndefined()
+    const upload = await wrapped('browser_upload').fn({ tabId: 'bt_1', paths: ['a.txt'] }, ctx)
+    expect(upload.status).toBe('success')
+    expect(upload.subject).toBeUndefined()
+    const typed = await wrapped('browser_act').fn(
+      { tabId: 'bt_1', action: 'type', ref: 'e1', text: '会议纪要' },
+      ctx,
+    )
+    expect(typed.subject).toBeUndefined()
+    const waited = await wrapped('browser_wait').fn({ tabId: 'bt_1', selector: '#submit' }, ctx)
+    expect(waited.subject).toBeUndefined()
+    const observed = await wrapped('browser_observe').fn({ tabId: 'bt_1' }, ctx)
+    expect(observed.subject).toBe('A')
+    const clicked = await wrapped('browser_act').fn(
+      { tabId: 'bt_1', action: 'click', ref: 'e1' },
+      ctx,
+    )
+    expect(clicked.subject).toBe('button 提交')
+  })
+})
+
 describe('注册元数据', () => {
   test('七个工具、同一个类目与权限效果', () => {
     expect(browserTools.map((t) => t.name)).toEqual([

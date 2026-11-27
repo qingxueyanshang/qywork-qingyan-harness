@@ -142,6 +142,38 @@ describe('按工具名与参数转换', () => {
     expect(plugin?.action).toMatchObject({ head: '插件调用', object: 'shot／capture' })
   })
 
+  /** 原始失败形状：资源工具的旧目标按权限范围拆分，`file:///notes/a.md` 显示为「file:／//notes/a.md」。 */
+  test('MCP 资源工具：读取显示资源地址，列出显示「server／list_resources」，与注册时的对象相同', () => {
+    const fetched = convertToolAction('mcp__notes__fetch_resource', {
+      kind: 'tool_result',
+      action: old('call', 'MCP', 'file:///notes/a.md'),
+      args: { uri: 'file:///notes/a.md' },
+    })
+    expect(fetched?.action).toMatchObject({ head: 'MCP 调用', object: 'file:///notes/a.md' })
+
+    const listed = convertToolAction('mcp__notes__list_resources', {
+      kind: 'tool_result',
+      action: old('call', 'MCP', 'mcp:notes/resource'),
+      args: {},
+    })
+    expect(listed?.action).toMatchObject({ head: 'MCP 调用', object: 'notes／list_resources' })
+  })
+
+  test('已删除的旧工具按其领域归类，不落入「会话读取」', () => {
+    const canvas = convertToolAction('canvas', {
+      kind: 'tool_result',
+      action: old('write', '画布', 'a.canvas.json'),
+      args: { path: 'a.canvas.json' },
+    })
+    expect(canvas?.action).toMatchObject({ head: '画布读写', object: 'a.canvas.json' })
+    const video = convertToolAction('retrieve_video', {
+      kind: 'tool_result',
+      action: old('read', '视频', 'generated/a.mp4'),
+      args: {},
+    })
+    expect(video?.action).toMatchObject({ head: '媒体生成' })
+  })
+
   test('待办按原动作区分创建与更新', () => {
     const edit = convertToolAction('write_todos', {
       kind: 'tool_result',
@@ -271,6 +303,10 @@ test('迁移 84：开头为「网络访问」的工具行改为「联网搜索�
     JSON.stringify({ kind: 'tool_result', action: { kind: 'read', head, verb: '获取', object } })
   insert.run('a', 'web_fetch', row('网络访问', 'https://example.com/'))
   insert.run('b', 'run_command', row('命令执行', 'curl 网络访问.txt'))
+  // 按 rowid 区间分批：远在第一个区间之后、中间没有行的匹配行同样改写。
+  db.query(
+    "INSERT INTO steps (rowid, id, kind, tool_name, payload) VALUES (12345, 'c', 'tool_action', 'web_search', ?)",
+  ).run(row('网络访问', '天气'))
   let after = 0
   for (;;) {
     const next = migration084.background!(db, {} as never, after)
@@ -285,5 +321,6 @@ test('迁移 84：开头为「网络访问」的工具行改为「联网搜索�
     ).action.head
   expect(head('a')).toBe('联网搜索')
   expect(head('b')).toBe('命令执行')
+  expect(head('c')).toBe('联网搜索')
   db.close()
 })

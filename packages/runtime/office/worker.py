@@ -136,7 +136,7 @@ def do_read(req, resp):
 
 
 def do_cleanup(req, resp):
-    report = com.cleanup(req["call_dir"])
+    report = com.cleanup(req["call_dir"], ended_at=req.get("worker_ended_at"))
     resp["instances"] = report
     ended = sum(1 for r in report if r["action"] == "ended")
     left = [r for r in report if r["action"] in ("reported", "end_failed")]

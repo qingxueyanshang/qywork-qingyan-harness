@@ -150,6 +150,45 @@ class UnregisteredCleanupTest(unittest.TestCase):
                     p.kill()
                     p.wait(10)
 
+    def test_processes_started_after_the_worker_ended_are_left_alone(self):
+        """worker 被结束后、清理取得锁之前，其他调用持锁启动的进程晚于 worker 结束的时刻，不补登记、不结束。"""
+        started_at = time.time()
+        own = self.spawn("wps.exe /prometheus /wps /Automation -Embedding")
+        ended_at = time.time()
+        time.sleep(0.05)
+        other = self.spawn("wps.exe /prometheus /wps /Automation -Embedding")
+        try:
+            with TempDir() as d:
+                util.write_json(d / "instances.json", [self.marker("end", started_at, [])])
+                report = {r["pid"]: r["action"] for r in com.cleanup(d, ended_at=ended_at)}
+                self.assertEqual(report, {own.pid: "ended"})
+                self.assertIsNotNone(own.wait(10))
+                self.assertIsNone(other.poll())
+        finally:
+            for p in (own, other):
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(10)
+
+    def test_component_of_own_host_is_ended_even_if_started_later(self):
+        """宿主在 worker 结束之后才启动组件：组件命令行中的宿主进程号指向本调用的宿主时一并结束。"""
+        started_at = time.time()
+        host = self.spawn("wps.exe /prometheus /wps /Automation -Embedding")
+        ended_at = time.time()
+        time.sleep(0.05)
+        component = self.spawn(
+            f"wps.exe /wps /from_prome /prome-pipe-token=kprometheus.{host.pid}.1.2 /Automation -Embedding")
+        try:
+            with TempDir() as d:
+                util.write_json(d / "instances.json", [self.marker("end", started_at, [])])
+                report = {r["pid"]: r["action"] for r in com.cleanup(d, ended_at=ended_at)}
+                self.assertEqual(report, {host.pid: "ended", component.pid: "ended"})
+        finally:
+            for p in (host, component):
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(10)
+
     def test_unverified_component_is_only_reported(self):
         started_at = time.time()
         p = self.spawn("WINWORD.EXE /Automation -Embedding")

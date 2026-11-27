@@ -2,16 +2,18 @@ import type { ToolOutcome, ToolSpec } from '@qywork/agent'
 import { CommandPort } from './port.ts'
 
 /**
- * 可转入后台的工具：执行期间本会话收到用户的「调整方向」消息时（`CommandPort.steered`），
- * 把这次执行登记到后台任务表并立即返回；执行照常进行，结束时以回执送达，
- * 可经 `background_command` 读取、等待与停止。没有后台任务端口（成员会话、命令行）时照常等待。
+ * 可转入后台的工具：执行期间本会话收到「调整方向」的消息时（`CommandPort.steered`；成员会话中是父会话
+ * 派发的跟进），把这次执行登记到后台任务表并立即返回；执行照常进行，结束时以回执送达，
+ * 可经 `background_command` 读取、等待与停止。没有后台任务端口时照常等待。
  *
- * 用于生成、画布运行与取回、导出成片、制作文档、浏览器下载：它们的执行可能超过命令的前台等待上限，
- * 且执行不依赖当前这一步，可以脱离本轮继续。
+ * 用于生成、取回、画布运行与取回、导出成片、制作文档：它们的执行可能超过命令的前台等待上限，
+ * 不依赖当前这一步，也不依赖本轮持有的资源（浏览器控制随本轮撤销，下载因此不在其中）。
  *
  * 工具收到的是本次执行自己的中止信号：转入后台之前随本轮停止而中止，转入后台之后只由任务表的停止中止。
  * 不要把本轮的 `ctx.signal` 直接交给工具：本轮结束时它中止，已转入后台的执行随之被取消。
- * 工具持有的文件锁随执行一直持有到结束，转入后台期间同一文件的写入排在其后。
+ * 转入后台之后的进度输出丢弃：本轮的事件队列此后不再被读取，工具行已显示结果。
+ * 不持有文件锁：同一批中排在后面的可转入后台的调用随即转入后台并与之并行，同一文件的写入由各工具自身的
+ * 版本检查拒绝（制作文档的 sha256 核对）。
  */
 export function backgroundable(
   spec: ToolSpec,
@@ -26,9 +28,15 @@ export function backgroundable(
       const forward = () => own.abort(ctx.signal.reason)
       if (ctx.signal.aborted) own.abort(ctx.signal.reason)
       else ctx.signal.addEventListener('abort', forward, { once: true })
-      const running = spec.fn(args, { ...ctx, signal: own.signal })
-      const watch = new AbortController()
       let detached = false
+      const running = spec.fn(args, {
+        ...ctx,
+        signal: own.signal,
+        emit: (channel, delta) => {
+          if (!detached) ctx.emit(channel, delta)
+        },
+      })
+      const watch = new AbortController()
       try {
         const first = await Promise.race([
           running.then((outcome) => ({ outcome })),
@@ -38,6 +46,8 @@ export function backgroundable(
           ),
         ])
         if ('outcome' in first) return first.outcome
+        // 本轮已停止：执行正随之中止，登记到后台只会送达一条「已取消」的回执。
+        if (ctx.signal.aborted) return await running
         detached = true
         ctx.signal.removeEventListener('abort', forward)
         const name = label(args)
@@ -45,6 +55,7 @@ export function backgroundable(
         const id = port.adopt({
           command: name,
           stepId: ctx.stepId,
+          runId: ctx.runId,
           output: () => ({ stdout: '', stderr: '', dropped: { stdout: 0, stderr: 0 } }),
           input: null,
           stop: () => {

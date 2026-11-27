@@ -451,6 +451,7 @@ describe('后台命令的工具形态', () => {
         throw new Error('本组用例不应启动命令')
       },
       list: () => Object.entries(running).map(([id, r]) => ({ id, command: r.command })),
+      heldRuns: () => [],
       output: (id) => (running[id] ? { dropped: { stdout: 0, stderr: 0 }, ...running[id] } : null),
       stop: (id) => {
         if (!running[id]) return null

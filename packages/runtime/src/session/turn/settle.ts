@@ -61,6 +61,7 @@ export async function recordFinished(
     backgroundRunning:
       (session.ports.get(DelegatePort)?.inflight().length ?? 0) > 0 ||
       (session.ports.get(CommandPort)?.list().length ?? 0) > 0,
+    heldRuns: session.ports.get(CommandPort)?.heldRuns() ?? [],
   })
 }
 

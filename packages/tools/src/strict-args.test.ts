@@ -79,6 +79,7 @@ function commandPort(stopped: string[]): CommandPort {
       throw new Error('本用例不启动命令')
     },
     list: () => [{ id: TASK, command: running.command }],
+    heldRuns: () => [],
     output: (id) => (id === TASK ? { ...running, dropped: { stdout: 0, stderr: 0 } } : null),
     stop: (id) => {
       stopped.push(id)

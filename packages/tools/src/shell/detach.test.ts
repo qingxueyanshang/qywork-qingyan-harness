@@ -20,6 +20,7 @@ function harness(steered: Promise<void>) {
       return 'task_1'
     },
     list: () => [],
+    heldRuns: () => [],
     output: () => null,
     stop: () => null,
     write: () => null,
@@ -142,5 +143,49 @@ test('纯等待收到消息时结束等待并返回下一步，不登记任务',
     '等待期间用户发来调整方向的消息，已结束等待；先用 browser_observe 确认页面状态',
   )
   expect(tool.signal().aborted).toBe(true)
+  expect(adopted).toEqual([])
+})
+
+/** 原始失败形状：转入后台之后的进度仍写入本轮的事件队列，同一轮的后续波次把它追加到已结束的工具行。 */
+test('转入后台之后的进度输出不再写入本轮', async () => {
+  const emitted: string[] = []
+  const { ctx } = harness(Promise.resolve())
+  const recording = {
+    ...ctx,
+    emit: (_channel: string, delta: string) => {
+      emitted.push(delta)
+    },
+  } as ToolContext
+  let later!: (delta: string) => void
+  let finish!: () => void
+  const tool = {
+    name: 'progress',
+    fn: (_args: Record<string, unknown>, c: ToolContext) => {
+      c.emit('progress', '开始')
+      later = (delta) => c.emit('progress', delta)
+      return new Promise((resolve) => {
+        finish = () => resolve({ status: 'success', message: '完成' })
+      })
+    },
+  } as unknown as ToolSpec
+  await backgroundable(tool, () => '生成视频').fn({}, recording)
+  later('转入后台之后')
+  finish()
+  expect(emitted).toEqual(['开始'])
+})
+
+/** 原始失败形状：用户先停止、随后发来「调整方向」的消息，正在中止的执行被登记到后台，回执为「失败，已取消」。 */
+test('本轮已停止时收到消息不登记任务，返回执行的结果', async () => {
+  const { adopted, ctx, run } = harness(Promise.resolve())
+  run.abort()
+  const tool = {
+    name: 'stoppable',
+    fn: async (_args: Record<string, unknown>, c: ToolContext) => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      return { status: 'failure', message: c.signal.aborted ? '已中止' : '未中止' }
+    },
+  } as unknown as ToolSpec
+  const out = await backgroundable(tool, () => '生成视频').fn({}, ctx)
+  expect(out.message).toBe('已中止')
   expect(adopted).toEqual([])
 })
