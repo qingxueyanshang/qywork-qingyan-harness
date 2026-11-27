@@ -214,7 +214,7 @@ const WAITER_RUNTIME = `(() => {
     visible: (el) => el !== null && visible(el),
     hidden: (el) => el === null || !visible(el),
     enabled: (el) => el !== null && visible(el) && !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true',
-    text: (el, want) => el !== null && (el.textContent || '').replace(/\\s+/g, ' ').trim() === want,
+    text: (el, want) => el !== null && (el.textContent || '').replace(/\\s+/g, ' ').includes(String(want).replace(/\\s+/g, ' ').trim()),
     value: (el, want) => el !== null && 'value' in el && String(el.value) === want,
   }
   window.__qyworkWait = (selector, timeoutMs, state, expected) => {

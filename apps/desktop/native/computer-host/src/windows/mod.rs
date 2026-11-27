@@ -2420,6 +2420,24 @@ fn set_toggle(window: i64, element: &IUIAutomationElement, target: ToggleState) 
     attempt
 }
 
+/// 一次切换之后等待控件报告新状态的期限。
+///
+/// Chromium 内核的复选控件在 `Toggle()` 返回之后才更新状态；实测动作之后数百毫秒内的重读已是切换后的状态。
+const TOGGLE_SETTLE: Duration = Duration::from_millis(500);
+
+/// 一次切换之后的状态读数：在 `limit` 内等待读数离开切换前的状态 `before` 或读取失败，再读取一次。
+///
+/// 不要改为切换后立即读取：控件尚未更新时读取到的是切换前的状态，二态控件被报告为结果未确认，
+/// 三态控件会被再切换一次而越过目标状态。读数在期限内未变化时如实返回该读数。
+fn read_after_toggle(
+    before: ToggleState,
+    limit: Duration,
+    read: impl Fn() -> Result<ToggleState, String>,
+) -> Result<ToggleState, String> {
+    backend::settled(limit, || read().map_or(true, |state| state != before));
+    read()
+}
+
 /// 向目标状态逐次切换，每次切换之后重读状态。`pattern` 的释放由调用方负责。
 fn toggle_to(
     window: i64,
@@ -2458,7 +2476,7 @@ fn toggle_to(
             Attempt::Called(outcome) if outcome.dispatch == Dispatch::Submitted && outcome.returned => {}
             other => return other,
         }
-        match read() {
+        match read_after_toggle(last, TOGGLE_SETTLE, &read) {
             Ok(state) => {
                 last = state;
                 if state == target {
@@ -2759,6 +2777,45 @@ mod tests {
         assert!(!holds_focus(false, Some(42), Some(7)));
         assert!(!holds_focus(false, None, Some(42)));
         assert!(!holds_focus(false, Some(42), None));
+    }
+
+    /// 原始失败形状：网页中的复选框在 `Toggle()` 返回之后才更新状态，立即读取仍为 off，
+    /// 回执为「切换 1 次后为 off，目标为 on」，而同一次动作之后的重读已是 on。
+    #[test]
+    fn a_toggle_reading_waits_until_the_state_leaves_the_previous_one() {
+        let reads = std::cell::Cell::new(0);
+        let late = || {
+            reads.set(reads.get() + 1);
+            Ok(if reads.get() < 4 {
+                ToggleState::Off
+            } else {
+                ToggleState::On
+            })
+        };
+        assert_eq!(
+            read_after_toggle(ToggleState::Off, Duration::from_secs(5), late),
+            Ok(ToggleState::On)
+        );
+
+        // 期限内读数未变化：如实返回该读数。
+        let started = Instant::now();
+        assert_eq!(
+            read_after_toggle(ToggleState::Off, Duration::from_millis(60), || {
+                Ok(ToggleState::Off)
+            }),
+            Ok(ToggleState::Off)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+
+        // 读取失败即停止等待，返回失败原因。
+        let started = Instant::now();
+        assert_eq!(
+            read_after_toggle(ToggleState::Off, Duration::from_secs(5), || {
+                Err("element_gone".to_owned())
+            }),
+            Err("element_gone".to_owned())
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

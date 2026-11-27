@@ -1,5 +1,5 @@
 /**
- * `desktop_act_sequence`：在同一个窗口上依次执行有限个动作。每一步按上一步带回的观察解析目标，
+ * `desktop_act_sequence`：在同一个窗口上依次执行有限个动作与等待。每一步按上一步带回的观察解析目标，
  * 判定后置条件，遇到边界即停止并保留已派发的前缀。
  */
 
@@ -20,6 +20,7 @@ import {
   MODIFIERS,
   MODIFIERS_DESCRIPTION,
   MOUSE_BUTTONS,
+  meant,
   SCROLL_DIRECTIONS,
   SCROLL_STEPS,
   SEQUENCE_ACTIONS,
@@ -56,7 +57,7 @@ import {
   landingLine,
   planAct,
 } from './shared/target.ts'
-import { MIN_WAIT_MS } from './wait.ts'
+import { MIN_WAIT_MS, pauseThenRead } from './wait.ts'
 
 /**
  * 一次序列的最大步数。
@@ -94,6 +95,23 @@ const EXPECT_PARAMS: Record<Expectation, readonly string[]> = {
 /** 序列中单步接受的定位参数。窗口与观察编号对整组统一提供，不写在单步中。 */
 const STEP_PARAMS = ['action', 'ref', 'automationId', 'name', 'role', 'expect']
 
+/**
+ * 等待步骤的 `action` 取值。该步不派发输入：等待 `durationMs` 后按读取范围重新读取，实现与 `desktop_wait`
+ * 的按时长等待相同（`pauseThenRead`）。它不是宿主动作，不放入动作表 `ACTION_DEFS`。
+ */
+const WAIT_STEP = 'wait'
+/** 等待步骤接受的参数。 */
+const WAIT_PARAMS = ['action', 'durationMs']
+/** 单步 `action` 的全部取值：序列动作与等待步骤。 */
+const STEP_KINDS: readonly string[] = [...SEQUENCE_ACTIONS, WAIT_STEP]
+/**
+ * 一次序列中等待步骤的时长合计上限，单步同样受它约束。
+ *
+ * 与单步后置条件的最长等待（`MAX_EXPECT_MS`）取同一值：整组在同一次桌面占用内执行，等待步骤用于点击之后的加载；
+ * 更长的等待在序列之后用 `desktop_wait`，由调用方依据其结果决定下一步。
+ */
+const MAX_SEQUENCE_WAIT_MS = MAX_EXPECT_MS
+
 /** 单步的后置条件，参数按 `until` 收窄。`timeoutMs` 只对有宿主等待的几种条件有效。 */
 interface ExpectPlan {
   until: Expectation
@@ -104,16 +122,26 @@ interface ExpectPlan {
   timeoutMs: number
 }
 
-/** 单步解析得到的计划。目标保留在 `args` 中，每一步在执行时按当前控件表解析。 */
-interface StepPlan {
+/** 动作步骤解析得到的计划。目标保留在 `args` 中，每一步在执行时按当前控件表解析。 */
+interface ActionPlan {
+  type: 'action'
   index: number
   kind: DesktopActionKind
   args: Record<string, unknown>
   expect: ExpectPlan | null
 }
 
-/** 单步的回执。`dispatch` 是执行事实，`expect` 是后置条件的判定结果，两者分别列出。 */
-interface StepReceipt {
+/** 等待步骤的计划。 */
+interface WaitPlan {
+  type: 'wait'
+  index: number
+  ms: number
+}
+
+type StepPlan = ActionPlan | WaitPlan
+
+/** 动作步骤的回执。`dispatch` 是执行事实，`expect` 是后置条件的判定结果，两者分别列出。 */
+interface ActionReceipt {
   index: number
   action: DesktopActionKind
   /** 解析成功时为控件 ref，解析失败时为该步骤提供的定位条件。 */
@@ -127,6 +155,22 @@ interface StepReceipt {
   /** 按控件执行的指针步骤的落点与控件尺寸，只在动作已发出时记录。 */
   landing?: Landing
   durationMs: number
+}
+
+/** 已完成等待的等待步骤的回执。等待之后无法重读时 `reason` 是失败原文。 */
+interface WaitReceipt {
+  index: number
+  action: typeof WAIT_STEP
+  waitedMs: number
+  reason?: string
+  durationMs: number
+}
+
+type StepReceipt = ActionReceipt | WaitReceipt
+
+/** 派发输入的步骤。等待步骤不派发输入，不计入「已派发」。 */
+function isInput(r: StepReceipt): r is ActionReceipt {
+  return r.action !== WAIT_STEP
 }
 
 /** 序列停止的步骤与原因。 */
@@ -165,12 +209,13 @@ function planSteps(raw: unknown): StepPlan[] {
   if (raw.length > MAX_STEPS) {
     throw new ArgError(`一次最多 ${MAX_STEPS} 步，收到 ${raw.length} 步，拆分为多次调用。`)
   }
-  return raw.map((item, at) => {
+  const plans = raw.map((item, at): StepPlan => {
     const index = at + 1
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
       throw new ArgError(`第 ${index} 步不是对象`)
     }
     const args = item as Record<string, unknown>
+    if (args.action === WAIT_STEP) return waitPlan(args, index)
     const kind = stepKind(args.action, index)
     checkActionParams(kind, args, STEP_PARAMS)
     const expect = expectOf(args.expect, index)
@@ -178,8 +223,36 @@ function planSteps(raw: unknown): StepPlan[] {
     if (expect && given(args.imageRef)) {
       throw new ArgError(`第 ${index} 步按图定位，没有可判定 expect 的控件`)
     }
-    return { index, kind, args, expect }
+    return { type: 'action', index, kind, args, expect }
   })
+  const waited = plans.reduce((sum, p) => sum + (p.type === 'wait' ? p.ms : 0), 0)
+  if (waited > MAX_SEQUENCE_WAIT_MS) {
+    throw new ArgError(
+      `等待步骤合计 ${waited} 毫秒，上限 ${MAX_SEQUENCE_WAIT_MS} 毫秒；更长的等待在序列之后用 desktop_wait`,
+    )
+  }
+  return plans
+}
+
+/**
+ * 等待步骤的计划。`durationMs` 必填，低于 `MIN_WAIT_MS` 时提高到该值；提供了表达意图的其余参数即拒绝，
+ * 判据与动作参数相同（`meant`）：strict schema 下模型为每一步填写空值与取值列表中的一项。
+ */
+function waitPlan(args: Record<string, unknown>, index: number): WaitPlan {
+  const extra = Object.keys(args).filter(
+    (key) => !WAIT_PARAMS.includes(key) && meant(key, args[key]),
+  )
+  if (extra.length) {
+    throw new ArgError(`第 ${index} 步的 wait 只接受 durationMs，收到 ${extra.join(' / ')}`)
+  }
+  if (!given(args.durationMs)) throw new ArgError(`第 ${index} 步的 wait 必须提供 durationMs`)
+  const ms = bounded(
+    args.durationMs,
+    `第 ${index} 步的 durationMs`,
+    MIN_WAIT_MS,
+    Number.MAX_SAFE_INTEGER,
+  )
+  return { type: 'wait', index, ms }
 }
 
 /**
@@ -198,7 +271,7 @@ function stepKind(raw: unknown, index: number): DesktopActionKind {
         '用 desktop_act 单独执行该动作，再重新观察。',
     )
   }
-  throw unknownAction(raw, SEQUENCE_ACTIONS, `第 ${index} 步的 action`)
+  throw unknownAction(raw, STEP_KINDS, `第 ${index} 步的 action`)
 }
 
 function expectOf(raw: unknown, index: number): ExpectPlan | null {
@@ -274,6 +347,9 @@ function targetLabel(args: Record<string, unknown>): string {
 }
 
 function stepLine(r: StepReceipt): string {
+  if (!isInput(r)) {
+    return `${r.index} wait 已等待 ${r.waitedMs} 毫秒${r.reason === undefined ? '' : ` · ${r.reason}`}`
+  }
   const fact =
     r.dispatch === 'not_dispatched' ? '未执行' : r.dispatch === 'unknown' ? '结果未确认' : '已提交'
   const expect =
@@ -313,7 +389,8 @@ function tailLine(cursor: Cursor): string {
  * 把逐步回执合成为一个工具结果。
  *
  * `executed` 与单动作使用同一判据：只要有一步的执行事实不是 `not_dispatched`，
- * 本次调用就不是未执行，后缀未执行不改变这一点。
+ * 本次调用就不是未执行，后缀未执行不改变这一点。等待步骤不派发输入，不计入 `dispatched`；
+ * 已完成等待的等待步骤也不计入 `notExecuted`。
  */
 function sequenceOutcome(
   ctx: ToolContext,
@@ -323,8 +400,12 @@ function sequenceOutcome(
   cursor: Cursor,
   before: readonly DesktopElement[] | null,
 ): ToolOutcome {
-  const dispatched = done.filter((r) => r.dispatch !== 'not_dispatched').map((r) => r.index)
-  const notExecuted = plans.filter((p) => !dispatched.includes(p.index)).map((p) => p.index)
+  const inputs = done.filter(isInput)
+  const dispatched = inputs.filter((r) => r.dispatch !== 'not_dispatched').map((r) => r.index)
+  const waited = new Set(done.filter((r) => !isInput(r)).map((r) => r.index))
+  const notExecuted = plans
+    .filter((p) => !dispatched.includes(p.index) && !waited.has(p.index))
+    .map((p) => p.index)
   const attempted = new Set(done.map((r) => r.index))
   const pending = plans.filter((p) => !attempted.has(p.index))
   const lines = done.map(stepLine)
@@ -333,7 +414,9 @@ function sequenceOutcome(
     : `${plans.length} 步全部提交`
   const stopped = halt
     ? `停在第 ${halt.index} 步 · ${halt.reason}` +
-      (pending.length ? ` · 未执行 ${pending.map((p) => `${p.index} ${p.kind}`).join('、')}` : '')
+      (pending.length
+        ? ` · 未执行 ${pending.map((p) => `${p.index} ${p.type === 'wait' ? WAIT_STEP : p.kind}`).join('、')}`
+        : '')
     : ''
   const lead = [head, ...lines, stopped, tailLine(cursor)].filter(Boolean).join('\n')
   const receipt: Record<string, unknown> = {
@@ -357,7 +440,7 @@ function sequenceOutcome(
     toolName: 'desktop_act_sequence',
     snapshot: cursor.last,
     receipt,
-    targetRef: done.at(-1)?.target ?? null,
+    targetRef: inputs.at(-1)?.target ?? null,
     before,
     lead,
   })
@@ -416,9 +499,9 @@ async function runStep(
   send: PortCall,
   windowId: string,
   cursor: Cursor,
-  plan: StepPlan,
+  plan: ActionPlan,
   scope: ReturnType<typeof actScope>,
-): Promise<{ receipt: StepReceipt; halt: Halt | null }> {
+): Promise<{ receipt: ActionReceipt; halt: Halt | null }> {
   let aim: Aim
   let action: DesktopAction
   // 目标解析成功之后，回执改为记录解析得到的目标：前置条件与值域相关的拒绝针对的是
@@ -476,7 +559,7 @@ async function runStep(
     }
   }
 
-  const receipt: StepReceipt = {
+  const receipt: ActionReceipt = {
     index: plan.index,
     action: plan.kind,
     target: aim.label,
@@ -488,7 +571,7 @@ async function runStep(
   }
   if (result.dispatch === 'not_dispatched') {
     // 请求动作未发出，但前台准备可能已改变窗口。是否还能保留旧观察由端口统一判定。
-    if (result.observation || !desktop.elements(windowId)) {
+    if (result.observation || !desktop.observation(windowId)) {
       advance(cursor, result)
     }
     return {
@@ -542,6 +625,8 @@ async function runStep(
  *
  * 先按动作自身带回的观察判定一次；不成立且该条件有宿主等待时，等待一次以取得更新的表，
  * 再按同一判据判定。等待请求无法发出时不改变已派发的事实，按未满足收尾。
+ * 动作带回的观察是自绘窗口（`isBareWindow`）时不等待：宿主读取的控件树同样没有业务控件，
+ * 规则与 `desktop_wait` 相同。
  */
 async function settle(
   desktop: DesktopPort,
@@ -554,6 +639,12 @@ async function settle(
   if (metBy(cursor.table, ref, expect)) return { met: true }
   const until = EXPECT_WAITS[expect.until]
   if (!until) return { met: false }
+  if (cursor.last && isBareWindow(cursor.last)) {
+    return {
+      met: false,
+      error: `${expect.until} 未满足 · 该窗口无可操作控件，按控件树判定的条件不会成立，未等待`,
+    }
+  }
   try {
     const waited = await send(() =>
       desktop.wait({
@@ -573,6 +664,47 @@ async function settle(
   return { met: metBy(cursor.table, ref, expect) }
 }
 
+/**
+ * 执行一个等待步骤：等待之后重新读取，下一步与序列结束时的截图都依据这一份控件表。
+ *
+ * 停止信号在等待期间到达时不返回回执：该步未完成，按其余步骤的停止语义列入未执行。
+ * 重读失败时等待已经发生，回执照常列出并写明原因，序列在此停止。
+ */
+async function runWait(
+  ctx: ToolContext,
+  desktop: DesktopPort,
+  send: PortCall,
+  windowId: string,
+  cursor: Cursor,
+  plan: WaitPlan,
+): Promise<{ receipt: WaitReceipt | null; halt: Halt | null }> {
+  const started = Date.now()
+  const done = (reason?: string): WaitReceipt => ({
+    index: plan.index,
+    action: WAIT_STEP,
+    waitedMs: plan.ms,
+    ...(reason === undefined ? {} : { reason }),
+    durationMs: Date.now() - started,
+  })
+  try {
+    const snapshot = await pauseThenRead(ctx.signal, desktop, send, windowId, plan.ms)
+    if (!snapshot) {
+      return {
+        receipt: null,
+        halt: { index: plan.index, reason: '本次执行已停止', errorKind: 'aborted' },
+      }
+    }
+    advance(cursor, { observation: snapshot })
+    return { receipt: done(), halt: null }
+  } catch (err) {
+    const reason = `无法读取等待之后的控件表 · ${err instanceof Error ? err.message : String(err)}`
+    return {
+      receipt: done(reason),
+      halt: { index: plan.index, reason, errorKind: 'desktop_observation_unavailable' },
+    }
+  }
+}
+
 export const desktopActSequenceTool: ToolSpec = {
   ...BASE,
   name: 'desktop_act_sequence',
@@ -581,7 +713,10 @@ export const desktopActSequenceTool: ToolSpec = {
     'set_window_state / move_window / resize_window / close_window 不接受，它们会使后续步骤的 imageRef 失效。' +
     '自绘界面的「点击输入框 → type_text → press_key」这类连续操作使用本工具，一次调用执行完毕。' +
     '第一步按本轮对该窗口最近一份观察解析目标，之后每一步按上一步带回的新观察解析；' +
-    '按图定位的步骤使用 imageRef 与 imageX / imageY。序列包含按图定位的步骤、已执行指针、按键与激活动作，' +
+    '按图定位的步骤使用 imageRef 与 imageX / imageY。' +
+    `action=wait 的步骤等待 durationMs 毫秒后重新读取控件表，不派发输入，整组的等待合计上限 ${MAX_SEQUENCE_WAIT_MS} 毫秒；` +
+    '点击后需要等待页面加载或对话框出现时，在同一序列中于点击之后加入等待步骤，结束时的截图在等待之后采集，一次调用完成点击、等待与核验。' +
+    '序列包含按图定位的步骤、已执行指针、按键与激活动作、已完成的等待步骤，' +
     '或最后一份观察中的窗口无可操作控件时，回执附带操作后的整窗截图，用于核验结果。证据不足或状态尚未确定时，应重新观察。' +
     '全部提交仅表示动作已提交，不代表任务完成；expect 仅表示所指定的后置条件是否满足。' +
     '某步未执行、结果未确认、后置条件未满足、调用未返回或本次执行被停止，即停在该步并放弃后续步骤。' +
@@ -596,7 +731,11 @@ export const desktopActSequenceTool: ToolSpec = {
         items: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: SEQUENCE_ACTIONS },
+            action: { type: 'string', enum: STEP_KINDS },
+            durationMs: {
+              type: 'integer',
+              description: `action=wait 的等待毫秒数，不低于 ${MIN_WAIT_MS}`,
+            },
             ref: { type: 'string', description: '控件编号，取自对应时刻的观察' },
             automationId: { type: 'string', description: '按稳定标识定位，要求唯一命中' },
             name: { type: 'string', description: '按名称定位，要求唯一命中' },
@@ -649,7 +788,8 @@ export const desktopActSequenceTool: ToolSpec = {
             imageY: { type: 'integer', description: '按图定位：图内像素纵坐标，左上角是 0,0' },
             expect: {
               type: 'object',
-              description: '该步骤的后置条件，不满足即停在该步骤',
+              description:
+                '该步骤的后置条件，不满足即停在该步骤；动作后窗口无可操作控件时 value / gone / appears 不等待，记为未满足',
               properties: {
                 until: {
                   type: 'string',
@@ -696,7 +836,7 @@ export const desktopActSequenceTool: ToolSpec = {
       // 参数错误在派发之前抛出，`onDesktop` 记为未执行：此时尚未发送任何帧。
       const plans = planSteps(args.steps)
 
-      const before = desktop.elements(windowId)
+      const before = desktop.observation(windowId)?.elements ?? null
       const cursor: Cursor = {
         table: before,
         last: null,
@@ -714,9 +854,15 @@ export const desktopActSequenceTool: ToolSpec = {
           halt = unreadHalt(plan.index, cursor)
           break
         }
-        const outcome = await runStep(desktop, send, windowId, cursor, plan, actScope(ctx))
-        done.push(outcome.receipt)
-        ctx.emit('progress', `${stepLine(outcome.receipt)}\n`)
+        // 步骤只有两类：派发输入的动作（种类由动作表 `ACTION_DEFS` 定义）与等待。
+        const outcome =
+          plan.type === 'wait'
+            ? await runWait(ctx, desktop, send, windowId, cursor, plan)
+            : await runStep(desktop, send, windowId, cursor, plan, actScope(ctx))
+        if (outcome.receipt) {
+          done.push(outcome.receipt)
+          ctx.emit('progress', `${stepLine(outcome.receipt)}\n`)
+        }
         if (outcome.halt) {
           halt = outcome.halt
           break
@@ -724,12 +870,13 @@ export const desktopActSequenceTool: ToolSpec = {
       }
 
       const outcome = sequenceOutcome(ctx, plans, done, halt, cursor, before)
-      // 该组中有按图定位的步骤、已派发条目带有 `shot` 的动作，或最后一份观察是自绘窗口：
-      // 末尾补充一张动作后的整窗图，判据与单动作相同，见 `withShot`。
-      const byImage = plans.some((p) => given(p.args.imageRef))
-      const dispatched = done.some((r) => r.dispatch !== 'not_dispatched')
-      const onScreen = done.some(
-        (r) => r.dispatch !== 'not_dispatched' && ACTION_DEFS[r.action].shot === true,
+      // 该组中有按图定位的步骤、已派发条目带有 `shot` 的动作、已完成的等待步骤，或最后一份观察是
+      // 自绘窗口：末尾补充一张整窗图，判据与单动作相同，见 `withShot`。等待步骤附图与 `desktop_wait`
+      // 的按时长等待一致：等待即为了核验此刻的画面。
+      const byImage = plans.some((p) => p.type === 'action' && given(p.args.imageRef))
+      const dispatched = done.some((r) => isInput(r) && r.dispatch !== 'not_dispatched')
+      const onScreen = done.some((r) =>
+        isInput(r) ? r.dispatch !== 'not_dispatched' && ACTION_DEFS[r.action].shot === true : true,
       )
       const bare = cursor.last ? isBareWindow(cursor.last) : false
       if (!byImage && !onScreen && !bare) return outcome

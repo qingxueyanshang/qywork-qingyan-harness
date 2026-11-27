@@ -182,7 +182,7 @@ function fakePort(table: DesktopElement[], acted: Acted): DesktopPort {
     foregroundEnabled: () => true,
     windows: async () => [{ windowId: 'dw_1', app: '合成应用', title: '合成标题' }],
     observe: async () => snapshot(table),
-    elements: (windowId) => (windowId === 'dw_1' ? table : null),
+    observation: (windowId) => (windowId === 'dw_1' ? snapshot(table) : null),
     captureImage: async () => ({
       app: '合成应用',
       title: '合成标题',
@@ -1277,7 +1277,7 @@ describe('差异投递', () => {
       port: {
         ...fakePort(tables[0] as DesktopElement[], { acts: 0 }),
         observe: async () => snap(0),
-        elements: () => tables[at] ?? null,
+        observation: () => (tables[at] ? snap(at) : null),
         act: async (input) => {
           acted.push(input.ref ?? '')
           at = Math.min(at + 1, tables.length - 1)

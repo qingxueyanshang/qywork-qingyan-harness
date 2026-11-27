@@ -426,8 +426,11 @@ function viewOf(
  *
  * 它们只承载层级。可用动作不参与判定：浏览器中几乎每个节点都带有 scroll_into_view 与
  * 指针动作，按动作判定则没有任何容器能被省略。
+ *
+ * 「无可操作控件」的判定（`desktop/shared/delivery.ts` 的 `isBareWindow`）使用同一判据：
+ * 不列出的控件也不计为可操作，两处各自判定时，模型看到的控件表与回执的说明不一致。
  */
-function structural(e: DesktopElement): boolean {
+export function structural(e: DesktopElement): boolean {
   return (
     CONTAINER_ROLES.has(e.role) &&
     e.name === '' &&

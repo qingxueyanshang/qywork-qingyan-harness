@@ -731,7 +731,7 @@ test('整窗观察之后的动作按整窗重读：请求帧不带范围，重�
   expect(result.observation.capturedAt).toBe(9)
   expect(result.observation.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3', 'e4', 'e5'])
   expect(result.observation.elements.find((e) => e.ref === 'e5')?.name).toBe('保存（已改）')
-  expect(a.elements('dw_1')).toHaveLength(5)
+  expect(a.observation('dw_1')?.elements).toHaveLength(5)
 })
 
 /**
@@ -824,7 +824,7 @@ test('动作被宿主拒绝派发：观察编号仍然有效，下一个动作�
   const result = await refused
   expect(result.dispatch).toBe('not_dispatched')
   expect(result.observation).toBeNull()
-  expect(a.elements('dw_1')?.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3', 'e4', 'e5'])
+  expect(a.observation('dw_1')?.elements.map((e) => e.ref)).toEqual(['e1', 'e2', 'e3', 'e4', 'e5'])
 
   // 使用同一编号发送下一个动作：请求正常发出，不报「观察已失效」。
   const next = a.act({
@@ -857,7 +857,7 @@ test('输入未派发但窗口准备后的重读失败：旧观察作废，保�
     observation: null,
     observationError: 'provider_timeout: 窗口准备后重读失败',
   })
-  expect(a.elements('dw_1')).toBeNull()
+  expect(a.observation('dw_1')).toBeNull()
 })
 
 test('输入未派发但窗口准备返回新观察：更换编号，不再接受旧观察', async () => {
@@ -878,7 +878,23 @@ test('输入未派发但窗口准备返回新观察：更换编号，不再接�
   expect(result.dispatch).toBe('not_dispatched')
   if (!result.observation) throw new Error('窗口准备后的新观察不应丢失')
   expect(result.observation.observationId).not.toBe(first.observationId)
-  expect(a.elements('dw_1')?.map((e) => e.ref)).toEqual(['e4', 'e5'])
+  expect(a.observation('dw_1')?.elements.map((e) => e.ref)).toEqual(['e4', 'e5'])
+  // 端口给出的最近一份观察与动作带回的观察是同一份：编号、读取范围与筛选一致。
+  expect(a.observation('dw_1')).toEqual(result.observation)
+})
+
+/** 整机窗口清单中不再出现的窗口已关闭或已更换身份，其观察不再交给端口。 */
+test('窗口从整机窗口清单中消失后，最近一份观察随之失效', async () => {
+  const { host, desktop } = await connected(fresh())
+  const a = desktop.portFor('cv_a')
+  await firstLook(host, a)
+  expect(a.observation('dw_1')?.windowId).toBe('dw_1')
+  const listing = a.windows()
+  host.reply(await host.next(), {
+    observation: { kind: 'windows', capturedAt: 2, windows: [OTHER] },
+  })
+  await listing
+  expect(a.observation('dw_1')).toBeNull()
 })
 
 test('动作之后没有重读：该窗口的控件表整份作废', async () => {
@@ -897,7 +913,7 @@ test('动作之后没有重读：该窗口的控件表整份作废', async () =>
   const result = await acting
   expect(result.dispatch).toBe('unknown')
   expect(result.observation).toBeNull()
-  expect(a.elements('dw_1')).toBeNull()
+  expect(a.observation('dw_1')).toBeNull()
 })
 
 /**
@@ -1252,7 +1268,7 @@ test('等待期间宿主代际变化：等待取得终态，旧观察随执行�
   const result = await waiting
   expect(result.found).toBe(false)
   expect(result.observation).toBeNull()
-  expect(a.elements('dw_1')).toBeNull()
+  expect(a.observation('dw_1')).toBeNull()
 })
 
 /** 整窗图像的观察。几何数据的结构与本机实测一致：窗口矩形与可见边框相差 7 像素。 */

@@ -170,6 +170,9 @@ const QUIET_SAMPLE_MS = 100
 const PROBE_TIMEOUT_MS = 2_000
 /** 等待导航提交事件的上限。 */
 const COMMIT_WAIT_MS = 3_000
+/** 「标签页不可用」的说明中列出的本会话标签页数上限，以及每页标题保留的字数。 */
+const MAX_LISTED_TABS = 10
+const TAB_LABEL_CHARS = 40
 /** 导航命令距该页最近一次协议事件的上限（`renewOnEvents`）：页面持续有网络与加载事件时导航命令不超时。 */
 const NAVIGATE_TIMEOUT_MS = 30_000
 /**
@@ -537,7 +540,7 @@ export class BrowserCoordinator {
    * `controlled` 表示该页归本会话（可直接操作）。用户页为 `controlled:false`，
    * 须由用户在聊天中点名、`bind` 之后才归本会话。
    */
-  async #tabs(lease: Lease): Promise<BrowserTabInfo[]> {
+  #tabs(lease: Lease): BrowserTabInfo[] {
     return this.#bridge
       .tabs()
       .filter(
@@ -552,6 +555,20 @@ export class BrowserCoordinator {
         title: tab.title,
         controlled: tab.conversationId === lease.conversationId,
       }))
+  }
+
+  /**
+   * 本会话在本工作区中的标签页，附在「标签页不可用」的拒绝说明之后。指定的页已关闭或属于另一次启动时，
+   * 调用方据此改用现有的页或新建一页，不必先再列出一次标签页。
+   */
+  #ownTabs(lease: Lease): string {
+    const mine = this.#tabs(lease).filter((tab) => tab.controlled)
+    if (mine.length === 0) return '本会话当前没有标签页，用 browser_tabs 的 create 打开'
+    const shown = mine
+      .slice(0, MAX_LISTED_TABS)
+      .map((tab) => `${tab.tabId}（${(tab.title || tab.url).slice(0, TAB_LABEL_CHARS)}）`)
+    const more = mine.length > MAX_LISTED_TABS ? ` 等 ${mine.length} 个` : ''
+    return `本会话当前的标签页：${shown.join('、')}${more}`
   }
 
   /**
@@ -808,7 +825,12 @@ export class BrowserCoordinator {
    */
   async #navigate(
     lease: Lease,
-    input: { tabId: string; action: 'goto' | 'back' | 'forward' | 'reload'; url?: string },
+    input: {
+      tabId: string
+      action: 'goto' | 'back' | 'forward' | 'reload'
+      url?: string
+      screenshot?: boolean
+    },
   ): Promise<FollowUpObservation> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
     assertNoDialog(page)
@@ -856,7 +878,7 @@ export class BrowserCoordinator {
       const committed = await this.#awaitCommit(page, watch, baseline)
       const { settle } = await this.#quietWait(page, watch, { whileLoading: true })
       // 未确认提交时不报告 quiet：此时的静默可能属于尚未被替换的旧文档。
-      return await this.#followUp(control, page, committed ? settle : 'deadline')
+      return await this.#followUp(control, page, committed ? settle : 'deadline', input.screenshot)
     } finally {
       watch.stop()
     }
@@ -874,7 +896,6 @@ export class BrowserCoordinator {
       tabId: string
       frame?: string
       screenshot?: boolean
-      offset?: number
       query?: string
       optionsFor?: { ref: string; offset?: number }
     },
@@ -893,7 +914,6 @@ export class BrowserCoordinator {
     return this.#observeInto(control, page, {
       ...(input.frame !== undefined ? { frame: input.frame } : {}),
       ...(input.screenshot !== undefined ? { screenshot: input.screenshot } : {}),
-      ...(input.offset !== undefined ? { offset: input.offset } : {}),
       ...(input.query !== undefined ? { query: input.query } : {}),
     })
   }
@@ -910,7 +930,6 @@ export class BrowserCoordinator {
     opts: {
       frame?: string
       screenshot?: boolean
-      offset?: number
       query?: string
     },
   ): Promise<BrowserObservation> {
@@ -919,7 +938,7 @@ export class BrowserCoordinator {
     if (!this.#alive(control)) {
       throw new BrowserReleasedError('本次执行的浏览器控制已经结束，本次观察不登记')
     }
-    // 同一文档内合并：翻页、查询与按帧观察各自取得一部分编号，此前取得的编号仍然可用。
+    // 同一文档内合并：查询与按帧观察各自取得一部分编号，此前取得的编号仍然可用。
     const known = control.records.get(page.tabId)
     if (known && known.docToken === record.docToken) {
       for (const [ref, entry] of record.refs) known.refs.set(ref, entry)
@@ -1351,6 +1370,7 @@ export class BrowserCoordinator {
       state: BrowserWaitState
       expected?: string
       timeoutMs: number
+      screenshot?: boolean
     },
   ): Promise<BrowserWaitResult> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
@@ -1366,7 +1386,7 @@ export class BrowserCoordinator {
       input.timeoutMs,
     )
     // 等待结束后直接采集观察：选择器已是调用方给出的就绪判据，不再附加静默等待。
-    return { ...receipt, ...(await this.#followUp(control, page)) }
+    return { ...receipt, ...(await this.#followUp(control, page, undefined, input.screenshot)) }
   }
 
   /**
@@ -1530,7 +1550,13 @@ export class BrowserCoordinator {
         throw new BrowserReleasedError('本次执行的浏览器控制已经结束，该页不附加')
       }
       const snap = this.#bridge.tab(tabId)
-      if (!snap) throw new BrowserNotOwnedError(`无法识别的标签页 ${tabId}`)
+      if (!snap) {
+        throw new BrowserNotOwnedError(
+          mode === 'bind'
+            ? `无法识别的标签页 ${tabId}`
+            : `无法识别的标签页 ${tabId}；${this.#ownTabs(lease)}`,
+        )
+      }
       if (snap.workspaceId !== lease.workspaceId) {
         throw new BrowserNotOwnedError(`标签页 ${tabId} 不在本工作区`)
       }
@@ -1540,7 +1566,7 @@ export class BrowserCoordinator {
         throw new BrowserNotOwnedError(
           mode === 'bind'
             ? `标签页 ${tabId} 属于另一条会话，无法接管`
-            : `标签页 ${tabId} 不归本会话`,
+            : `标签页 ${tabId} 不归本会话；${this.#ownTabs(lease)}`,
         )
       }
       const holder = this.#holderOf(control, tabId)

@@ -66,7 +66,7 @@ test('修饰位按位或叠加，非修饰键不计', () => {
   expect(modifierBits(['AltLeft', 'MetaLeft'])).toBe(5)
 })
 
-test('按键阶段：键码、重复、空集合、时长与合计上限各有对应的错误说明', () => {
+test('按键阶段：键码、重复、没有按键的计划、时长与合计上限各有对应的错误说明', () => {
   expect(
     checkKeyPhases([
       { keys: ['KeyW'], durationMs: 1200 },
@@ -77,8 +77,25 @@ test('按键阶段：键码、重复、空集合、时长与合计上限各有�
   expect(checkKeyPhases([])).toContain('至少需要一个阶段')
   expect(checkKeyPhases([{ keys: ['W'] }])).toContain('不是可用的键码')
   expect(checkKeyPhases([{ keys: ['KeyW', 'KeyW'] }])).toContain('重复')
-  expect(checkKeyPhases([{ keys: [] }])).toContain('空集合')
-  expect(checkKeyPhases([{ keys: [], durationMs: 100 }])).toBeNull()
+  // 原始失败形状：连按 Tab 时以时长为 0 的空集合表示两次之间松开，整份计划被拒绝。
+  expect(
+    checkKeyPhases([
+      { keys: ['Tab'] },
+      { keys: [] },
+      { keys: ['Tab'] },
+      { keys: [] },
+      { keys: ['Space'] },
+    ]),
+  ).toBeNull()
+  expect(
+    checkKeyPhases([
+      { keys: ['Space'], durationMs: 80 },
+      { keys: [], durationMs: 0 },
+    ]),
+  ).toBeNull()
+  expect(checkKeyPhases([{ keys: ['KeyW'] }, { keys: [], durationMs: 100 }])).toBeNull()
+  expect(checkKeyPhases([{ keys: [] }])).toContain('没有任何按键')
+  expect(checkKeyPhases([{ keys: [], durationMs: 100 }, { keys: [] }])).toContain('没有任何按键')
   expect(checkKeyPhases([{ keys: ['KeyW'], durationMs: -1 }])).toContain('durationMs')
   expect(checkKeyPhases([{ keys: ['KeyW'], durationMs: 1.5 }])).toContain('durationMs')
   expect(checkKeyPhases([{ keys: ['KeyW'], durationMs: INPUT_LIMITS.phaseMs + 1 }])).toContain(

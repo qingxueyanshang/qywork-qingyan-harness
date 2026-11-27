@@ -90,7 +90,7 @@ function stateText(state: BrowserWaitState, expected: string | undefined): strin
     case 'enabled':
       return '可用'
     case 'text':
-      return `文本为 ${JSON.stringify(expected ?? '')}`
+      return `文本包含 ${JSON.stringify(expected ?? '')}`
     case 'value':
       return `值为 ${JSON.stringify(expected ?? '')}`
   }
@@ -120,7 +120,7 @@ function nonNegative(raw: unknown, field: string): number {
 /**
  * 读取选项模式的实参。缺失时为普通观察。
  *
- * 与 `frame` / `screenshot` / `offset` 互斥：这三个参数指定采集哪一份元素表，而本模式
+ * 与 `frame` / `screenshot` / `query` 互斥：这三个参数指定采集哪一份元素表，而本模式
  * 不采集元素表，同时提供属于参数错误，在调用端口前拒绝。
  */
 function optionsForArg(
@@ -133,7 +133,7 @@ function optionsForArg(
   }
   // 取 0、false 与空值的参数不算提供（`blank`）：strict schema 下模型为无关参数填写这类取值。
   // 报错只列出实际提供的参数，模型据此删除这些参数。
-  const extra = ['frame', 'screenshot', 'offset', 'query'].filter(
+  const extra = ['frame', 'screenshot', 'query'].filter(
     (name) => given(args[name]) && !blank(args[name]),
   )
   if (extra.length) {
@@ -518,7 +518,6 @@ function clip(value: string, limit: number): string {
 function observationLine(ob: BrowserObservation): string {
   return (
     `${ob.title ? clip(ob.title, MAX_TITLE_CHARS) : '(无标题)'} · ${clip(ob.url, MAX_URL_CHARS)} · ${ob.elements.length} 个元素` +
-    (ob.truncated ? '（还有更多，用 offset 继续获取）' : '') +
     (ob.framesPending?.length
       ? `（${ob.framesPending.length} 个 iframe 尚未就位，需重新观察）`
       : '')
@@ -662,7 +661,8 @@ async function answerDialog(
 }
 
 /** 页面以 canvas 呈现内容时，有效的操作不改变元素表与 DOM。 */
-const CANVAS_NOTE = '页面含 canvas，画面的变化不反映在元素表中，需要时使用 screenshot=true'
+const CANVAS_NOTE =
+  '页面含 canvas，画面的变化不反映在元素表中；需要查看画面时在动作中设置 screenshot=true，结果随附截图'
 
 function hasCanvas(ob: BrowserObservation): boolean {
   return ob.elements.some((e) => e.tag === 'canvas')
@@ -883,6 +883,7 @@ export const browserNavigateTool: ToolSpec = {
     '简单 HTML 可直接打开本地路径或 file URL；需要服务的项目使用 http/https 地址。' +
     '取得新观察时结果中直接返回元素表，据此继续下一步，不必再调用 browser_observe。' +
     '元素 ref 属于其所在的文档，跳转更换文档之后旧编号作废，使用结果中的新编号。' +
+    'screenshot=true 时导航之后的观察附带截图，仅在元素表不足以判断版面时使用。' +
     '未取得观察时结果为失败，先 browser_observe 确认当前页面，不要重复跳转。',
   parameters: {
     type: 'object',
@@ -894,6 +895,7 @@ export const browserNavigateTool: ToolSpec = {
         description:
           'action=goto 时的 http/https 地址、file URL 或本地文件路径（相对工作区或绝对路径）',
       },
+      screenshot: { type: 'boolean' },
     },
     required: ['tabId', 'action'],
     additionalProperties: false,
@@ -925,6 +927,7 @@ export const browserNavigateTool: ToolSpec = {
         tabId,
         action,
         ...(action === 'goto' ? { url: await browserUrl(args.url, ctx) } : {}),
+        ...(args.screenshot === true ? { screenshot: true } : {}),
       }
       const follow = await send(() => browser.navigate(input))
       return withFollowUp(ctx, 'browser_navigate', {}, follow, {
@@ -942,9 +945,8 @@ export const browserObserveTool: ToolSpec = {
     '返回页面的实际地址、标题、可操作元素与正文。返回的元素 ref 是 act 的前提。' +
     '同一份文档内同一个元素的 ref 固定，重新观察不更换编号；文档更换（跳转、刷新）之后旧编号作废。' +
     'query 只返回名称、正文或值包含该文字的元素，已知查找目标时优先使用。' +
-    'truncated=true 时用 offset 获取后续元素。' +
     '元素较多时结果中只包含前一部分，delivery 注明返回了多少、本次采集了多少；' +
-    '其余元素按结果中的 resource id 用 read_resource 读取，页面其他范围仍用 offset 或 query。' +
+    '其余元素按结果中的 resource id 用 read_resource 读取，或用 query 查找。' +
     'screenshot=true 才截图，仅在元素表不足以判断版面时使用。' +
     'frame 仅观察某个 iframe，取自元素的 frame 字段。' +
     '元素上缺少 expanded 与 selected 表示该角色不具备这一属性，不表示收起或未选中；' +
@@ -952,14 +954,13 @@ export const browserObserveTool: ToolSpec = {
     '浏览器自动填充的账号密码在页面上发生点击或按键之前无法读取，输入框 value 为空不代表未填写，点击输入框后再读取。' +
     '元素上的 optionsTruncated=true 表示该 select 的选项未列全：' +
     '用 optionsFor 按该元素继续读取，返回的是选项页而不是新观察，' +
-    'optionsFor 不能与 frame、screenshot、offset 同时提供。',
+    'optionsFor 不能与 frame、screenshot、query 同时提供。',
   parameters: {
     type: 'object',
     properties: {
       tabId: { type: 'string' },
       frame: { type: 'string', description: '仅观察某个 iframe，取自元素的 frame 字段' },
       screenshot: { type: 'boolean' },
-      offset: { type: 'integer', description: '从第几个元素开始返回' },
       query: { type: 'string', description: '只返回名称、正文或值包含这段文字的元素，不分大小写' },
       optionsFor: {
         type: 'object',
@@ -987,16 +988,11 @@ export const browserObserveTool: ToolSpec = {
         tabId: str(args.tabId, 'tabId'),
         ...(given(args.frame) ? { frame: str(args.frame, 'frame') } : {}),
         ...(args.screenshot === true ? { screenshot: true } : {}),
-        ...(given(args.offset) ? { offset: nonNegative(args.offset, 'offset') } : {}),
         ...(given(args.query) ? { query: str(args.query, 'query') } : {}),
         ...(optionsFor ? { optionsFor } : {}),
       }
       const r = await send(() => browser.observe(input))
-      const whole =
-        !optionsFor &&
-        input.frame === undefined &&
-        input.query === undefined &&
-        (input.offset ?? 0) === 0
+      const whole = !optionsFor && input.frame === undefined && input.query === undefined
       const { changes: _changes, ...parts } = browserResult({
         ctx,
         toolName: 'browser_observe',
@@ -1016,12 +1012,14 @@ export const browserActTool: ToolSpec = {
     'fill 覆盖输入框内容、type 在当前光标处逐字输入、select 选择下拉项、scroll 滚动、' +
     'press 按键、drag 拖动、dialog 处理页面弹出的对话框。' +
     '文字引用（包括 StaticText）也支持指针动作，按文字实际位置命中；fill、type、select 仍要求对应控件。' +
+    '页面以自绘方框显示复选框或单选框、原生控件本身无法点击时，click 改为聚焦后按空格，结果中写明。' +
     'press 用 phases 表达有时序的按键：每个阶段是该时段内按住的完整键集合与持续毫秒数，' +
     '切换阶段时只按下新增的键、松开移除的键，最后全部松开，按住期间不自动重复。' +
     '例如按住 W 1.2 秒并在其间轻点空格：' +
     '[{"keys":["KeyW"],"durationMs":1200},{"keys":["KeyW","Space"]},{"keys":["KeyW"],"durationMs":300}]。' +
     '键名是物理键码，如 KeyW、Space、ArrowUp、Enter、ShiftLeft、ControlLeft；' +
     '组合键写在同一阶段里，如 ["ControlLeft","KeyA"]；durationMs 缺省为 0，即按下后立即进入下一阶段。' +
+    '连按同一个键时在两次之间放一个空阶段表示松开，如连按两次 Tab：[{"keys":["Tab"]},{"keys":[]},{"keys":["Tab"]}]。' +
     `一次最多 ${INPUT_LIMITS.phases} 个阶段、同时按 ${INPUT_LIMITS.keys} 个键，` +
     `单段不超过 ${INPUT_LIMITS.phaseMs} 毫秒、合计不超过 ${INPUT_LIMITS.totalMs} 毫秒；` +
     '更长的操作分多次调用，每次查看结果后再继续。' +
@@ -1179,7 +1177,9 @@ export const browserActTool: ToolSpec = {
       }
       return withFollowUp(ctx, 'browser_act', receipt, r, {
         // `element` 已由采集侧按标签上限截断，此处直接输出，不要再增加长度检查。
-        lead: `${action} 已发出${r.element ? `：${r.element}` : ''}。`,
+        lead:
+          `${action} 已发出${r.element ? `：${r.element}` : ''}` +
+          `${r.via === 'keyboard' ? '（控件本身无法点击，已聚焦后按空格）' : ''}。`,
         ok: true,
         advice: '动作已发出，先 browser_observe 确认页面状态，不要重复动作。',
         ...(r.activity ? { activity: r.activity } : {}),
@@ -1195,10 +1195,12 @@ export const browserWaitTool: ToolSpec = endsOnMessage(
       '等待当前主文档里一个 CSS 选择器达到指定状态，用于替代反复 observe 轮询。' +
       'state 按选择器命中的第一个元素判定：visible（默认）有尺寸且可见；attached 存在于文档中即可；' +
       'hidden 未命中或不可见；enabled 可见且未禁用；' +
-      'text / value 是文本（空白归一）或控件值与 expected 完全相等，这两种必须提供 expected。' +
+      'text 是元素文本（空白归一）包含 expected，等待页面出现某段文字时 selector 可用 body；value 是控件值与 expected 完全相等；这两种必须提供 expected。' +
       '不提供 selector 时等待 timeoutMs 后再观察，用于等待页面中的动画、计时或脚本运行一段时间。' +
       `默认 ${DEFAULT_WAIT_MS} 毫秒，上限 ${MAX_WAIT_MS} 毫秒。` +
       '取得新观察时结果中直接返回元素表，据此继续下一步，不必再调用 browser_observe；' +
+      '多数元素与上一次观察相同时只给出变化（changes），与 browser_act 相同；' +
+      'screenshot=true 时等待之后的观察附带截图；' +
       '未取得观察时先 browser_observe 确认页面状态。' +
       '选择器只查询主文档，iframe 中的元素用 browser_observe 的 frame 参数。',
     parameters: {
@@ -1209,6 +1211,7 @@ export const browserWaitTool: ToolSpec = endsOnMessage(
         state: { type: 'string', enum: WAIT_STATES },
         expected: { type: 'string', description: 'state 为 text 或 value 时等待的目标值' },
         timeoutMs: { type: 'integer' },
+        screenshot: { type: 'boolean' },
       },
       required: ['tabId'],
       additionalProperties: false,
@@ -1229,17 +1232,20 @@ export const browserWaitTool: ToolSpec = endsOnMessage(
             throw new ArgError('state 与 expected 须与 selector 一起提供')
           }
           if (!(await pause(timeoutMs, ctx.signal))) return STOPPED
-          const r = await send(() => browser.observe({ tabId }))
-          return {
-            status: 'success',
-            ...browserResult({
-              ctx,
-              toolName: 'browser_wait',
-              page: r,
-              receipt: { waitedMs: timeoutMs },
-              lead: `已等待 ${timeoutMs} 毫秒。${isOptionsPage(r) ? optionsLine(r) : observationLine(r)}`,
-            }),
-          }
+          const r = await send(() =>
+            browser.observe({ tabId, ...(args.screenshot === true ? { screenshot: true } : {}) }),
+          )
+          // 与动作之后的观察相同地参与比较：等待的目的就是查看页面此后的变化。
+          const { changes: _changes, ...parts } = browserResult({
+            ctx,
+            toolName: 'browser_wait',
+            page: r,
+            receipt: { waitedMs: timeoutMs },
+            lead: `已等待 ${timeoutMs} 毫秒。${isOptionsPage(r) ? optionsLine(r) : observationLine(r)}`,
+            whole: true,
+            incremental: true,
+          })
+          return { status: 'success', ...parts }
         }
         const selector = str(args.selector, 'selector')
         const state = given(args.state) ? oneOf(args.state, WAIT_STATES, 'state') : 'visible'
@@ -1256,6 +1262,7 @@ export const browserWaitTool: ToolSpec = endsOnMessage(
           state,
           ...(wantsValue && expected !== undefined ? { expected } : {}),
           timeoutMs,
+          ...(args.screenshot === true ? { screenshot: true } : {}),
         }
         const r = await send(() => browser.wait(input))
         const target = `${selector} ${stateText(state, expected)}`

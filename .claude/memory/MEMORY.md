@@ -8,6 +8,7 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 
 - [真实模型实测扣云端积分](live-tests-spend-cloud-credits.md) — 先估算并查余额，默认用 DeepSeek V4.1 Flash 或 GPT-6.1 Terra；Opus 对照实验一次消耗约 30 积分并透支；上限须含子代理，Terra 自开 55 个子代理使 4 积分的估算变成 24.8
 - [命中率只取最后一次调用](hit-rate-shows-latest-call.md) — 用户确定的口径，不要改为整轮累计；可以调整的只有「没回报按 0 算」那一处
+- [直接驱动宿主读树](desktop-host-probe.md) — `.tmp/scratch/devtools-tree/probe.ts` 经标准输入输出读控件树，不经过模型；Chromium 窗口最小化还原后只剩 9 个节点即由它复现
 - [排查先查本地数据库](diagnose-from-the-local-db.md) — `~/.qywork/qywork.sqlite3` 有每次工具调用的完整 args 与 outcome；`permission_audit` 为空表 = 未发生过任何权限裁决
 - [dev server 必须显式绑定 IPv4](dev-server-must-bind-ipv4.md) — vite 不设 host 时只监听 `::1`，Tauri/PowerShell 探测 localhost 使用 IPv4，现象为 `tauri dev` 停滞 180 秒；`strictPort` 同样必须开启
 - [桌面端 WebView 连接 CDP](tauri-webview-no-cdp.md) — 开发构建设置 `QYWORK_WEBVIEW_DEBUG_PORT` 并另行启动隔离实例；环境变量与策略注册表都不生效

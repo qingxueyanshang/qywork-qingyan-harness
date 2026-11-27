@@ -412,17 +412,17 @@ function actionUsage(kind: DesktopActionKind): string {
  * 回执给出该动作及其参数，取包含的最长一个；否则列出全部动作名。
  *
  * 只按「包含全名」匹配，不按相似度推测：推测错误的建议会把模型引向另一个动作。
+ * `allowed` 中不在动作表里的取值（序列的等待步骤）只在清单中列出，不参与匹配：回执给出的参数取自动作表。
  */
-export function unknownAction(
-  raw: unknown,
-  allowed: readonly DesktopActionKind[],
-  field: string,
-): ArgError {
+export function unknownAction(raw: unknown, allowed: readonly string[], field: string): ArgError {
   const flat = String(raw ?? '')
     .toLowerCase()
     .replace(/[^a-z]/g, '')
   const nearest = allowed
-    .filter((kind) => flat.includes(kind.replace(/_/g, '')))
+    .filter(
+      (kind): kind is DesktopActionKind =>
+        kind in ACTION_DEFS && flat.includes(kind.replace(/_/g, '')),
+    )
     .sort((a, b) => b.length - a.length)[0]
   return new ArgError(
     nearest
@@ -439,8 +439,9 @@ export function unknownAction(
  * - `amount` 的默认值 1。
  *
  * 自由文本、控件引用与其余数值不要并入：`invoke` 附带 `value` 说明应改用 `set_value`，该调用必须拒绝。
+ * 序列的等待步骤核对多余参数时使用同一判据。
  */
-function meant(key: string, value: unknown): boolean {
+export function meant(key: string, value: unknown): boolean {
   if (!given(value) || blank(value)) return false
   if (key in PARAM_VALUES) return false
   return !(key === 'amount' && Number(value) === 1)

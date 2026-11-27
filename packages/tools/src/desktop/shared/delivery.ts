@@ -14,6 +14,7 @@ import {
   type DesktopResultInput,
   type DesktopResultParts,
   desktopResult,
+  structural,
 } from '../../desktop-results.ts'
 import { MAX_EDGE, shrinkImage } from '../../image.ts'
 import {
@@ -41,15 +42,18 @@ function inTitleBar(byRef: Map<string, DesktopElement>, element: DesktopElement)
 /**
  * 本次观察中可操作的业务控件数量。
  *
- * 判据只使用观察本身：带可执行的后台动作、不是窗口根，且不在标题栏子树中。标题栏、
- * 系统菜单与最小化 / 最大化 / 关闭由系统绘制，任何顶层窗口都有，计入它们会
- * 把自绘界面判定为结构上可操作。不按应用名判定。
+ * 判据只使用观察本身：带可执行的后台动作、不是窗口根、不是无名结构容器（`structural`），
+ * 且不在标题栏子树中。标题栏、系统菜单与最小化 / 最大化 / 关闭由系统绘制，任何顶层窗口都有，
+ * 计入它们会把自绘界面判定为结构上可操作。无名结构容器不列入控件表，也不计入：Chromium 内核的
+ * 窗口未提供网页内容时只剩若干带 scroll_into_view 的无名窗格，计入它们会把这类窗口判定为可操作。
+ * 不按应用名判定。
  */
 function operableCount(table: DesktopElement[]): number {
   const byRef = new Map(table.map((e) => [e.ref, e]))
   return table.filter(
     (e) =>
       !isWindowRoot(e) &&
+      !structural(e) &&
       e.actions.some((a) => a.delivery.includes('background')) &&
       !inTitleBar(byRef, e),
   ).length

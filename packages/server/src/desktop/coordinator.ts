@@ -410,7 +410,7 @@ export class DesktopCoordinator {
       foregroundEnabled: () => this.#bridge.foregroundEnabled(),
       windows: () => this.#windowList(lease),
       observe: (input) => this.#observe(lease, input),
-      elements: (windowId) => this.#elements(lease, windowId),
+      observation: (windowId) => this.#latest(lease, windowId),
       captureImage: (input) => this.#captureImage(lease, input),
       act: (input) => this.#act(lease, input),
       readText: (input) => this.#readText(lease, input),
@@ -604,13 +604,23 @@ export class DesktopCoordinator {
    * 而宿主要到下一个 worker 握手成功后才报告新的 `hostEpoch`。这段时间内代际仍是旧值，
    * 只按代际判定时，模型会用一份已作废的引用发送动作。
    */
-  #elements(lease: Lease, windowId: string): DesktopElement[] | null {
+  #record(lease: Lease, windowId: string): ObservationRecord | null {
     if (lease.released) return null
     const host = this.#bridge.host()
     if (!host || !host.workerReady) return null
     const record = lease.observations.get(windowId)
     if (!record || record.epochKey !== epochKeyOf(host)) return null
-    return record.elements
+    return record
+  }
+
+  /**
+   * 交给端口的最近一份观察，有效性判据同 `#record`。窗口已不在窗口表中时同样为 `null`：
+   * 整机窗口清单中不再出现的窗口已关闭或已更换身份。
+   */
+  #latest(lease: Lease, windowId: string): DesktopSnapshot | null {
+    const record = this.#record(lease, windowId)
+    const known = this.#windows.get(windowId)
+    return record && known ? snapshotOf(record, known) : null
   }
 
   /**
@@ -618,10 +628,11 @@ export class DesktopCoordinator {
    * 不发送任何帧：自行编造编号等于让宿主定位一个从未观察过的位置。
    */
   #recordOf(lease: Lease, windowId: string, ref: string): string {
-    if (!this.#elements(lease, windowId)) {
+    const record = this.#record(lease, windowId)
+    if (!record) {
       throw new DesktopTargetError('本次执行没有该窗口的有效观察，请先观察')
     }
-    const hostRef = lease.observations.get(windowId)?.hostRefs.get(ref)
+    const hostRef = record.hostRefs.get(ref)
     if (hostRef === undefined) {
       throw new DesktopTargetError(`该窗口最近一份观察中没有控件 ${ref}，请重新观察`)
     }
@@ -753,7 +764,7 @@ export class DesktopCoordinator {
    * 窗口输入；只接受观察则会拒绝只截取过图像的窗口，而自绘界面只能截图。
    */
   #seen(lease: Lease, known: KnownWindow, windowId: string): boolean {
-    if (this.#elements(lease, windowId)) return true
+    if (this.#record(lease, windowId)) return true
     for (const record of lease.images.values()) {
       if (this.#imageInvalid(record, known, windowId) === null) return true
     }

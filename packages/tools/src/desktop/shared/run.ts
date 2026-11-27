@@ -13,7 +13,7 @@ const NO_PORT = {
   errorKind: 'unsupported',
 } as const
 
-const STOPPED = {
+export const STOPPED = {
   status: 'failure',
   executed: false,
   message: '未执行 · 本次执行已停止',

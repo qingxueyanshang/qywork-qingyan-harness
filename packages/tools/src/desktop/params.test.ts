@@ -39,8 +39,8 @@ describe('动作表与工具 schema 的参数一致', () => {
     expect(props.sort()).toEqual(tableParams(ACTIONS))
   })
 
-  test('desktop_act_sequence：单步中定位参数与后置条件之外的属性恰好是序列动作的参数', () => {
-    const own = ['action', 'ref', 'automationId', 'name', 'role', 'expect']
+  test('desktop_act_sequence：单步中定位参数、后置条件与等待时长之外的属性恰好是序列动作的参数', () => {
+    const own = ['action', 'ref', 'automationId', 'name', 'role', 'expect', 'durationMs']
     const steps = propertiesOf(desktopActSequenceTool.parameters).includes('steps')
       ? (desktopActSequenceTool.parameters as { properties: { steps: { items: unknown } } })
           .properties.steps.items
@@ -51,7 +51,10 @@ describe('动作表与工具 schema 的参数一致', () => {
 })
 
 function ctx(): ToolContext {
-  const desktop = { elements: () => null, foregroundEnabled: () => true } as unknown as DesktopPort
+  const desktop = {
+    observation: () => null,
+    foregroundEnabled: () => true,
+  } as unknown as DesktopPort
   return {
     workspaceRoot: '/tmp',
     conversationId: 'cv',

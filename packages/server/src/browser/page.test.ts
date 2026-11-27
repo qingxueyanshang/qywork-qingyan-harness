@@ -1,8 +1,8 @@
 /**
  * 受控页面上的观察与动作判定。
  *
- * 覆盖范围：`page.ts` 全部（AX 树与 DOM 快照的合并、可操作元素筛选、canvas 尺寸、翻页、
- * 文档令牌与身份指纹的失效判定、动作前的按需滚动与实时坐标、元素内落点、命中失败的分类说明、
+ * 覆盖范围：`page.ts` 全部（AX 树与 DOM 快照的合并、可操作元素筛选、canvas 尺寸、不按数量截断的元素表、
+ * 文档令牌与身份指纹的失效判定、动作前的按需滚动与实时坐标、元素内落点、命中失败的分类说明、原生复选框与单选框的键盘激活、
  * select 的选项摘要与继续读取、十种动作发出的事件与执行回执、上传、下载触发、
  * 采集前后的一致性判定与观察预算、跨站帧未就位时的等待与 `framesPending`），
  * 以及 `input.ts` 全部（执行记账、按键阶段的集合差、按住计时与取消、鼠标事件、输入收尾）。
@@ -86,6 +86,8 @@ interface NodeModel {
    * `returnByValue` 下页内异常不写入 `result.value`，响应中返回的是 `exceptionDetails`。
    */
   inspectThrows?: boolean
+  /** `DOM.focus` 对该节点返回错误：模拟不可聚焦的元素。 */
+  unfocusable?: boolean
   options?: OptionModel[]
 }
 
@@ -559,6 +561,23 @@ class FakePage {
     return { ok: true, value: one.value }
   }
 
+  /** 当前焦点所在的原生复选框或单选框。 */
+  focusedToggle(doc: DocModel): NodeModel | null {
+    const node = doc.nodes.find((n) => n.backendNodeId === doc.activeElement)
+    const type = node?.attrs.type ?? ''
+    return node && node.tag === 'input' && (type === 'checkbox' || type === 'radio') ? node : null
+  }
+
+  /** 空格在焦点所在的复选框或单选框上松开：与浏览器的激活行为相同，切换 AX 中的勾选状态。 */
+  flip(doc: DocModel, node: NodeModel): void {
+    const ax = doc.ax.find((a) => a.backendDOMNodeId === node.backendNodeId)
+    if (!ax) return
+    const props = (ax.props ?? []).filter((p) => p.name !== 'checked')
+    const was = ax.props?.find((p) => p.name === 'checked')?.value === 'true'
+    const now = node.attrs.type === 'radio' ? true : !was
+    ax.props = [...props, { name: 'checked', value: now ? 'true' : 'false' }]
+  }
+
   /** 将一段文本追加到当前焦点控件。按键与文本插入均经由此处。 */
   insert(doc: DocModel, text: string): void {
     const node = doc.nodes.find((n) => n.backendNodeId === doc.activeElement)
@@ -625,17 +644,24 @@ class FakePage {
       case 'DOM.focus': {
         const found = this.nodeOf(Number(cmd.params?.backendNodeId))
         if (!found) return { error: 'Node not found' }
+        if (found.node.unfocusable) return { error: 'Element is not focusable' }
         found.doc.activeElement = found.node.backendNodeId
         return {}
       }
       case 'Input.insertText':
         this.insert(doc, String(cmd.params?.text ?? ''))
         return {}
-      case 'Input.dispatchKeyEvent':
+      case 'Input.dispatchKeyEvent': {
+        const toggle = this.focusedToggle(doc)
+        if (toggle) {
+          if (cmd.params?.type === 'keyUp' && cmd.params.code === 'Space') this.flip(doc, toggle)
+          return {}
+        }
         if (cmd.params?.type === 'keyDown' && typeof cmd.params.text === 'string') {
           this.insert(doc, cmd.params.text)
         }
         return {}
+      }
       case 'Target.getTargets':
         return { targetInfos: [{ targetId: 't1', type: 'page' }] }
       case 'Target.attachToTarget':
@@ -689,6 +715,8 @@ class FakePage {
         const backend = Number(String(cmd.params?.objectId ?? '').replace('obj-', ''))
         const found = this.nodeOf(backend)
         if (!found) return { error: 'Node not found' }
+        // 与 Chromium 相同：不显示的节点没有布局对象，滚动命令以协议错误失败。
+        if (!found.node.box) return { error: 'Node does not have a layout object' }
         this.scrollIntoView(found.doc, found.node)
         return {}
       }
@@ -1085,7 +1113,6 @@ test('观察将 AX 语义与节点属性合成一张元素表，无角色的容�
   expect(byName.get('结果：42')?.role).toBe('StaticText')
   // 无角色且无名称的容器不占编号：模型无法对它执行任何操作。
   expect(observation.elements.some((e) => e.tag === 'div')).toBe(false)
-  expect(observation.truncated).toBe(false)
   // 观察只读：不发送任何滚动命令。
   expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
 })
@@ -1295,11 +1322,15 @@ test('确实没有可交互元素的页面仍返回 0，不重新获取，也不
   expect(fake.sent('Accessibility.getFullAXTree')).toHaveLength(1)
 })
 
-test('元素超过上限时如实报告截断，offset 可取得其后的元素', async () => {
+/**
+ * 原始失败形状：观察只返回前 120 个元素，排在其后的弹窗与按钮不在表中，动作之后的结果无法与上一次比较，
+ * 每次都整份投递前 120 个元素。
+ */
+test('观察返回范围内的全部元素，不按数量截断，其后的 select 同样带选项摘要', async () => {
   const fake = new FakePage()
   cleanups.push(() => fake.stop())
   const doc = fake.model.docs[0] as DocModel
-  doc.nodes = Array.from({ length: 130 }, (_, i) => ({
+  doc.nodes = Array.from({ length: 300 }, (_, i) => ({
     backendNodeId: 100 + i,
     tag: 'button',
     attrs: { id: `b${i}` },
@@ -1309,20 +1340,30 @@ test('元素超过上限时如实报告截断，offset 可取得其后的元素'
     role: 'button',
     name: `按钮 ${i}`,
   }))
+  doc.nodes.push({
+    backendNodeId: 900,
+    tag: 'select',
+    attrs: { id: 'last' },
+    box: { x: 0, y: 0, width: 100, height: 20 },
+    options: [{ label: 'A', value: 'a', selected: true }],
+  })
+  doc.ax.push({ backendDOMNodeId: 900, role: 'combobox', name: '末尾的选择框' })
   const handle = await connect(fake)
 
-  const first = await observe(handle)
-  expect(first.observation.elements).toHaveLength(120)
-  expect(first.observation.truncated).toBe(true)
-  const rest = await observe(handle, { offset: 120 })
-  expect(rest.observation.elements).toHaveLength(10)
-  expect(rest.observation.truncated).toBe(false)
-  expect(rest.observation.elements[0]?.name).toBe('按钮 120')
+  const { observation, record } = await observe(handle)
+  expect(observation.elements).toHaveLength(301)
+  expect(observation).not.toHaveProperty('truncated')
+  expect(observation.elements.at(-1)).toMatchObject({
+    name: '末尾的选择框',
+    optionsTotal: 1,
+    options: [{ label: 'A', value: 'a', selected: true }],
+  })
+  expect(record.refs.size).toBe(301)
 })
 
 /**
  * 原始失败形状：目标按钮位于第 253 个，模型需要翻三页才能找到。
- * `query` 按名称筛选后一次取得，编号仍可用于动作；翻页与截断按筛选后的表计算。
+ * `query` 按名称筛选后一次取得，编号仍可用于动作。
  */
 test('query 只返回名称匹配的元素，编号照常可用', async () => {
   const fake = new FakePage()
@@ -1342,14 +1383,12 @@ test('query 只返回名称匹配的元素，编号照常可用', async () => {
 
   const { observation, record } = await observe(handle, { query: '进入比赛' })
   expect(observation.elements).toHaveLength(20)
-  expect(observation.truncated).toBe(false)
   expect(observation.elements.every((e) => e.name.startsWith('进入比赛'))).toBe(true)
   expect(observation.elements[0]?.name).toBe('进入比赛 12')
   expect(record.refs.has(observation.elements[0]?.ref ?? '')).toBe(true)
 
   const none = await observe(handle, { query: '不存在的字' })
   expect(none.observation.elements).toHaveLength(0)
-  expect(none.observation.truncated).toBe(false)
 })
 
 /** 原始失败形状：名称与值在采集时先截断到 200 字，第 200 字之后的内容既无法查询也无法读取。 */
@@ -1469,6 +1508,32 @@ test('页内复核返回的标签有界，`aria-label` 与可取得文本使用�
   expect(long.startsWith(byAria)).toBe(true)
 })
 
+/** 原始失败形状：表单控件没有可取得文本，点击复选框、填写输入框的回执与工具行的对象都只有 `input`。 */
+test('页内复核的标签依次取 aria-label、可取得文本、第一个关联标签的文字与标签名', () => {
+  const inspect = new Function(`return ${INSPECT_FN}`)() as (this: object) => { label?: string }
+  const input = (over: { ariaLabel?: string; labels?: { innerText: string }[] }) => ({
+    tagName: 'INPUT',
+    id: '',
+    isConnected: true,
+    innerText: '',
+    labels: over.labels ?? [],
+    getAttribute: (name: string) => (name === 'aria-label' ? (over.ariaLabel ?? null) : null),
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 10, height: 10 }),
+    ownerDocument: {
+      defaultView: { innerWidth: 800, innerHeight: 600 },
+      elementFromPoint: () => null,
+    },
+    getRootNode: () => ({}),
+  })
+  const labelled = {
+    labels: [{ innerText: ' 已阅读并了解平台审核规则 ' }, { innerText: '第二个' }],
+  }
+
+  expect(inspect.call(input(labelled)).label).toBe('已阅读并了解平台审核规则')
+  expect(inspect.call(input({ ...labelled, ariaLabel: '自定义' })).label).toBe('自定义')
+  expect(inspect.call(input({})).label).toBe('input')
+})
+
 test('被浮层遮挡时报告遮挡元素的标签与名称，不发送任何鼠标事件', async () => {
   const { fake, handle } = await newPage()
   addMask(fake, '接受 Cookie')
@@ -1512,6 +1577,127 @@ test('零尺寸与禁用分别说明，不一律报告为被遮挡', async () =>
     ref: observation.elements.find((e) => e.name === '提交')?.ref ?? '',
   }).catch((e: Error) => e.message)
   expect(String(off)).toContain('当前不可用')
+  expect(fake.mouse()).toHaveLength(0)
+})
+
+/**
+ * 页面以自绘方框显示复选框或单选框：原生控件移出可视区或缩成零尺寸，观察中只有原生控件。
+ * 名称在真实页面上取自标签文字或 `aria-label`，此处由 AX 行给出；以 `aria-label` 命名的控件没有标签元素。
+ */
+function addHiddenToggle(
+  fake: FakePage,
+  backendNodeId: number,
+  attrs: Record<string, string>,
+  box: Box,
+  extra: Partial<NodeModel> = {},
+): string {
+  const doc = fake.model.docs[0] as DocModel
+  doc.nodes.push({ backendNodeId, tag: 'input', attrs, box, ...extra })
+  const name = attrs['aria-label'] ?? `已阅读并同意 ${backendNodeId}`
+  doc.ax.push({
+    backendDOMNodeId: backendNodeId,
+    role: attrs.type === 'radio' ? 'radio' : 'checkbox',
+    name,
+    props: [{ name: 'checked', value: 'false' }],
+  })
+  return name
+}
+
+/** 原始失败形状：点击报告「滚动后仍在可视区外」或「尺寸为 0」，重新观察之后再点击结论相同，控件始终未勾选。 */
+test('点击自身无法命中的原生复选框与单选框时改为聚焦后按空格，勾选状态由动作之后的观察给出', async () => {
+  const cases: [string, Record<string, string>, Box][] = [
+    ['移出可视区', { id: 'agree', type: 'checkbox' }, { x: -9999, y: 200, width: 13, height: 13 }],
+    ['零尺寸', { id: 'pick', type: 'checkbox' }, { x: 20, y: 200, width: 0, height: 0 }],
+    [
+      'aria-label 命名',
+      { id: 'own', type: 'checkbox', 'aria-label': '自定义' },
+      { x: -9999, y: 200, width: 13, height: 13 },
+    ],
+    [
+      '单选框',
+      { id: 'login', type: 'radio', name: 'g' },
+      { x: -9999, y: 200, width: 13, height: 13 },
+    ],
+  ]
+  for (const [label, attrs, box] of cases) {
+    const { fake, handle } = await newPage()
+    const name = addHiddenToggle(fake, 80, attrs, box)
+    const { record, observation } = await observe(handle)
+    const ref = refOf(observation, name)
+    expect(observation.elements.find((e) => e.ref === ref)?.checked).toBe(false)
+
+    const r = await act(handle, record, { action: 'click', ref })
+    expect({ label, via: r.via, execution: r.execution }).toEqual({
+      label,
+      via: 'keyboard',
+      execution: { state: 'completed', confirmedUnits: 2 },
+    })
+    expect(r.point).toBeUndefined()
+    expect(fake.mouse()).toHaveLength(0)
+    expect(fake.sent('DOM.focus').map((c) => c.params?.backendNodeId)).toEqual([80])
+    expect(fake.keyEvents().map((e) => `${e.type}:${e.code}`)).toEqual([
+      'keyDown:Space',
+      'keyUp:Space',
+    ])
+    const after = await observe(handle)
+    expect(after.observation.elements.find((e) => e.ref === ref)?.checked).toBe(true)
+  }
+})
+
+test('键盘激活只用于不带落点、按键与按住时长的左键点击原生复选框；不可用与无法聚焦时拒绝且不发送按键', async () => {
+  const { fake, handle } = await newPage()
+  const hidden = { x: -9999, y: 200, width: 13, height: 13 }
+  const plain = addHiddenToggle(fake, 80, { id: 'a', type: 'checkbox' }, hidden)
+  const off = addHiddenToggle(fake, 81, { id: 'b', type: 'checkbox' }, hidden, { disabled: true })
+  const stuck = addHiddenToggle(fake, 82, { id: 'c', type: 'checkbox' }, hidden, {
+    unfocusable: true,
+  })
+  const { record, observation } = await observe(handle)
+  const ref = refOf(observation, plain)
+
+  for (const input of [
+    { action: 'click' as const, ref, point: { x: 2, y: 2 } },
+    { action: 'click' as const, ref, keys: ['ShiftLeft'] },
+    { action: 'click' as const, ref, holdMs: 100 },
+    { action: 'rightclick' as const, ref },
+    { action: 'dblclick' as const, ref },
+  ]) {
+    const err = await act(handle, record, input).catch((e: Error) => e)
+    expect(err).toBeInstanceOf(BrowserAmbiguousRefError)
+    expect(String((err as Error).message)).toContain('可视区外')
+  }
+  const disabled = await act(handle, record, { action: 'click', ref: refOf(observation, off) })
+    .then(() => '')
+    .catch((e: Error) => e.message)
+  expect(disabled).toContain('当前不可用')
+  const unfocusable = await act(handle, record, { action: 'click', ref: refOf(observation, stuck) })
+    .then(() => null)
+    .catch((e: Error) => e)
+  expect(unfocusable).toBeInstanceOf(BrowserAmbiguousRefError)
+  expect(String((unfocusable as Error).message)).toContain('无法聚焦')
+  expect(fake.mouse()).toHaveLength(0)
+  expect(fake.keyEvents()).toHaveLength(0)
+})
+
+/**
+ * 原始失败形状：不显示的节点没有布局对象，滚动命令以协议错误失败，该错误原文作为结果返回，
+ * 且未声明「未执行」，调用方按动作可能已发出处理。
+ */
+test('尺寸为 0 的元素不发送滚动命令，按尺寸为 0 拒绝并声明未执行', async () => {
+  const { fake, handle } = await newPage()
+  const doc = fake.model.docs[0] as DocModel
+  doc.nodes.push({ backendNodeId: 85, tag: 'a', attrs: { id: 'tab-qr' } })
+  doc.ax.push({ backendDOMNodeId: 85, role: 'link', name: '扫码登录' })
+  const { record, observation } = await observe(handle)
+
+  const err = await act(handle, record, {
+    action: 'click',
+    ref: refOf(observation, '扫码登录'),
+  }).catch((e: Error) => e)
+  expect(err).toBeInstanceOf(BrowserAmbiguousRefError)
+  expect(err).toMatchObject({ executed: false, errorKind: 'target_blocked' })
+  expect(String((err as Error).message)).toContain('尺寸为 0')
+  expect(fake.sent('DOM.scrollIntoViewIfNeeded')).toHaveLength(0)
   expect(fake.mouse()).toHaveLength(0)
 })
 
@@ -3077,6 +3263,26 @@ test('press 按阶段的集合差发送：已按下的键不重复发送，最�
     'keyUp:KeyW',
   ])
   expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 3 })
+})
+
+/** 原始失败形状：连按两次 Tab 时以时长为 0 的空阶段表示松开，整份计划被拒绝，焦点未移动。 */
+test('press 时长为 0 的空阶段松开全部键后立即进入下一阶段，同一个键可以连按', async () => {
+  const { fake, handle } = await newPage()
+  const { record } = await observe(handle)
+
+  const r = await act(handle, record, {
+    action: 'press',
+    phases: [{ keys: ['Tab'] }, { keys: [] }, { keys: ['Tab'] }, { keys: [] }, { keys: ['Space'] }],
+  })
+  expect(fake.keyEvents().map((e) => `${e.type}:${e.code}`)).toEqual([
+    'rawKeyDown:Tab',
+    'keyUp:Tab',
+    'rawKeyDown:Tab',
+    'keyUp:Tab',
+    'keyDown:Space',
+    'keyUp:Space',
+  ])
+  expect(r.execution).toEqual({ state: 'completed', confirmedUnits: 5 })
 })
 
 test('press 阶段之间文档更换时停止：其余阶段不发送，已按下的键由收尾松开', async () => {

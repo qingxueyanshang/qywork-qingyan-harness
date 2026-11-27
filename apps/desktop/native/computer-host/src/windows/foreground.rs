@@ -39,15 +39,16 @@ use ::windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetAncestor, GetForegroundWindow, GetGUIThreadInfo, GetSystemMetrics,
     FindWindowW, GetWindowRect, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindow,
-    IsZoomed, SendMessageTimeoutW, SetForegroundWindow, ShowWindow, WindowFromPoint, GA_ROOT,
-    GA_ROOTOWNER, GUITHREADINFO, HTCAPTION, SMTO_ABORTIFHUNG, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE, WM_NCHITTEST,
+    IsZoomed, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos, ShowWindow,
+    WindowFromPoint, GA_ROOT, GA_ROOTOWNER, GUITHREADINFO, HTCAPTION, SMTO_ABORTIFHUNG,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOZORDER, SW_MAXIMIZE, SW_RESTORE, SW_SHOWNORMAL, WM_NCHITTEST,
 };
 
 use super::popup::{self, check_shown};
 use super::sink::{
-    belongs_to, delivery, focus_of, post_text, thread_focus, wheel_reaches, Delivery,
-    MessageCharSink, MessageSink, SystemCharSink, SystemSink,
+    belongs_to, delivery, focus_of, is_chromium, post_text, thread_focus, wheel_reaches,
+    Delivery, MessageCharSink, MessageSink, SystemCharSink, SystemSink,
 };
 use super::{current_pattern, defer, dispatch_call, holds_focus, CallWatch, StateWatch};
 use crate::backend::{confirm, lands_on_target, settled, Aimed, Attempt, Outcome};
@@ -716,11 +717,11 @@ enum Raised {
 /// 最小化的窗口先还原：最小化状态下前台切换只恢复任务栏按钮，窗口本身不会显示。
 fn raise(window: i64) -> Raised {
     let hwnd = HWND(window as *mut c_void);
-    // SAFETY: 句柄由调用方核对过归属，两项都只读写显示状态。
-    unsafe {
-        if IsIconic(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-        }
+    // SAFETY: 句柄由调用方核对过归属，只读取显示状态。
+    if unsafe { IsIconic(hwnd) }.as_bool() {
+        // SAFETY: 同上，只改变显示状态。
+        let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+        relayout_restored(hwnd);
     }
     // SAFETY: 同上。
     let direct = unsafe { SetForegroundWindow(hwnd) }.as_bool();
@@ -739,6 +740,45 @@ fn raise(window: i64) -> Raised {
         Raised::Accepted
     } else {
         Raised::Refused
+    }
+}
+
+/// 从最小化还原的窗口按改变后的尺寸重新布局一次。只在本模块执行了还原之后调用。
+///
+/// Chromium 内核的窗口从最小化还原之后不重新挂接网页内容的控件树，控件表只剩窗口外框的几个无名窗格，
+/// 直到窗口尺寸改变触发布局才恢复（微信开发者工具实测：还原后 9 个控件，宽度改变后 180 个）。
+/// 移动窗口、同尺寸的 `WM_SIZE` 与 `SWP_FRAMECHANGED` 都不触发，因此必须改变尺寸再改回。
+/// 最大化的窗口上改尺寸不生效，改为还原为普通状态再最大化。其他窗口不做处理：它们没有该问题，
+/// 改变尺寸只会多一次重绘。
+fn relayout_restored(hwnd: HWND) {
+    if !is_chromium(hwnd) {
+        return;
+    }
+    // SAFETY: 只读查询。
+    if unsafe { IsZoomed(hwnd) }.as_bool() {
+        // SAFETY: 只改变显示状态，最终状态与调用前相同。
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+            let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+        }
+        return;
+    }
+    nudge_size(hwnd);
+}
+
+/// 宽度加 1 像素再改回原值。两次调用都不移动、不改变 z 序、不激活；读取矩形失败时不做任何改动。
+fn nudge_size(hwnd: HWND) {
+    let mut rect = RECT::default();
+    // SAFETY: 出参是本栈帧上的结构体。
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        return;
+    }
+    let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
+    let flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE;
+    // SAFETY: 句柄由调用方核对过归属；两次调用只改变窗口尺寸，第二次恢复原值。
+    unsafe {
+        let _ = SetWindowPos(hwnd, None, 0, 0, width + 1, height, flags);
+        let _ = SetWindowPos(hwnd, None, 0, 0, width, height, flags);
     }
 }
 
@@ -896,7 +936,8 @@ fn set_window_state(window: i64, element: &IUIAutomationElement, target: WindowS
         }
         Ok(_) => {}
     }
-    if window_state(window) == Some(target) {
+    let before = window_state(window);
+    if before == Some(target) {
         return Attempt::Refused(format!(
             "already_in_state: {}",
             target.as_str()
@@ -911,9 +952,13 @@ fn set_window_state(window: i64, element: &IUIAutomationElement, target: WindowS
     let attempt = dispatch_call(&watch, defer(move || unsafe {
         pattern.SetWindowVisualState(state)
     }));
-    confirm(attempt, WINDOW_SETTLE, || {
+    let confirmed = confirm(attempt, WINDOW_SETTLE, || {
         window_state(window) == Some(target)
-    })
+    });
+    if before == Some(WindowState::Minimized) && window_state(window) != Some(WindowState::Minimized) {
+        relayout_restored(HWND(window as *mut c_void));
+    }
+    confirmed
 }
 
 /// 移动或缩放要写入的值。两者分开是因为对应的能力也分开：`CanMove` 与 `CanResize`。
@@ -1149,5 +1194,17 @@ mod tests {
             foreground_note(Some("input_partial".to_owned()), true),
             Some(format!("input_partial · {FOREGROUND_TAKEN}"))
         );
+    }
+
+    /// 重新布局之后窗口的位置与尺寸与调用前相同；非 Chromium 窗口不做处理。
+    #[test]
+    fn relayout_leaves_the_window_rect_unchanged() {
+        let _serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let target = TestWindow::open(Kind::Main, rect(-23_000, -23_000, 300, 200), 0x0000_00FF, None);
+        let before = window_rect(target.id()).expect("读取测试窗口矩形");
+        nudge_size(target.hwnd);
+        assert_eq!(window_rect(target.id()).expect("读取测试窗口矩形"), before);
+        relayout_restored(target.hwnd);
+        assert_eq!(window_rect(target.id()).expect("读取测试窗口矩形"), before);
     }
 }

@@ -7,7 +7,7 @@
  *    重新观察会更换编号，旧编号一律拒绝。动作前重新解析节点并核对身份，不将失效编号
  *    重新定位到另一个同名按钮。
  * 2. **语义来自 AX 树与节点属性，不是整页 HTML。** 每一步将整页 HTML 传入模型既无法容纳
- *    也无法准确读取；元素表提供角色、名称、类型、状态与正文摘要，超出上限时如实报告截断。
+ *    也无法准确读取；元素表提供角色、名称、类型、状态与正文摘要，结果的大小由投递层控制。
  * 3. **指向元素的鼠标与键盘输入发送到元素所在的会话。** 鼠标使用该会话本地根的坐标，
  *    避免滚动后依赖顶层合成器尚未更新的跨进程命中信息；回执仍用顶层坐标。帧偏移在
  *    动作准备阶段实时获取，并逐层核对父文档遮挡。滚轮按页面落点分发，不绕过覆盖落点的元素。
@@ -44,8 +44,6 @@ import {
   within,
 } from './input.ts'
 
-/** 一次观察最多返回多少个元素。超出时按 offset 翻页，不静默截断。 */
-const MAX_ELEMENTS = 120
 /**
  * 选项样例与填写回执中的值的字符上限。
  *
@@ -139,6 +137,11 @@ export class BrowserAmbiguousRefError extends CdpError implements BrowserRefusal
   readonly errorKind = 'target_blocked' as const
   readonly executed = false as const
 }
+/**
+ * 目标元素自身在其文档中无法接收指针事件：视口外、尺寸为 0 或被遮挡。帧链上的遮挡仍是 `BrowserAmbiguousRefError`。
+ * 点击原生复选框与单选框时据此改用键盘激活，见 `toggleByKeyboard`。
+ */
+class BrowserUnhittableError extends BrowserAmbiguousRefError {}
 /** 预算内未能采集到前后一致的快照。调用方保留已经发出的动作回执，不重新执行动作。 */
 export class BrowserObserveTimeoutError extends CdpError {}
 
@@ -263,7 +266,7 @@ export const INSPECT_FN = `function qyInspect(px, py) {
     hit: hit ? (hit.tagName || '').toLowerCase() : null,
     hitLabel: hit ? (((hit.getAttribute && hit.getAttribute('aria-label')) || (hit.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) : '',
     disabled: qyState(el).disabled,
-    label: ((text ? el.nodeValue.trim() : (el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim() || '').slice(0, ${MAX_LABEL})) || tag,
+    label: ((text ? el.nodeValue.trim() : (el.getAttribute && el.getAttribute('aria-label')) || (el.innerText || '').trim() || (el.labels && el.labels[0] ? (el.labels[0].innerText || '').trim() : '') || '').slice(0, ${MAX_LABEL})) || tag,
   }
 }`
 
@@ -575,13 +578,16 @@ export async function readDocument(
  *
  * **观察只读，不滚动页面**：滚动由动作执行，见 `prepareAction`。返回的 select 另带一份
  * 当前选项摘要，合计有上限，未列全的使用 `readSelectOptions` 继续读取。
+ *
+ * **返回范围内的全部元素，不按数量截断。** 结果的大小由投递层按上下文预算裁剪，并把完整元素表存入正文库
+ * （`browser-results.ts` 的 `deliverPage`）。不要在此处另设数量上限：截断的表只是页面的前一部分，
+ * 动作之后无法与上一次观察比较，弹窗等新出现的元素位于上限之外时不在结果中。
  */
 export async function observePage(
   page: PageHandle,
   opts: {
     frame?: string
     screenshot?: boolean
-    offset?: number
     query?: string
   },
   numbering: RefNumbering,
@@ -604,16 +610,14 @@ export async function observePage(
       numbering.docToken = before.token
       numbering.byNode.clear()
     }
-    // 全部采集到的元素都发放编号，不只是本页返回的部分：翻页与查询取得的编号指向同一个节点。
+    // 全部采集到的元素都发放编号，不只是查询命中的部分：各次查询取得的编号指向同一个节点。
     const numbered = collected.items.map((i) => ({
       element: { ref: numberOf(numbering, i.ref), ...i.element },
       ref: i.ref,
     }))
     const pending = collected.pending
     const query = opts.query
-    const all = query ? numbered.filter((i) => matchesQuery(i.element, query)) : numbered
-    const offset = opts.offset ?? 0
-    const shown = all.slice(offset, offset + MAX_ELEMENTS)
+    const shown = query ? numbered.filter((i) => matchesQuery(i.element, query)) : numbered
     await attachOptions(client, shown, deadline)
     step()
     await attachSizes(client, shown, deadline)
@@ -635,7 +639,6 @@ export async function observePage(
         url: after.url,
         title: after.title,
         elements: shown.map((i) => i.element),
-        truncated: offset + shown.length < all.length,
         ...(pending.length > 0 ? { framesPending: pending } : {}),
         ...(image ? { image } : {}),
       },
@@ -1188,9 +1191,10 @@ function numberOf(numbering: RefNumbering, ref: RefRecord): string {
 }
 
 /**
- * 为本页要返回的 select 补充一份当前选项摘要。
+ * 为观察返回的 select 补充一份当前选项摘要。
  *
- * 只为实际返回的 select 采集：未列入本页元素表的 select 即使采集也无法返回。
+ * 每个 select 两次往返（定位与读取）。2026-11-27 实测：3000 个元素、100 个 select 的页面上这一步约 40 ms，
+ * 整次观察约 650 ms。
  * 合计上限用尽之后仍读取一次总数（limit 取 0），使调用方知道需要使用 `optionsFor` 继续读取；
  * 摘要缺省与「该 select 没有选项」必须能够区分。单个 select 读取失败时不写该项，
  * 不写成空选项表。
@@ -1222,7 +1226,7 @@ async function attachOptions(
 }
 
 /**
- * 为本页要返回的 canvas 补充当前的 CSS 像素尺寸，即指针动作 `point` 的取值范围。
+ * 为观察返回的 canvas 补充当前的 CSS 像素尺寸，即指针动作 `point` 的取值范围。
  *
  * 只处理 canvas：它的落点只能按坐标区分，其他元素点击中心即可。无法测量（`display: none`）时
  * 不写该项，不写成 0。
@@ -1352,7 +1356,10 @@ interface Inspection {
   /** 命中元素的名称摘要，取 `aria-label` 或可取得文本，有界。 */
   hitLabel?: string
   disabled?: boolean
-  /** 目标自身的名称摘要，取 `aria-label`、可取得文本或标签名，有界。动作回执的 `element` 取该值。 */
+  /**
+   * 目标自身的名称摘要，依次取 `aria-label`、可取得文本、第一个关联标签的文字与标签名，有界。动作回执的 `element` 取该值。
+   * 表单控件自身没有可取得文本，缺少关联标签时回执只有 `input`。
+   */
   label?: string
 }
 
@@ -1515,7 +1522,7 @@ async function prepareAction(
   }
   if (opts.point && view.inBox === false) throw outsideBox(ref, opts.point, view)
   if (opts.hit && view.disabled === true) throw new BrowserArgumentError(`元素 ${ref} 当前不可用`)
-  if (opts.hit) assertHittable(`元素 ${ref}`, view)
+  if (opts.hit) assertHittable(`元素 ${ref}`, view, BrowserUnhittableError)
   const points = await pointerPoints(page, entry, view, ref, deadline, opts.hit)
   return { entry, objectId, inspect: view, ...points }
 }
@@ -1534,6 +1541,9 @@ function outsideBox(ref: string, point: BrowserPoint, view: Inspection): Browser
  *
  * 跨站 iframe 中的元素一律滚动一次：帧内可见不代表该帧位于父页的可视区内。
  * 通过 CDP 滚动原节点及父页，文本节点和元素共用这一条路径。
+ *
+ * 尺寸为 0 的元素不滚动：滚动之后它仍无法命中，由命中裁决说明尺寸为 0。不显示的节点没有布局对象，
+ * 对它发送滚动命令以协议错误失败，该错误不声明「未执行」，调用方会按动作可能已发出处理。
  */
 async function scrollIntoView(
   client: CdpClient,
@@ -1543,6 +1553,7 @@ async function scrollIntoView(
   deadline: number,
 ): Promise<boolean> {
   if (entry.frame === undefined && view.inView === true && view.sameTree === true) return false
+  if (view.width === 0 || view.height === 0) return false
   await client.send(
     'DOM.scrollIntoViewIfNeeded',
     { objectId },
@@ -1704,18 +1715,22 @@ async function frameHop(
 /**
  * 命中裁决。视口外、零尺寸、被遮挡分别说明，不一律报告为被遮挡：三者的后续操作不同。
  *
- * 在动作准备的最后一步调用：滚动已经完成，此时仍命中其他元素才属于遮挡。
+ * 在动作准备的最后一步调用：滚动已经完成，此时仍命中其他元素才属于遮挡。`Refusal` 区分目标自身与帧链上的一层。
  */
-function assertHittable(subject: string, view: Inspection | FramePoint): void {
+function assertHittable(
+  subject: string,
+  view: Inspection | FramePoint,
+  Refusal: typeof BrowserAmbiguousRefError = BrowserAmbiguousRefError,
+): void {
   if (view.width === 0 || view.height === 0) {
-    throw new BrowserAmbiguousRefError(`${subject} 当前尺寸为 0，无法在其上发送事件，请重新观察`)
+    throw new Refusal(`${subject} 当前尺寸为 0，无法在其上发送事件，请重新观察`)
   }
   if (view.inView !== true) {
-    throw new BrowserAmbiguousRefError(`${subject} 滚动后仍在可视区外，请重新观察`)
+    throw new Refusal(`${subject} 滚动后仍在可视区外，请重新观察`)
   }
   if (view.sameTree !== true) {
     const hit = view.hit ? `${view.hit}${view.hitLabel ? `（${view.hitLabel}）` : ''}` : '空白'
-    throw new BrowserAmbiguousRefError(`${subject} 的命中点位于 ${hit} 上，请重新观察`)
+    throw new Refusal(`${subject} 的命中点位于 ${hit} 上，请重新观察`)
   }
 }
 
@@ -1938,6 +1953,8 @@ type PointerOptions = { point?: BrowserPoint; keys?: string[]; holdMs?: number }
 /**
  * 单次点击，可按住一段时间，可同时按住键。右键只更换 `button`，定位、滚动与命中说明与左键
  * 相同。按下与抬起各为一个单元；按住期间被停止时由收尾补发 `mouseReleased`。
+ *
+ * 不带落点、按键与按住时长的左键点击原生复选框或单选框时，控件自身无法命中则改用键盘激活（`toggleByKeyboard`）。
  */
 async function clickOnPage(
   page: PageHandle,
@@ -1952,12 +1969,23 @@ async function clickOnPage(
   if (bad) throw new CdpError(bad)
   const { client } = page
   const run = new Execution()
-  const { entry, inspect, point, inputPoint } = await prepareAction(page, record, ref, {
+  const toggle =
+    button === 'left' &&
+    opts.point === undefined &&
+    keys.length === 0 &&
+    hold === 0 &&
+    isNativeToggle(record.refs.get(ref))
+  const prepared = await prepareAction(page, record, ref, {
     scroll: true,
     hit: true,
     deadline: run.deadline,
     ...(opts.point ? { point: opts.point } : {}),
+  }).catch((err: unknown) => {
+    if (toggle && err instanceof BrowserUnhittableError) return err
+    throw err
   })
+  if (prepared instanceof BrowserUnhittableError) return toggleByKeyboard(page, record, ref, run)
+  const { entry, inspect, point, inputPoint } = prepared
   const { sessionId } = entry
   const keyboard = new Keyboard(client, sessionId)
   const send = (type: 'mousePressed' | 'mouseReleased', buttons: number) =>
@@ -1985,6 +2013,52 @@ async function clickOnPage(
   if (await sequence()) run.finish()
   await settleInput(client, [sessionId], run)
   return { element: inspect.label ?? ref, point, execution: run.receipt() }
+}
+
+/** 原生复选框或单选框：身份指纹为 `input|id|name|checkbox` 或 `input|id|name|radio`，type 不分大小写。 */
+function isNativeToggle(entry: RefRecord | undefined): boolean {
+  return entry !== undefined && /^input\|.*\|(checkbox|radio)$/i.test(entry.identity)
+}
+
+/**
+ * 以键盘激活原生复选框或单选框：聚焦后按下并松开空格，两者各为一个单元。
+ *
+ * 页面把原生控件移出可视区或缩成零尺寸、以自绘方框显示时，它无法接收指针事件；空格是该控件的标准激活方式，
+ * 浏览器随之派发 click、input 与 change，与指针点击相同。不要改为点击关联的标签：以 aria-label 命名的控件
+ * 没有标签元素。勾选状态以动作之后的观察为准。无法聚焦时在发出按键之前拒绝。
+ */
+async function toggleByKeyboard(
+  page: PageHandle,
+  record: ObservationRecord,
+  ref: string,
+  run: Execution,
+): Promise<BrowserActReceipt> {
+  const { client } = page
+  const { entry, inspect } = await resolveRef(page, record, ref, run.deadline)
+  const focused = await client
+    .send(
+      'DOM.focus',
+      { backendNodeId: entry.backendNodeId },
+      { sessionId: entry.sessionId, ...within(run.deadline, PREPARE_TIMEOUT_MS) },
+    )
+    .then(
+      () => true,
+      () => false,
+    )
+  if (!focused) {
+    throw new BrowserAmbiguousRefError(`元素 ${ref} 无法接收指针事件，也无法聚焦，未发出点击`)
+  }
+  const keyboard = new Keyboard(client, entry.sessionId)
+  const sequence = async (): Promise<boolean> => {
+    if (!(await run.run(client, () => keyboard.to(['Space'], run.deadline)))) return false
+    run.unit()
+    if (!(await run.run(client, () => keyboard.to([], run.deadline)))) return false
+    run.unit()
+    return true
+  }
+  if (await sequence()) run.finish()
+  await settleInput(client, [entry.sessionId], run)
+  return { element: inspect.label ?? ref, via: 'keyboard', execution: run.receipt() }
 }
 
 /**

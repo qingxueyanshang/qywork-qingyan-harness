@@ -1,7 +1,8 @@
 /**
  * 五个内置桌面工具。覆盖范围：`desktop/` 下的 `windows.ts`、`observe.ts`、`act.ts`、`sequence.ts`、
  * `wait.ts`、`actions.ts`、`tools.ts` 与 `shared/` 的参数校验、局部查询参数、层级消歧回执、
- * 动作前置条件、三态回执与动作后观察的透传、选择容器的选中项渲染、等待条件与终态、
+ * 动作前置条件、三态回执与动作后观察的透传、选择容器的选中项渲染、等待条件、按时长等待与终态、
+ * 自绘窗口的判定（`shared/delivery.ts` 的 `isBareWindow`）、
  * 注册元数据，以及采集模式、
  * 两种采集区域参数、图片经由 `images` 通道传递、几何与图像尺寸的核对、不接受图片的模型，
  * 以及有限动作序列的逐步执行、引用接续、后置条件、七种停止边界与 `executed` 语义。
@@ -28,6 +29,7 @@ import {
   type DesktopSnapshot,
 } from './desktop/port.ts'
 import { desktopActSequenceTool } from './desktop/sequence.ts'
+import { isBareWindow } from './desktop/shared/delivery.ts'
 import { desktopTools } from './desktop/tools.ts'
 import { desktopWaitTool } from './desktop/wait.ts'
 import { desktopWindowsTool } from './desktop/windows.ts'
@@ -430,7 +432,7 @@ function fakeDesktop(over: Partial<DesktopPort> = {}): {
       note('observe', input)
       return snapshot({ windowId: input.windowId })
     },
-    elements: (windowId) => (windowId === 'dw_1' ? TABLE : null),
+    observation: (windowId) => (windowId === 'dw_1' ? snapshot() : null),
     captureImage: async (input) => {
       note('captureImage', input)
       return image()
@@ -645,13 +647,16 @@ describe('目标解析与层级消歧', () => {
   test('候选控件的长值只输出字数，原文不进入 message', async () => {
     const 长值 = '文'.repeat(60_000)
     const { port } = fakeDesktop({
-      elements: () => [
-        { ...窗口 },
-        { ...工具栏 },
-        { ...工具栏保存, value: 长值 },
-        { ...表单组 },
-        { ...表单保存, value: 长值 },
-      ],
+      observation: () =>
+        snapshot({
+          elements: [
+            { ...窗口 },
+            { ...工具栏 },
+            { ...工具栏保存, value: 长值 },
+            { ...表单组 },
+            { ...表单保存, value: 长值 },
+          ],
+        }),
     })
     const r = await run(
       desktopActTool,
@@ -668,7 +673,7 @@ describe('目标解析与层级消歧', () => {
   test('父控件不在本表中时祖先路径只写到中断处', async () => {
     const partial = [表单保存, 灰按钮].map((e) => ({ ...e }))
     const { port } = fakeDesktop({
-      elements: () => [...partial, { ...工具栏保存 }],
+      observation: () => snapshot({ elements: [...partial, { ...工具栏保存 }] }),
     })
     const r = await run(
       desktopActTool,
@@ -690,7 +695,7 @@ describe('目标解析与层级消歧', () => {
   })
 
   test('本轮没有该窗口的有效观察时要求先观察，不发送任何帧', async () => {
-    const { port, calls } = fakeDesktop({ elements: () => null })
+    const { port, calls } = fakeDesktop({ observation: () => null })
     const r = await run(
       desktopActTool,
       { windowId: 'dw_1', action: 'invoke', ref: 'e3' },
@@ -1143,7 +1148,9 @@ describe('读取文本与选区', () => {
   })
 
   test.each(['', '当前内容'])('仅在控件有 value 时提示读取值（%j）', async (value) => {
-    const { port, calls } = fakeDesktop({ elements: () => [{ ...输入框, value }] })
+    const { port, calls } = fakeDesktop({
+      observation: () => snapshot({ elements: [{ ...输入框, value }] }),
+    })
     const r = await run(
       desktopObserveTool,
       { windowId: 'dw_1', capture: 'text', ref: 'e5' },
@@ -1590,7 +1597,7 @@ describe('按控件与按图确定采集区域', () => {
   test('combined 的 around 按本次读取的控件表解析', async () => {
     const { port, calls } = fakeDesktop({
       // 该端口只接受 do_1；combined 读取控件树后取得的是 do_1 的内容，但不应再查询一次。
-      elements: () => null,
+      observation: () => null,
       observe: async (input) => snapshot({ windowId: input.windowId, observationId: 'do_9' }),
     })
     const r = await run(
@@ -1598,7 +1605,7 @@ describe('按控件与按图确定采集区域', () => {
       { windowId: 'dw_1', capture: 'combined', around: 'e5', pad: 5 },
       ctxWith(port),
     )
-    // `elements` 恒返回 null：调用它会以「观察已失效」结束，无法采集图像。
+    // `observation` 恒返回 null：调用它会以「观察已失效」结束，无法采集图像。
     expect(r.status).toBe('success')
     expect(calls.map((c) => c.method)).toEqual(['captureImage'])
     expect(calls[0]).toMatchObject({
@@ -1631,7 +1638,7 @@ describe('按控件与按图确定采集区域', () => {
   })
 
   test('观察失效时 around 在本地即被拦截', async () => {
-    const { port, calls } = fakeDesktop({ elements: () => null })
+    const { port, calls } = fakeDesktop({ observation: () => null })
     const r = await run(
       desktopObserveTool,
       { windowId: 'dw_1', capture: 'region_image', around: 'e5' },
@@ -2015,7 +2022,8 @@ describe('前台动作', () => {
       ...base,
       port: {
         ...base.port,
-        elements: (windowId: string) => (windowId === 'dw_1' ? FOREGROUND_TABLE : null),
+        observation: (windowId: string) =>
+          windowId === 'dw_1' ? snapshot({ elements: FOREGROUND_TABLE }) : null,
       } as DesktopPort,
     }
   }
@@ -2216,7 +2224,8 @@ describe('前台动作', () => {
       ...base,
       port: {
         ...base.port,
-        elements: (windowId: string) => (windowId === 'dw_1' ? [自绘窗口] : null),
+        observation: (windowId: string) =>
+          windowId === 'dw_1' ? snapshot({ elements: [自绘窗口] }) : null,
       } as DesktopPort,
     }
   }
@@ -2309,7 +2318,8 @@ describe('前台动作', () => {
 
   test('对不接受按键的控件按键时，回执指明省略 ref 即投递给焦点', async () => {
     const { port, calls } = fakeDesktop({
-      elements: (windowId) => (windowId === 'dw_1' ? [自绘窗口, 文档框] : null),
+      observation: (windowId) =>
+        windowId === 'dw_1' ? snapshot({ elements: [自绘窗口, 文档框] }) : null,
     })
     const r = await run(
       desktopActTool,
@@ -2330,7 +2340,8 @@ describe('前台动作', () => {
     const { windowRoot: _root, ...子树根 } = 自绘窗口
     for (const table of [null, [{ ...子树根, ref: 'e4' }], FOREGROUND_TABLE]) {
       const { port, calls } = fakeDesktop({
-        elements: (windowId) => (windowId === 'dw_1' ? table : null),
+        observation: (windowId) =>
+          windowId === 'dw_1' && table ? snapshot({ elements: table }) : null,
       })
       const r = await run(
         desktopActTool,
@@ -3069,7 +3080,10 @@ describe('有限动作序列', () => {
       foregroundEnabled: () => true,
       windows: async () => [{ windowId: 'dw_1', app: '记事本', title: '未命名' }],
       observe: async () => snapshot({ observationId, elements: table }),
-      elements: (windowId) => (windowId === 'dw_1' && observationId !== '' ? table : null),
+      observation: (windowId) =>
+        windowId === 'dw_1' && observationId !== ''
+          ? snapshot({ observationId, elements: table })
+          : null,
       captureImage: async () => image(),
       act: async (input) => {
         calls.push({ method: 'act', input })
@@ -3125,6 +3139,118 @@ describe('有限动作序列', () => {
     return { windowId: 'dw_1', steps }
   }
 
+  /** 记录观察与采图的调用及其时刻，等待步骤的先后据此核对。 */
+  function timedPort(options: Parameters<typeof sequencePort>[0] = {}) {
+    const base = sequencePort(options)
+    const at: { method: string; ms: number }[] = []
+    const observe = base.port.observe
+    const act = base.port.act
+    base.port.observe = async (input) => {
+      at.push({ method: 'observe', ms: Date.now() })
+      base.calls.push({ method: 'observe', input })
+      return observe(input)
+    }
+    base.port.act = async (input) => {
+      at.push({ method: 'act', ms: Date.now() })
+      return act(input)
+    }
+    base.port.captureImage = async (input) => {
+      base.calls.push({ method: 'captureImage', input })
+      return image()
+    }
+    return { ...base, at }
+  }
+
+  test('等待步骤位于末尾：等待之后重读并截图，回执列出已等待的时长', async () => {
+    const { port, calls, at } = timedPort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'wait', durationMs: 100 },
+      ]),
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('2 wait 已等待 100 毫秒')
+    expect(r.data).toMatchObject({ dispatched: [1], notExecuted: [] })
+    expect(calls.map((c) => c.method)).toEqual(['act', 'observe', 'captureImage'])
+    const acted = at.find((c) => c.method === 'act')?.ms ?? 0
+    const read = at.find((c) => c.method === 'observe')?.ms ?? 0
+    expect(read - acted).toBeGreaterThanOrEqual(90)
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  test('等待步骤位于中间：下一步按等待之后的控件表解析，等待不计入已派发', async () => {
+    const { port, calls } = timedPort()
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        // strict schema 下模型为每一步填写的空值与取值列表中的项，不构成多余参数。
+        {
+          action: 'wait',
+          durationMs: 100,
+          ref: null,
+          expect: null,
+          button: 'left',
+          count: 1,
+          step: 'line',
+          amount: 1,
+          text: '',
+        },
+        { action: 'set_value', ref: 'e5', value: '李四' },
+      ]),
+      ctxWith(port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.executed).toBe(true)
+    expect(r.data).toMatchObject({ dispatched: [1, 3], notExecuted: [] })
+    expect(calls.map((c) => c.method)).toEqual(['act', 'observe', 'act', 'captureImage'])
+  })
+
+  test('等待期间停止：不再重读与派发，已派发的步骤如实列出', async () => {
+    const stop = new AbortController()
+    const { port, calls } = timedPort({ onAct: () => setTimeout(() => stop.abort(), 10) })
+    const r = await run(
+      desktopActSequenceTool,
+      seq([
+        { action: 'set_value', ref: 'e5', value: '张三' },
+        { action: 'wait', durationMs: 10_000 },
+        { action: 'set_value', ref: 'e5', value: '李四' },
+      ]),
+      ctxWith(port, stop.signal),
+    )
+    expect(r).toMatchObject({ status: 'failure', executed: true, errorKind: 'aborted' })
+    expect(r.data).toMatchObject({ dispatched: [1], notExecuted: [2, 3], stoppedAt: 2 })
+    expect(r.message).toContain('未执行 2 wait、3 set_value')
+    expect(calls.map((c) => c.method)).toEqual(['act'])
+  })
+
+  test('等待步骤合计超过上限、缺少时长或附带其他参数时整组拒绝，不派发任何一步', async () => {
+    const { port, calls } = timedPort()
+    const bad: [Record<string, unknown>[], string][] = [
+      [
+        [
+          { action: 'wait', durationMs: 10_000 },
+          { action: 'wait', durationMs: 6_000 },
+        ],
+        '等待步骤合计 16000 毫秒，上限 15000 毫秒',
+      ],
+      [[{ action: 'wait', durationMs: 20_000 }], '上限 15000 毫秒'],
+      [[{ action: 'wait' }], '必须提供 durationMs'],
+      [[{ action: 'wait', durationMs: 500, ref: 'e5' }], 'wait 只接受 durationMs，收到 ref'],
+      [[{ action: 'set_value', ref: 'e5', value: '张三', durationMs: 500 }], '不接受 durationMs'],
+      [[{ action: 'wait_placeholder_not_allowed' }], 'activate / wait'],
+    ]
+    for (const [steps, text] of bad) {
+      const r = await run(desktopActSequenceTool, seq(steps), ctxWith(port))
+      expect(r).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+      expect(r.message).toContain(text)
+    }
+    expect(calls).toEqual([])
+  })
+
   test('序列中关闭前台操作后停止后续前台步骤，已提交结果保留', async () => {
     let enabled = true
     const base = sequencePort({
@@ -3169,7 +3295,7 @@ describe('有限动作序列', () => {
       foregroundEnabled: () => true,
       windows: async () => [{ windowId: 'dw_1', app: '自绘', title: '自绘' }],
       observe: async () => snapshot({ observationId, elements: bare }),
-      elements: (windowId) => (windowId === 'dw_1' ? bare : null),
+      observation: (windowId) => (windowId === 'dw_1' ? snapshot({ elements: bare }) : null),
       captureImage: async (input) => {
         calls.push({ method: 'captureImage', input })
         return image()
@@ -3234,7 +3360,8 @@ describe('有限动作序列', () => {
       captured += 1
       return image()
     }
-    port.elements = (windowId) => (windowId === 'dw_1' ? FOREGROUND_TABLE : null)
+    port.observation = (windowId) =>
+      windowId === 'dw_1' ? snapshot({ elements: FOREGROUND_TABLE }) : null
     const r = await run(
       desktopActSequenceTool,
       seq([
@@ -4186,7 +4313,8 @@ describe('type_text 回执中的输入框原值与现值', () => {
       ...base,
       port: {
         ...base.port,
-        elements: (windowId: string) => (windowId === 'dw_1' ? [改名窗口, 改名框] : null),
+        observation: (windowId: string) =>
+          windowId === 'dw_1' ? snapshot({ elements: [改名窗口, 改名框] }) : null,
       } as DesktopPort,
     }
   }
@@ -4237,7 +4365,8 @@ describe('set_value 回执中的原值', () => {
     })
     const port = {
       ...base.port,
-      elements: (windowId: string) => (windowId === 'dw_1' ? [窗口, 名称格] : null),
+      observation: (windowId: string) =>
+        windowId === 'dw_1' ? snapshot({ elements: [窗口, 名称格] }) : null,
     } as DesktopPort
     const r = await run(
       desktopActTool,
@@ -4289,7 +4418,7 @@ describe('自绘窗口的动作与等待回执', () => {
         calls.push({ method: 'observe', input })
         return snapshot({ elements: table })
       },
-      elements: (windowId) => (windowId === 'dw_1' ? table : null),
+      observation: (windowId) => (windowId === 'dw_1' ? snapshot({ elements: table }) : null),
       captureImage: async (input) => {
         calls.push({ method: 'captureImage', input })
         return image()
@@ -4371,11 +4500,11 @@ describe('自绘窗口的动作与等待回执', () => {
     expect(calls.map((c) => c.method)).toEqual(['act'])
   })
 
-  test('等待到期：回执注明无可操作控件并附图，不输出差异计数', async () => {
+  test('等待新窗口到期：回执注明无可操作控件并附图，不输出差异计数', async () => {
     const { ctx, calls } = await observed()
     const r = await run(
       desktopWaitTool,
-      { windowId: 'dw_1', until: 'appears', name: '项目群', timeoutMs: 1_000 },
+      { windowId: 'dw_1', until: 'window', name: '项目群', timeoutMs: 1_000 },
       ctx,
     )
     expect(r).toMatchObject({
@@ -4387,6 +4516,93 @@ describe('自绘窗口的动作与等待回执', () => {
     expect(r.message).not.toContain('新增 0、改变 0、消失 0')
     expect(calls.map((c) => c.method)).toEqual(['wait', 'captureImage'])
     expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  /** 原始失败形状：在只有窗口根与渲染面的窗口上按名称等待，每次都等待至超时。 */
+  test('按控件树判定的条件在调用宿主之前拒绝，回执指向按时长等待', async () => {
+    for (const args of [
+      { until: 'appears', name: '项目群' },
+      { until: 'appears', role: 'button' },
+      { until: 'gone', ref: 'e22' },
+      { until: 'enabled', ref: 'e22' },
+      { until: 'value', ref: 'e22', value: 'x' },
+    ]) {
+      const { ctx, calls } = await observed()
+      const r = await run(desktopWaitTool, { windowId: 'dw_1', ...args, timeoutMs: 5_000 }, ctx)
+      expect(r).toMatchObject({
+        status: 'failure',
+        executed: false,
+        errorKind: 'desktop_precondition',
+      })
+      expect(r.message).toContain('无可操作控件')
+      expect(r.message).toContain('不提供 until 即按 timeoutMs 等待')
+      expect(calls).toEqual([])
+    }
+  })
+
+  test('按时长等待：到时按读取范围重读并附整窗截图，结果为成功', async () => {
+    const { ctx, calls } = await observed()
+    const r = await run(desktopWaitTool, { windowId: 'dw_1', timeoutMs: 100 }, ctx)
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('已等待 100 毫秒')
+    expect(r.message).toContain('无可操作控件')
+    expect(r.data).toMatchObject({ waitedMs: 100 })
+    expect(calls).toEqual([
+      { method: 'observe', input: { windowId: 'dw_1' } },
+      { method: 'captureImage', input: { windowId: 'dw_1', maxEdge: MAX_EDGE } },
+    ])
+    expect((r.data as { images?: unknown[] }).images).toHaveLength(1)
+  })
+
+  test('按时长等待沿用最近一次观察的读取范围；有业务控件的窗口同样附图', async () => {
+    const { port, calls } = fakeDesktop({
+      observation: (windowId) =>
+        windowId === 'dw_1' ? snapshot({ scope: 'e4', elements: TABLE.slice(3, 6) }) : null,
+    })
+    const r = await run(desktopWaitTool, { windowId: 'dw_1', timeoutMs: 100 }, ctxWith(port))
+    expect(r.status).toBe('success')
+    expect(calls.map((c) => c.method)).toEqual(['observe', 'captureImage'])
+    expect(calls[0]?.input).toEqual({ windowId: 'dw_1', root: 'e4' })
+  })
+
+  test('按时长等待不接受条件参数，等待期间停止则不再读取', async () => {
+    const { port, calls } = tablePort()
+    const bad = await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', name: '__never__', timeoutMs: 100 },
+      ctxWith(port),
+    )
+    expect(bad).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+    expect(bad.message).toContain('name 须与 until 一起提供')
+
+    const stop = new AbortController()
+    const pending = run(
+      desktopWaitTool,
+      { windowId: 'dw_1', timeoutMs: 60_000 },
+      ctxWith(port, stop.signal),
+    )
+    stop.abort()
+    expect(await pending).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'aborted',
+    })
+    expect(calls).toEqual([])
+  })
+
+  test('序列步骤的后置条件在动作后为自绘窗口时不等待，停在该步骤', async () => {
+    const { ctx, calls } = await observed()
+    const r = await run(
+      desktopActSequenceTool,
+      {
+        windowId: 'dw_1',
+        steps: [{ action: 'activate', expect: { until: 'appears', name: '项目群' } }],
+      },
+      ctx,
+    )
+    expect(r).toMatchObject({ status: 'failure', errorKind: 'desktop_postcondition' })
+    expect(r.message).toContain('按控件树判定的条件不会成立，未等待')
+    expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
   })
 
   test('有业务控件的窗口上，等待到期与控件接口动作的回执照常输出差异计数，不附图', async () => {
@@ -4402,5 +4618,113 @@ describe('自绘窗口的动作与等待回执', () => {
     expect(acted.message).toContain('新增 0、改变 0、消失 0')
     expect(acted.message).not.toContain('无可操作控件')
     expect(calls.map((c) => c.method)).toEqual(['wait', 'act'])
+  })
+
+  const 指针动作: DesktopElement['actions'] = [
+    { action: 'click', delivery: ['foreground'] },
+    { action: 'hover', delivery: ['foreground'] },
+    { action: 'drag', delivery: ['foreground'] },
+    { action: 'wheel', delivery: ['foreground'] },
+  ]
+  const 外框根: DesktopElement = {
+    ...自绘窗口,
+    role: 'pane',
+    name: '弘德教育',
+    actions: [
+      { action: 'scroll_into_view', delivery: ['background'] },
+      ...指针动作,
+      { action: 'type_text', delivery: ['foreground'] },
+      { action: 'press_key', delivery: ['foreground'] },
+      { action: 'activate', delivery: ['foreground'] },
+    ],
+  }
+  /**
+   * 微信开发者工具最小化后还原时实测的 9 个节点：窗口根、一个禁用的渲染窗格与 7 个无名窗格。
+   * 网页内容全部缺失，7 个无名窗格都带后台动作 scroll_into_view。
+   */
+  const 九节点外框: DesktopElement[] = [
+    外框根,
+    { ...渲染面, ref: 'e2', enabled: false, actions: 指针动作 },
+    ...Array.from(
+      { length: 7 },
+      (_, at): DesktopElement => ({
+        ...渲染面,
+        ref: `e${at + 3}`,
+        parentRef: at === 0 ? 'e1' : 'e3',
+        depth: at === 0 ? 1 : 2,
+        actions: [{ action: 'scroll_into_view', delivery: ['background'] }, ...指针动作],
+      }),
+    ),
+  ]
+
+  /** 原始失败形状：9 个节点的窗口不判定为自绘窗口，动作回执只报「新增 0、改变 0、消失 0」且不附图。 */
+  test('Chromium 窗口只剩带 scroll_into_view 的无名窗格时判定为无可操作控件', async () => {
+    expect(isBareWindow(snapshot({ elements: 九节点外框 }))).toBe(true)
+    const { port, calls } = tablePort(九节点外框)
+    const ctx = ctxWith(port)
+    const seen = await run(desktopObserveTool, { windowId: 'dw_1', capture: 'structure' }, ctx)
+    expect(seen.message).toContain('无可操作控件')
+    expect(calls.map((c) => c.method)).toEqual(['observe', 'captureImage'])
+
+    calls.length = 0
+    const acted = await run(
+      desktopActTool,
+      { windowId: 'dw_1', action: 'click', imageRef: 'di_1', imageX: 40, imageY: 50 },
+      ctx,
+    )
+    expect(acted.message).toContain('无可操作控件')
+    expect(acted.message).not.toContain('新增 0、改变 0、消失 0')
+    expect(calls.map((c) => c.method)).toEqual(['act', 'captureImage'])
+
+    calls.length = 0
+    const waited = await run(
+      desktopWaitTool,
+      { windowId: 'dw_1', until: 'appears', name: '版本号', timeoutMs: 4_000 },
+      ctx,
+    )
+    expect(waited).toMatchObject({ executed: false, errorKind: 'desktop_precondition' })
+    expect(calls).toEqual([])
+  })
+
+  test('资源管理器这类窗口：无名窗格之外有业务控件，不判定为自绘窗口', async () => {
+    const 资源管理器: DesktopElement[] = [
+      { ...外框根, role: 'window', name: '下载' },
+      { ...渲染面, ref: 'e2', actions: [{ action: 'scroll_into_view', delivery: ['background'] }] },
+      {
+        ...渲染面,
+        ref: 'e3',
+        parentRef: 'e2',
+        depth: 2,
+        role: 'list',
+        name: '项目视图',
+        actions: [{ action: 'scroll_into_view', delivery: ['background'] }],
+      },
+      {
+        ...渲染面,
+        ref: 'e4',
+        parentRef: 'e3',
+        depth: 3,
+        role: 'list_item',
+        name: '报告.docx',
+        actions: [
+          { action: 'select', delivery: ['background'] },
+          { action: 'scroll_into_view', delivery: ['background'] },
+        ],
+      },
+      {
+        ...渲染面,
+        ref: 'e5',
+        parentRef: 'e1',
+        depth: 1,
+        role: 'button',
+        name: '后退',
+        actions: [{ action: 'invoke', delivery: ['background'] }],
+      },
+    ]
+    expect(isBareWindow(snapshot({ elements: 资源管理器 }))).toBe(false)
+    const { port, calls } = tablePort(资源管理器)
+    const r = await run(desktopObserveTool, { windowId: 'dw_1' }, ctxWith(port))
+    expect(r.message).not.toContain('无可操作控件')
+    expect(calls.map((c) => c.method)).toEqual(['observe'])
   })
 })

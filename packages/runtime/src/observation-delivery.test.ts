@@ -211,7 +211,7 @@ function desktopPort(table: DesktopElement[]): DesktopPort {
     foregroundEnabled: () => true,
     windows: async () => [{ windowId: 'dw_1', app: '合成应用', title: '合成标题 🙂' }],
     observe: async () => 快照(table),
-    elements: (windowId) => (windowId === 'dw_1' ? table : null),
+    observation: (windowId) => (windowId === 'dw_1' ? 快照(table) : null),
     captureImage: async () => {
       throw new Error('本组夹具不截图')
     },
@@ -291,7 +291,6 @@ const 大页: BrowserObservation = {
     下拉('e119'),
     下拉('e120'),
   ],
-  truncated: true,
   framesPending: ['f9c1'],
 }
 
@@ -962,7 +961,7 @@ describe('同一份结果在各层形状一致', () => {
     const port: DesktopPort = {
       ...desktopPort(小表),
       observe: async () => snap(0),
-      elements: () => tables[at] ?? null,
+      observation: () => (tables[at] ? snap(at) : null),
       act: async () => {
         at += 1
         return { dispatch: 'submitted', actionId: `da_${at}`, observation: snap(at) }

@@ -140,7 +140,7 @@ export const desktopObserveTool: ToolSpec = {
         )
       }
       if (capture === 'text') {
-        const elements = desktop.elements(windowId)
+        const elements = desktop.observation(windowId)?.elements ?? null
         const element = resolveTarget(elements, args)
         if (element.text !== true) {
           const hint =
@@ -283,7 +283,7 @@ async function captureFor(
   if (around && byImage) throw new ArgError('around 与 imageRef 只能提供一个')
   if (around) {
     const ref = str(args.around, 'around')
-    const table = fresh ?? desktop.elements(windowId)
+    const table = fresh ?? desktop.observation(windowId)?.elements ?? null
     if (!table) throw new ArgError(STALE, 'desktop_observation_stale')
     const element = table.find((e) => e.ref === ref)
     if (!element) {

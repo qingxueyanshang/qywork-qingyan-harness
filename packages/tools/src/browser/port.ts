@@ -85,9 +85,8 @@ export interface BrowserObservation {
   /** 页面当前的实际地址，不是请求时的地址。 */
   url: string
   title: string
+  /** 观察范围内的全部元素，不按数量截断。结果的大小由工具一侧按上下文预算裁剪，完整元素表存入正文库。 */
   elements: BrowserElement[]
-  /** 元素数超过上限而被截断。调用方须得知本页不是全部元素。 */
-  truncated: boolean
   /**
    * 当前尚未采集到内容的跨站 iframe 的帧编号。
    *
@@ -214,6 +213,11 @@ export interface BrowserActReceipt {
   element?: string
   /** 命中点，仅坐标动作带有。 */
   point?: { x: number; y: number }
+  /**
+   * `click` 改用键盘完成时为 `keyboard`：原生复选框或单选框自身无法接收指针事件（移出可视区、尺寸为 0），
+   * 已聚焦后按下并松开空格。省略表示按指针完成。勾选状态以动作之后的观察为准。
+   */
+  via?: 'keyboard'
   /** 输入动作的执行结果。`click` / `rightclick` / `dblclick` / `press` / `drag` / `type` 必带，其余省略。 */
   execution?: BrowserExecution
   /** `fill` 写入后控件中的实际值。 */
@@ -226,7 +230,7 @@ export interface BrowserActReceipt {
  * `wait` 等待的页面状态，按选择器命中的第一个元素判定。
  *
  * `visible`：有尺寸且样式上可见；`hidden`：未命中或命中元素不可见；`enabled`：可见且未禁用；
- * `text` / `value`：文本（空白归一）或控件值与 `expected` 完全相等。
+ * `text`：文本（空白归一）包含 `expected`；`value`：控件值与 `expected` 完全相等。
  */
 export type BrowserWaitState = 'attached' | 'visible' | 'hidden' | 'enabled' | 'text' | 'value'
 
@@ -372,6 +376,8 @@ export interface BrowserPort {
     tabId: string
     action: 'goto' | 'back' | 'forward' | 'reload'
     url?: string
+    /** 导航之后的观察附带截图。 */
+    screenshot?: boolean
   }): Promise<FollowUpObservation>
   /**
    * 观察一页：实际地址、标题、元素与按需截图；提供 `optionsFor` 时改为读取一页选项。
@@ -383,15 +389,13 @@ export interface BrowserPort {
     /** 只观察指定的 iframe。缺省时覆盖主文档及其全部子帧。 */
     frame?: string
     screenshot?: boolean
-    /** 起始元素序号，配合 `truncated` 翻页。 */
-    offset?: number
-    /** 只返回名称、正文或值包含该文字的元素，不区分大小写。翻页与 `truncated` 按筛选后的元素表计算。 */
+    /** 只返回名称、正文或值包含该文字的元素，不区分大小写。 */
     query?: string
     /**
      * 读取一个 `select` 的选项：按 `ref` 定位，实时读取。
      *
      * 不采集新观察、不分配编号、不移动页面；引用失效时要求重新观察。与 `frame` /
-     * `screenshot` / `offset` 互斥：本模式返回选项页，不返回元素表。
+     * `screenshot` / `query` 互斥：本模式返回选项页，不返回元素表。
      */
     optionsFor?: { ref: string; offset?: number }
   }): Promise<BrowserObservation | BrowserOptionsPage>
@@ -409,6 +413,8 @@ export interface BrowserPort {
     /** `text` / `value` 等待的目标值，其余状态省略。 */
     expected?: string
     timeoutMs: number
+    /** 等待之后的观察附带截图。 */
+    screenshot?: boolean
   }): Promise<BrowserWaitResult>
   /**
    * 将本机文件交给一个文件输入元素。

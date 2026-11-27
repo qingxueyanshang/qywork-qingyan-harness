@@ -98,7 +98,6 @@ const 小页: BrowserObservation = {
   url: 'https://a/',
   title: 'A',
   elements: [{ ref: 'e1', role: 'button', name: '提交', tag: 'button' }],
-  truncated: false,
 }
 
 const 大页: BrowserObservation = {
@@ -106,7 +105,6 @@ const 大页: BrowserObservation = {
   url: 'https://a/list',
   title: '合成长列表',
   elements: 大页元素,
-  truncated: true,
   framesPending: ['f9c1'],
 }
 
@@ -358,26 +356,26 @@ describe('大页只投递前一部分', () => {
       tabId: string
       url: string
       title: string
-      truncated: boolean
       framesPending: string[]
     }
 
     expect(data.tabId).toBe('bt_1')
     expect(data.url).toBe('https://a/list')
     expect(data.title).toBe('合成长列表')
-    expect(data.truncated).toBe(true)
     expect(data.framesPending).toEqual(['f9c1'])
     expect(deliveryOf(r)?.delivered).toBeLessThan(大页元素.length)
   })
 
   test('整条结果不超过上限', async () => {
-    const ctx = context(fakeBrowser(), fakeSink())
-    for (const r of [
-      await browserObserveTool.fn({ tabId: 'bt_1' }, ctx),
-      await browserActTool.fn(CLICK, ctx),
-      await browserNavigateTool.fn({ tabId: 'bt_1', action: 'reload' }, ctx),
-      await browserWaitTool.fn({ tabId: 'bt_1', selector: '#x' }, ctx),
-    ]) {
+    const calls = [
+      (ctx: ToolContext) => browserObserveTool.fn({ tabId: 'bt_1' }, ctx),
+      (ctx: ToolContext) => browserActTool.fn(CLICK, ctx),
+      (ctx: ToolContext) => browserNavigateTool.fn({ tabId: 'bt_1', action: 'reload' }, ctx),
+      (ctx: ToolContext) => browserWaitTool.fn({ tabId: 'bt_1', selector: '#x' }, ctx),
+      (ctx: ToolContext) => browserWaitTool.fn({ tabId: 'bt_1', timeoutMs: 100 }, ctx),
+    ]
+    for (const call of calls) {
+      const r = await call(context(fakeBrowser(), fakeSink()))
       expect(sizeOf(r)).toBeLessThanOrEqual(LIMIT)
       expect(deliveryOf(r)?.collected).toBe(大页元素.length)
     }
@@ -446,6 +444,50 @@ describe('大页只投递前一部分', () => {
   })
 })
 
+/**
+ * 原始失败形状：采集侧只返回前 120 个元素并标记截断，截断的观察不参与比较，大页面上每次动作都整份投递
+ * 前一部分元素（多为侧栏导航），弹窗等新出现的元素排在其后，不在结果中。
+ */
+describe('大页面上动作之后给出变化', () => {
+  const 弹窗: BrowserElement = { ref: 'e900', role: 'button', name: '确定提交', tag: 'button' }
+  const 弹出之后: BrowserObservation = { ...大页, elements: [...大页元素, 弹窗] }
+  const acting = () =>
+    fakeBrowser({
+      act: async () => ({ element: 'button 提交', observation: 弹出之后, settle: 'quiet' }),
+      wait: async () => ({ met: true, observation: 弹出之后 }),
+    })
+
+  test('整页观察的完整元素表存入正文库之后，动作结果只列变化，排在视图之外的新元素同样列出', async () => {
+    const ctx = context(acting(), fakeSink())
+    const observed = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    expect(deliveryOf(observed)?.resourceId).toBe('rs_1')
+    expect(deliveryOf(observed)?.delivered).toBeLessThan(大页元素.length)
+
+    const r = await browserActTool.fn(CLICK, ctx)
+    const data = r.data as { changes?: { unchanged: number; added: BrowserElement[] } }
+    expect(data.changes?.unchanged).toBe(大页元素.length)
+    expect(data.changes?.added).toEqual([弹窗])
+    expect(r.data).not.toHaveProperty('elements')
+    expect(deliveryOf(r)).toBeUndefined()
+    expect(r.message).toContain('与上次观察相比：新增 1、改变 0、消失 0')
+    expect(sizeOf(r)).toBeLessThan(sizeOf(observed) / 10)
+
+    // 只列变化的结果之后，基底是本次的完整元素表。
+    const again = await browserWaitTool.fn({ tabId: 'bt_1', selector: '#x' }, ctx)
+    expect(again.message).toContain('元素表与上次观察相同')
+  })
+
+  test('完整元素表未能存盘时不作为基底，其后的动作整份投递', async () => {
+    const ctx = context(acting(), failingSink)
+    const observed = await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    expect(deliveryOf(observed)?.unsaved).toBeTruthy()
+
+    const r = await browserActTool.fn(CLICK, ctx)
+    expect(r.data).not.toHaveProperty('changes')
+    expect(deliveryOf(r)?.collected).toBe(大页元素.length + 1)
+  })
+})
+
 describe('存盘正文与资源引用', () => {
   test('第一行是非元素元数据，之后每行一个元素，重新组合后与原观察相等', async () => {
     const sink = fakeSink()
@@ -465,7 +507,6 @@ describe('存盘正文与资源引用', () => {
       tabId: 'bt_1',
       url: 'https://a/list',
       title: '合成长列表',
-      truncated: true,
       framesPending: ['f9c1'],
     })
     expect(rows).toEqual(大页元素)

@@ -170,8 +170,9 @@ export function charKeys(ch: string): string[] | null {
 /**
  * 一段按键计划的合法性。返回第一处问题的说明，合法时返回 `null`。
  *
- * 每个阶段的 `keys` 是该时段内按住的完整集合；空集合表示全部松开并等待，因此必须带
- * 正时长。时长缺省为 0，即该集合按下之后立即进入下一阶段。
+ * 每个阶段的 `keys` 是该时段内按住的完整集合，时长缺省为 0，即该集合按下之后立即进入下一阶段。
+ * 空集合表示全部松开，时长为 0 时同样立即进入下一阶段。连按同一个键时用它分隔两次按下：相邻两个相同的集合之间
+ * 没有松开，第二次按下不会发出，因此不要要求空集合带正时长。整份计划中至少一个阶段按下键。
  */
 export function checkKeyPhases(
   phases: readonly { keys: readonly string[]; durationMs?: number }[],
@@ -186,9 +187,9 @@ export function checkKeyPhases(
       checkHeldKeys(phase.keys, `${where}.keys`) ??
       checkDuration(phase.durationMs ?? 0, `${where}.durationMs`)
     if (problem) return problem
-    if (phase.keys.length === 0 && (phase.durationMs ?? 0) === 0) {
-      return `${where} 是空集合，必须指定正的 durationMs`
-    }
+  }
+  if (phases.every((phase) => phase.keys.length === 0)) {
+    return 'phases 中没有任何按键，至少一个阶段需要按下键'
   }
   return checkTotal(phases, 'phases')
 }

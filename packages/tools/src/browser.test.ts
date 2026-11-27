@@ -40,7 +40,6 @@ const OB: BrowserObservation = {
   url: 'https://a/',
   title: 'A',
   elements: [{ ref: 'e1', role: 'button', name: '提交', tag: 'button' }],
-  truncated: false,
 }
 
 interface Recorded {
@@ -830,6 +829,26 @@ describe('部分完成与结果未知', () => {
     })
   })
 
+  test('点击改用键盘完成时 message 写明实际方式，回执保留 via', async () => {
+    const { port } = fakeBrowser({
+      act: async () => ({
+        element: '已阅读并了解平台审核规则',
+        via: 'keyboard',
+        execution: { state: 'completed', confirmedUnits: 2 },
+        observation: OB,
+      }),
+    })
+    const r = await browserActTool.fn(
+      { tabId: 'bt_1', action: 'click', ref: 'e1' },
+      ctxWith('/w', port),
+    )
+    expect(r.status).toBe('success')
+    expect(r.message).toContain(
+      'click 已发出：已阅读并了解平台审核规则（控件本身无法点击，已聚焦后按空格）',
+    )
+    expect(data(r)).toMatchObject({ via: 'keyboard' })
+  })
+
   test('端口回执中的其他字段原样返回，不逐个挑选', async () => {
     // 字段名由动作一侧决定（fill 的规范化值、约束结果）；此处验证投递时不筛选字段。
     const receipt = {
@@ -1049,7 +1068,7 @@ describe('观察的投递', () => {
       ctx,
     )
     expect(calls.at(-1)?.input).toMatchObject({ state: 'text', expected: '120' })
-    expect(r.message).toContain('#score 文本为 "120"，已达到')
+    expect(r.message).toContain('#score 文本包含 "120"，已达到')
     expect(data(r)).toMatchObject({ met: true, state: 'text' })
 
     await browserWaitTool.fn({ tabId: 'bt_1', selector: '#q', state: 'value', expected: '' }, ctx)
@@ -1079,6 +1098,37 @@ describe('观察的投递', () => {
     expect(calls).toEqual([{ method: 'observe', input: { tabId: 'bt_1' } }])
     expect(data(r)).toMatchObject({ waitedMs: 150 })
     expect(r.message).toContain('已等待 150 毫秒')
+  })
+
+  /** 原始失败形状：按时长等待之后的观察不参与比较，元素表与上一次相同时仍整份投递。 */
+  test('按时长等待之后与动作相同地和上一次整页观察比较，只给出变化', async () => {
+    const { port } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    await browserObserveTool.fn({ tabId: 'bt_1' }, ctx)
+    const r = await browserWaitTool.fn({ tabId: 'bt_1', timeoutMs: 100 }, ctx)
+    expect(r.status).toBe('success')
+    expect(r.message).toContain('元素表与上次观察相同')
+    expect(data(r)).toMatchObject({
+      waitedMs: 100,
+      changes: { unchanged: 1, added: [], changed: [], removed: [] },
+    })
+    expect(data(r)).not.toHaveProperty('elements')
+    expect(r).not.toHaveProperty('changes')
+  })
+
+  test('导航与等待的 screenshot 传给端口，按时长等待时随观察一并截图', async () => {
+    const { port, calls } = fakeBrowser()
+    const ctx = ctxWith('/w', port)
+    await browserNavigateTool.fn({ tabId: 'bt_1', action: 'reload', screenshot: true }, ctx)
+    await browserWaitTool.fn({ tabId: 'bt_1', selector: '#x', screenshot: true }, ctx)
+    await browserWaitTool.fn({ tabId: 'bt_1', timeoutMs: 100, screenshot: true }, ctx)
+    await browserNavigateTool.fn({ tabId: 'bt_1', action: 'reload', screenshot: false }, ctx)
+    expect(calls.map((c) => c.input)).toEqual([
+      { tabId: 'bt_1', action: 'reload', screenshot: true },
+      { tabId: 'bt_1', selector: '#x', state: 'visible', timeoutMs: 10_000, screenshot: true },
+      { tabId: 'bt_1', screenshot: true },
+      { tabId: 'bt_1', action: 'reload' },
+    ])
   })
 
   test('按时长等待期间取消：不再观察，按已停止结束', async () => {
@@ -1247,11 +1297,11 @@ describe('选项读取', () => {
     expect(stale.message).toContain('optionsFor 不能与 frame 同时提供')
   })
 
-  test('optionsFor 与 frame、screenshot、offset 同时提供时在调用端口前拒绝', async () => {
+  test('optionsFor 与 frame、screenshot、query 同时提供时在调用端口前拒绝', async () => {
     const { port, calls } = fakeBrowser()
     const ctx = ctxWith('/w', port)
     const optionsFor = { ref: 'e3' }
-    for (const extra of [{ frame: 'f1' }, { screenshot: true }, { offset: 10 }]) {
+    for (const extra of [{ frame: 'f1' }, { screenshot: true }, { query: '提交' }]) {
       const r = await browserObserveTool.fn({ tabId: 'bt_1', optionsFor, ...extra }, ctx)
       expect(r.status).toBe('failure')
       expect(r.executed).toBe(false)

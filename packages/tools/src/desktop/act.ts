@@ -272,7 +272,7 @@ export const desktopActTool: ToolSpec = {
         throw unknownAction(args.action, ACTIONS, 'action')
       }
       const kind = args.action as DesktopActionKind
-      const before = desktop.elements(windowId)
+      const before = desktop.observation(windowId)?.elements ?? null
       const table = given(args.imageRef) ? null : before
       const { aim, action } = planAct(table, kind, args, TARGET_PARAMS, desktop.foregroundEnabled())
       const field = writes(action) ? inputField(table, aim.element) : undefined
@@ -281,7 +281,7 @@ export const desktopActTool: ToolSpec = {
       const bare = r.observation ? isBareWindow(r.observation) : false
       if (aim.input.at === undefined && !ACTION_DEFS[kind].shot && !bare) return outcome
       const refresh =
-        r.dispatch !== 'not_dispatched' || r.observation !== null || !desktop.elements(windowId)
+        r.dispatch !== 'not_dispatched' || r.observation !== null || !desktop.observation(windowId)
       return withShot(outcome, refresh, desktop, send, windowId, ctx)
     }),
 }

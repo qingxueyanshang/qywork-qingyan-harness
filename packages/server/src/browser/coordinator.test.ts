@@ -2729,3 +2729,53 @@ test('screenshot=true 的动作回执观察带截图；动作未完成时同样�
   expect(typed.execution).toMatchObject({ state: 'partial' })
   expect(typed.observation.image?.data).toBe(SHOT)
 })
+
+/**
+ * 原始失败形状：指定的页已关闭或属于上一次启动，拒绝说明只有编号，调用方先列出一次标签页再新建或改用现有的页。
+ */
+test('标签页不存在或不归本会话时，拒绝说明列出本会话当前的标签页；没有时说明新建', async () => {
+  const { handle, host } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const none = await failure(port?.observe({ tabId: 'bt_404' }))
+  expect(none).toMatchObject({ executed: false, errorKind: 'invalid_argument' })
+  expect(none.message).toBe(
+    '无法识别的标签页 bt_404；本会话当前没有标签页，用 browser_tabs 的 create 打开',
+  )
+
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  await listed(handle, tab?.tabId ?? '', true, WS, 'cv_1')
+  host.userOpen('bt_u')
+  await listed(handle, 'bt_u')
+  const gone = await failure(port?.navigate({ tabId: 'bt_404', action: 'reload' }))
+  expect(gone.message).toMatch(
+    new RegExp(`^无法识别的标签页 bt_404；本会话当前的标签页：${tab?.tabId}（`),
+  )
+  expect(gone.message).not.toContain('bt_u')
+  const theirs = await failure(port?.observe({ tabId: 'bt_u' }))
+  expect(theirs.message).toMatch(
+    new RegExp(`^标签页 bt_u 不归本会话；本会话当前的标签页：${tab?.tabId}（`),
+  )
+})
+
+test('screenshot=true 的导航与等待之后的观察带截图，缺省时不截图', async () => {
+  const { handle, devtools } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const tabId = tab?.tabId ?? ''
+  const shots = () => devtools.calls.filter((c) => c.method === 'Page.captureScreenshot').length
+
+  const plain = await port?.navigate({ tabId, action: 'reload' })
+  expect(plain?.observation?.image).toBeUndefined()
+  expect(shots()).toBe(0)
+  const navigated = await port?.navigate({ tabId, action: 'reload', screenshot: true })
+  expect(navigated?.observation?.image?.data).toBe(SHOT)
+  const waited = await port?.wait({
+    tabId,
+    selector: 'h1',
+    state: 'visible',
+    timeoutMs: 1000,
+    screenshot: true,
+  })
+  expect(waited?.observation?.image?.data).toBe(SHOT)
+  expect(shots()).toBe(2)
+})

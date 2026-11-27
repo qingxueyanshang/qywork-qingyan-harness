@@ -554,6 +554,11 @@ impl Sink for MessageSink {
 /// Chromium 内核的窗口类前缀。Chrome、Edge、Electron、NW.js 的顶层窗口与内嵌的 Chromium 子窗口都使用它。
 const CHROMIUM_CLASS_PREFIX: &str = "Chrome_WidgetWin_";
 
+/// 该窗口属于 Chromium 内核（按窗口类判定）。
+pub fn is_chromium(hwnd: HWND) -> bool {
+    class_of(hwnd).starts_with(CHROMIUM_CLASS_PREFIX)
+}
+
 /// 滚轮消息能否使落点所在的控件滚动。`top` 是接收指针的顶层窗口。
 ///
 /// Chromium 内核收到滚轮消息后按屏幕坐标重新查找窗口：该位置在屏幕上被其他应用的窗口覆盖时丢弃消息，
@@ -561,7 +566,7 @@ const CHROMIUM_CLASS_PREFIX: &str = "Chrome_WidgetWin_";
 /// 记为已提交，因此在派发前判定。其他界面库按消息自身处理滚轮，覆盖不影响（剪映实测）。
 pub fn wheel_reaches(top: i64, at: ScreenPoint) -> bool {
     let top = HWND(top as *mut c_void);
-    if !class_of(child_at(top, at)).starts_with(CHROMIUM_CLASS_PREFIX) {
+    if !is_chromium(child_at(top, at)) {
         return true;
     }
     // SAFETY: 纯查询，参数是屏幕坐标。

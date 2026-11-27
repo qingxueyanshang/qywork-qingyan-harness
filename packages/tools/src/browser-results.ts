@@ -10,8 +10,9 @@
  * 2. 视图按本次顺序装入，不按目标选取。元素 `ref` 是本次观察内的序号（重新观察即重新
  *    编号），动作回执中的 `element` 是页面自报的标签文本。不要用它们识别新观察中的节点：
  *    同名同序号的另一个节点会被当作目标，而它可能正是模型下一步要点击的节点。
- * 3. 采集侧与投递侧分别记录：`truncated` / `framesPending` / `optionsTruncated` /
- *    `nextOffset` 表示未采集到，`delivery` 表示已采集但未投递。两者不能合并为一个字段。
+ * 3. 采集侧与投递侧分别记录：`framesPending` / `optionsTruncated` / `nextOffset` 表示未采集到，
+ *    `delivery` 表示已采集但未投递。两者不能合并为一个字段。元素数只由本文件按预算裁剪，
+ *    采集侧不截断元素表：截断的表只是页面的前一部分，无法与上一次观察比较。
  * 4. 截图字节不在此处处理：截图经由 `data.images` 发送，既不计入上限，也不写入存盘正文。
  */
 
@@ -55,7 +56,7 @@ export function isOptionsPage(page: BrowserPage): page is BrowserOptionsPage {
   return 'items' in page
 }
 
-/** 投递信息。与采集侧的 `truncated` / `optionsTruncated` 含义不同。 */
+/** 投递信息。与采集侧的 `optionsTruncated` 含义不同。 */
 interface Delivery {
   /** 结果中包含的项数。视图是本次表的前 N 项，顺序不变。 */
   delivered: number
@@ -81,7 +82,7 @@ export interface BrowserResultInput {
   /** 上限，缺省取 `observationResultBudget(ctx.contextWindow)` 与剩余额度的较小者。 */
   limit?: number
   /**
-   * 本次观察覆盖整页的第一页（未指定 offset、query、frame）。只有这样的观察参与与上一次观察的比较，
+   * 本次观察覆盖整页（未指定 query、frame）。只有这样的观察参与与上一次观察的比较，
    * 并成为下一次比较的基底：部分观察与整页观察相比，未列出的元素会被误报为消失。
    */
   whole?: boolean
@@ -105,7 +106,10 @@ const BASES_KEY = 'browser:bases'
  */
 const MIN_UNCHANGED_SHARE = 0.5
 
-/** tabId → 上一次投递给模型的整页元素表。`epoch` 是投递时的压缩次数。 */
+/**
+ * tabId → 上一次整页观察的完整元素表：已全部内联，或已存入正文库、可按 resource id 读取。
+ * `epoch` 是投递时的压缩次数。
+ */
 interface Base {
   url: string
   rows: Map<string, string>
@@ -121,13 +125,12 @@ function basesOf(ctx: BrowserResultContext): Map<string, Base> {
 }
 
 /**
- * 与基底相比的变化。基底不可用时返回 `null`：没有基底、压缩之后（基底可能已被替换为信封）、
- * 地址不同，或任一方被截断（截断的表只是页面的前一部分，元素移入移出窗口会被误报为增删）。
+ * 与基底相比的变化。基底不可用时返回 `null`：没有基底、压缩之后（基底可能已被替换为信封）或地址不同。
+ * 两份都是完整元素表，大页面同样可以比较。
  */
 function changesOf(ctx: BrowserResultContext, page: BrowserObservation): BrowserChanges | null {
   const base = basesOf(ctx).get(page.tabId)
   if (!base || base.epoch !== compactionEpoch(ctx.state) || base.url !== page.url) return null
-  if (page.truncated) return null
   const added: BrowserElement[] = []
   const changed: BrowserElement[] = []
   let unchanged = 0
@@ -156,14 +159,17 @@ export function changesLine(changes: BrowserChanges): string {
   return `与上次观察相比：新增 ${changes.added.length}、改变 ${changes.changed.length}、消失 ${changes.removed.length}`
 }
 
-/** 本次结果投递之后更新基底：整份或只列变化地完整投递了整页时，模型已知的就是这一份。 */
+/**
+ * 本次结果投递之后更新基底。`readable` 为真表示完整元素表已在结果中（整份内联或只列变化），
+ * 或已存入正文库：此后只列变化的结果中未列出的元素，模型可以在这份表中读取。
+ */
 function rememberBase(
   ctx: BrowserResultContext,
   page: BrowserObservation,
-  complete: boolean,
+  readable: boolean,
 ): void {
   const bases = basesOf(ctx)
-  if (!complete || page.truncated) {
+  if (!readable) {
     bases.delete(page.tabId)
     return
   }
@@ -204,8 +210,9 @@ export function browserResult(input: BrowserResultInput): BrowserResultParts & {
     }
   }
   const parts = deliverPage({ ...input, lead })
-  // 大页只投递了前一部分（结果带 `delivery`）时模型未见全表，不作为基底。
-  rememberBase(ctx, page, parts.data?.delivery === undefined)
+  // 大页只投递了前一部分时，完整元素表存入正文库即可读取；存盘失败时未投递的部分无法读取，不作为基底。
+  const delivery = parts.data?.delivery as Delivery | undefined
+  rememberBase(ctx, page, delivery?.unsaved === undefined)
   return { ...parts, changes }
 }
 
