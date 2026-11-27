@@ -1,4 +1,4 @@
-import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
+import { createEffect, createMemo, createResource, createSignal, For, Show } from 'solid-js'
 import { embedded, postBack } from '../lib/embed.ts'
 import { createHeld, loaded } from '../lib/resource.ts'
 import { sessionSignal } from '../lib/session.ts'
@@ -89,6 +89,11 @@ export function Sidebar(props: { onClose?: () => void }) {
    * 后，页面只显示 `Failed to fetch`，侧栏不再更新）。
    */
   const workspaces = () => loaded(known)?.workspaces ?? []
+  /**
+   * 项目行按 id 匹配，不按对象：每次重新获取的清单都是新对象，按对象匹配时切换项目后全部行重建，
+   * 光标下的行先失去悬停底色，再按过渡重新淡入。
+   */
+  const workspaceById = createMemo(() => new Map(workspaces().map((w) => [w.id, w])))
 
   createEffect((wasReady: boolean) => {
     const ready = state.connection === 'ready'
@@ -189,23 +194,24 @@ export function Sidebar(props: { onClose?: () => void }) {
           顶部，位置跳动比定位当前项目更影响使用。当前项目在原位置展开或收起会话，
           由高亮与缩进标明当前所在的项目。 */}
       <div class="sidebar-scroll">
-        <For each={workspaces()}>
-          {(w: KnownWorkspace) => {
+        <For each={workspaces().map((w) => w.id)}>
+          {(id) => {
+            const w = () => workspaceById().get(id)!
             // 展开与高亮按显示中的项目（`shownList`），点击按当前项目判定。
-            const isCurrent = () => w.rootPath === workspace()?.root
-            const shownCurrent = () => w.rootPath === shownList().root
-            const expanded = () => shownCurrent() && collapsedPath() !== w.rootPath
+            const isCurrent = () => w().rootPath === workspace()?.root
+            const shownCurrent = () => w().rootPath === shownList().root
+            const expanded = () => shownCurrent() && collapsedPath() !== w().rootPath
             return (
               <div class="project">
                 <ProjectRow
-                  workspace={w}
+                  workspace={w()}
                   current={shownCurrent()}
                   expanded={expanded()}
                   onOpen={() => {
                     if (isCurrent()) {
-                      setCollapsedPath((path) => (path === w.rootPath ? null : w.rootPath))
+                      setCollapsedPath((path) => (path === w().rootPath ? null : w().rootPath))
                     } else {
-                      void go(w)
+                      void go(w())
                     }
                   }}
                   onNewChat={() => {
