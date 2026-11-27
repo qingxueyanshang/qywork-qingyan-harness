@@ -381,6 +381,8 @@ export {
   type ScheduleLastRun,
   type ScheduleView,
 } from './domain/schedule.ts'
+// 技能目录中 SKILL.md 的前置元信息：电脑端扫描与安装、云端列出内置技能共用
+export { isSkillDescription, parseSkillFrontmatter } from './domain/skill.ts'
 export {
   categoryOfHead,
   FILE_TARGET_CATEGORIES,
@@ -477,6 +479,7 @@ export type {
   CloudRechargeStatus,
   CloudRedeemResult,
   CloudRequest,
+  CloudSkill,
   CloudState,
   CloudUsage,
   ConversationBoardResponse,

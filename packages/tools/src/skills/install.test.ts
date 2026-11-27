@@ -62,7 +62,7 @@ test('会话 ZIP 附件经正式工具导入，包内脚本不执行，二进制
   const ctx = context([path])
   const result = await registry.execute('import_skill', { path }, ctx)
   expect(result.status).toBe('success')
-  expect((await scanSkills(root)).map((s) => s.dir)).toEqual([
+  expect((await scanSkills(root, [])).map((s) => s.dir)).toEqual([
     join(root, '.agents', 'skills', 'demo'),
   ])
   expect(
@@ -106,7 +106,7 @@ test('无描述、YAML 多行标量、路径穿越及符号链接条目均在提
     }),
   )
   expect((await importSkills(root, 'project', symlink)).ok).toBe(false)
-  expect(await scanSkills(root)).toEqual([])
+  expect(await scanSkills(root, [])).toEqual([])
 })
 
 test('替换需要显式授权，升级时完整替换资源，失败时保留旧版本', async () => {
@@ -123,7 +123,7 @@ test('替换需要显式授权，升级时完整替换资源，失败时保留�
   )
   const invalid = await bundle({ 'demo/SKILL.md': strToU8(markdown('demo', '')) })
   expect((await importSkills(root, 'project', invalid, true)).ok).toBe(false)
-  expect((await scanSkills(root))[0]?.description).toBe('新版')
+  expect((await scanSkills(root, []))[0]?.description).toBe('新版')
 })
 
 test('两个并发安装不会覆盖同一目录；层内元信息重名时不会静默失效', async () => {
@@ -161,7 +161,7 @@ test('Windows CRLF 元信息含后续 metadata 时名称与描述都能识别', 
   const path = await bundle({ 'flow-video-script/SKILL.md': strToU8(text) })
   const result = await importSkills(root, 'project', path)
   expect(result.ok).toBe(true)
-  expect((await scanSkills(root))[0]).toMatchObject({
+  expect((await scanSkills(root, []))[0]).toMatchObject({
     name: 'flow-video-script',
     description: 'AI视频制作',
   })
@@ -188,7 +188,7 @@ test.skipIf(process.platform !== 'win32')(
       })
       expect(receipt.active).toBe(true)
       expect(receipt.cleanupError).toContain('清理失败')
-      expect((await scanSkills(root)).map((skill) => skill.name)).toEqual(['demo'])
+      expect((await scanSkills(root, [])).map((skill) => skill.name)).toEqual(['demo'])
       expect(await readFile(join(receipt.dir, 'SKILL.md'), 'utf8')).toBe(markdown())
     } finally {
       if (processHolder) {

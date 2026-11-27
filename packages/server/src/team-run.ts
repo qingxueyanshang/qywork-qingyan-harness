@@ -36,7 +36,7 @@ import type { Role } from '@qywork/team'
 import { BrowserPort, CanvasPort, CommandPort, DesktopPort } from '@qywork/tools'
 import { artRenderOf, canvasPort } from './canvas/port.ts'
 import { commandPortOf, settleAfterRound } from './command-tasks/table.ts'
-import { type CommandDeps, officePortOf } from './deps.ts'
+import { builtinSkillPortOf, type CommandDeps, officePortOf } from './deps.ts'
 
 /**
  * 成员会话使用的「接口 × 模型」。优先级：角色指定 > 父会话当前的接口与模型 > 配置默认值。
@@ -306,6 +306,8 @@ export async function runBuiltinMember(
           : []),
         // 成员会话与顶层会话使用同一判定：处理文档的成员同样需要 `office`。
         ...officePortOf(deps),
+        // 内置技能按成员会话行上的接口判定，与顶层会话同一个函数。
+        ...builtinSkillPortOf(deps, getConversation(deps.store, conversationId)?.provider),
         // 画布与顶层会话使用同一个服务：成员修改的节点同样即时推送给界面。
         // 设计稿渲染使用内置浏览器的隐藏页，归属同上记为顶层会话；宿主不可用时画布端口不提供渲染。
         ...(deps.canvas && workspaceId

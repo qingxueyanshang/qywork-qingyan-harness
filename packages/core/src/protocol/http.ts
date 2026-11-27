@@ -383,8 +383,21 @@ export interface CloudAccountOverview {
   state: Extract<CloudState, { state: 'signed_in' }>
   usage: CloudUsage
   models: CloudModel[]
+  /** 内置技能，取自云端型号清单。 */
+  skills: CloudSkill[]
   /** 第一页使用记录，条数与 `/api/cloud/requests` 的每页条数相同。 */
   requests: CloudRequest[]
+}
+
+/**
+ * 内置技能：所有登录账号可用，正文只在云端。云端型号清单（`/v1/catalog`）的 `skills` 与账号概览共用此形状。
+ * `name` 与 `description` 取最新版本根目录 `SKILL.md` 的前置元信息（`parseSkillFrontmatter`）。
+ */
+export interface CloudSkill {
+  /** 技能包标识。电脑端以 `cloud-skill://<标识>` 读取其中的文件。 */
+  id: string
+  name: string
+  description: string
 }
 
 /**

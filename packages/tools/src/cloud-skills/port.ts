@@ -1,19 +1,21 @@
 import { definePort } from '@qywork/agent'
 import type { TextFeatureCounts } from '@qywork/ai'
+import type { CloudSkill } from '@qywork/core'
 
 /**
  * 云端技能端口：本会话可用的云端技能包，以及技能包内文件的列举、按行段读取与字面检索。
  *
  * 本机不持有技能原文。读取返回标记（`@qywork/ai` 的 `parseSkillMarker` 可解析的一行文本）与该行段的文本特征计数，
  * 标记在请求经过云端网关时被替换为该行段；工具把它放在 `outcome.data.texts` 中（`@qywork/agent` 的 `textsOf`）。
- * 实现由 server 注入：设备密钥与云端地址只在该层。未注入时读取工具不识别云端技能的路径；工具的说明与参数不随它变化。
- * 云端技能不进入技能索引，不经过 `read_skill`，只经文件工具按虚拟路径读取。
+ * 实现由 server 注入：设备密钥与云端地址只在该层。只在本轮经云端接口发送时注入：标记只由云端网关替换，
+ * 发往其他接口时模型取得的只是标记。未注入时读取工具不识别云端技能的路径；工具的说明与参数不随它变化。
+ * 技能包以内置层列入技能索引（`skills.ts` 的 `scanAllSkills`），`read_skill` 与文件工具按虚拟路径读取。
  *
  * 失败以结果返回，不抛出：每种失败都须以一句说明结束本次工具调用。
  */
 export interface CloudSkillPort {
-  /** 本会话可用的技能包标识（`@qywork/ai` 的 `isSkillPackageId`）。其余技能包的路径被读取工具拒绝。 */
-  readonly packages: readonly string[]
+  /** 本会话可用的技能包。其余技能包的路径被读取工具拒绝。 */
+  readonly packages: readonly CloudSkill[]
   /** 技能包的全部文件，按路径排序。 */
   files(pkg: string): Promise<CloudSkillResult<CloudSkillFile[]>>
   /** 签发第 `start` 至 `end` 行（从 1 起计，含两端）的标记；`end` 缺省为最后一行。 */

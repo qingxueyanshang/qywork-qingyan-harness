@@ -39,7 +39,7 @@ function setup(apiKey = 'qyd_device') {
   const port = cloudSkillPort({
     config,
     origin: cloud.origin,
-    packages: [{ package: 'flow-demo', version: 3 }],
+    packages: [{ id: 'flow-demo', name: '流程', description: '演示流程', version: 3 }],
   })
   return { cloud, config, port }
 }
@@ -47,7 +47,7 @@ function setup(apiKey = 'qyd_device') {
 describe('读取接口', () => {
   test('列举、读取与检索；读取的特征计数取标记中的计数，版本随请求发送', async () => {
     const { cloud, port } = setup()
-    expect(port.packages).toEqual(['flow-demo'])
+    expect(port.packages).toEqual([{ id: 'flow-demo', name: '流程', description: '演示流程' }])
     expect(await port.files('flow-demo')).toEqual({
       ok: true,
       value: [

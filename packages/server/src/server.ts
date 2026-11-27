@@ -76,6 +76,7 @@ import { cloudOrigin } from './cloud/origin.ts'
 import { RemoteAccess } from './cloud/remote.ts'
 import { remoteTransfer } from './cloud/remote-transfer.ts'
 import { renameCloudConversations } from './cloud/rename.ts'
+import { cloudSkillPort } from './cloud/skills/port.ts'
 import { CommandTaskTable } from './command-tasks/table.ts'
 import { handleCommand, reject } from './commands.ts'
 import type { SocketData } from './deps.ts'
@@ -425,7 +426,19 @@ export function serve(opts: ServeOptions) {
         onModelsRenamed: (renamed) => renameCloudConversations(opts.store, bus, renamed),
       })
     : null
-  const syncCloudPrices = cloud ? { syncCloudPrices: () => cloud.syncModels() } : {}
+  // 云端账号提供的两项会话依赖：使用云端型号前同步倍率，与本轮的内置技能端口。
+  const cloudDeps =
+    cloud && origin
+      ? {
+          syncCloudPrices: () => cloud.syncModels(),
+          builtinSkills: () => {
+            const packages = cloud.builtinSkills()
+            return packages.length
+              ? cloudSkillPort({ config: opts.config, origin, packages })
+              : null
+          },
+        }
+      : {}
 
   /*
    * 交付一次定时触发：认领时新建的会话先广播，再把 prompt 作为一条用户消息发送。
@@ -459,7 +472,7 @@ export function serve(opts: ServeOptions) {
         office,
         ...(browser ? { browser } : {}),
         ...(desktop ? { desktop } : {}),
-        ...syncCloudPrices,
+        ...cloudDeps,
       },
     )
   }
@@ -818,7 +831,7 @@ export function serve(opts: ServeOptions) {
             office,
             ...(browser ? { browser } : {}),
             ...(desktop ? { desktop } : {}),
-            ...syncCloudPrices,
+            ...cloudDeps,
           })
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err)

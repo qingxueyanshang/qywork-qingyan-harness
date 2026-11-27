@@ -21,13 +21,20 @@
 import { cp, mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import type { ToolSpec } from '@qywork/agent'
+import { type CloudSkill, isSkillDescription, parseSkillFrontmatter } from '@qywork/core'
+import { CloudSkillPort } from './cloud-skills/port.ts'
+import {
+  CLOUD_SKILL_SCHEME,
+  cloudSkillDir,
+  cloudTarget,
+  readCloudFile,
+} from './cloud-skills/source.ts'
 import { resolveInWorkspace, resolveWritablePath, rootsOf } from './paths.ts'
 import {
   type Scope,
   type ScopedItem,
   type ScopeRoots,
   scanAllScopes,
-  scanScoped,
   scopeDir,
   scopeRoots,
 } from './scopes.ts'
@@ -71,10 +78,9 @@ export async function scanSkillDir(root: string, scope: Scope): Promise<SkillMet
     const text = await readFile(join(dir, 'SKILL.md'), 'utf8').catch(() => null)
     if (text === null) continue
 
-    const meta = parseFrontmatter(text)
-    // description 是模型判断何时使用该技能的唯一依据。缺少它时技能安装后也不会被使用，
-    // 因此跳过该技能，不在扫描结果中收录一个不会被触发的技能。
-    if (!meta.description || /^[|>][+-]?\d?$/.test(meta.description)) continue
+    const meta = parseSkillFrontmatter(text)
+    // 缺少可用的 description 时技能安装后也不会被使用，因此跳过，不收录一个不会被触发的技能。
+    if (!isSkillDescription(meta.description)) continue
 
     out.push({
       name: meta.name || name,
@@ -87,53 +93,53 @@ export async function scanSkillDir(root: string, scope: Scope): Promise<SkillMet
 }
 
 /**
- * 三层合并后的技能索引。同名时只保留优先级最高的一项。
+ * 合并后的技能索引。同名时只保留优先级最高的一项。`cloud` 是本轮可用的内置技能（`CloudSkillPort` 的
+ * `packages`），没有时传空数组。
  *
- * 加载器和设置页共用此函数。两处各自扫描时，菜单描述的是一个技能、
+ * 加载器、`read_skill` 和设置页共用此函数。各自扫描时，菜单描述的是一个技能、
  * 实际执行的是另一个；这种错误只在同名时出现，最难被识别为缺陷。
  */
-export function scanSkills(rootsOrWorkspace: string | ScopeRoots): Promise<SkillMeta[]> {
+export async function scanSkills(
+  rootsOrWorkspace: string | ScopeRoots,
+  cloud: readonly CloudSkill[],
+): Promise<SkillMeta[]> {
   const roots =
     typeof rootsOrWorkspace === 'string' ? scopeRoots(rootsOrWorkspace) : rootsOrWorkspace
-  return scanScoped(roots, SKILLS_SUBDIR, scanSkillDir, (s) => s.name)
+  return (await scanAllSkills(roots, cloud)).filter((x) => x.shadowedBy === null).map((x) => x.item)
 }
 
 /**
- * 每一层各自安装的技能，包括被同名技能覆盖的项。
+ * 每一层各自安装的技能，包括被同名技能覆盖的项。内置技能排在最前，层为 `builtin`、目录为 `cloud-skill://<标识>`；
+ * 同名的本地技能标为被内置层覆盖。
  *
  * 设置页按层分列时使用此结果。去重后被覆盖的项直接消失，而「全局安装了同名技能、
  * 生效的却是项目层的技能」这一情况只能依据此结果说明。
  */
-export function scanAllSkills(roots: ScopeRoots): Promise<ScopedItem<SkillMeta>[]> {
-  return scanAllScopes(roots, SKILLS_SUBDIR, scanSkillDir, (s) => s.name)
-}
-
-/**
- * 解析 YAML 前置元信息。
- *
- * 只识别 `name` 和 `description` 两个标量键，不引入 YAML 库：技能元信息只有这两个字段，
- * 为此引入解析器（及其攻击面）得不偿失。其他键会被忽略：
- * 此处保持宽松，将来增加字段时旧技能不会因此报错。
- */
-export function parseFrontmatter(text: string): { name: string; description: string } {
-  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
-  if (!m) return { name: '', description: '' }
-
-  const out = { name: '', description: '' }
-  for (const line of m[1]!.split(/\r?\n/)) {
-    const kv = /^\s*(name|description)\s*:\s*(.*)$/.exec(line)
-    if (!kv) continue
-    let value = kv[2]!.trim()
-    // 去除可选的引号。不支持 YAML 多行标量：技能描述是一句话，需要多行说明时写在正文中。
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1)
+export async function scanAllSkills(
+  roots: ScopeRoots,
+  cloud: readonly CloudSkill[],
+): Promise<ScopedItem<SkillMeta>[]> {
+  const taken = new Set<string>()
+  const out: ScopedItem<SkillMeta>[] = []
+  for (const p of cloud) {
+    const item: SkillMeta = {
+      name: p.name,
+      description: p.description,
+      dir: cloudSkillDir(p.id),
+      scope: 'builtin',
     }
-    out[kv[1] as 'name' | 'description'] = value
+    out.push({ item, shadowedBy: taken.has(item.name) ? 'builtin' : null })
+    taken.add(item.name)
+  }
+  for (const x of await scanAllScopes(roots, SKILLS_SUBDIR, scanSkillDir, (s) => s.name)) {
+    out.push(taken.has(x.item.name) ? { ...x, shadowedBy: 'builtin' } : x)
   }
   return out
+}
+
+/** 内置技能的目录（`cloud-skill://<标识>`）。本地技能的目录是绝对路径。 */
+export function isCloudSkillDir(dir: string): boolean {
+  return dir.startsWith(CLOUD_SKILL_SCHEME)
 }
 
 type WritableScope = Exclude<Scope, 'builtin'>
@@ -190,7 +196,7 @@ export const readSkillTool: ToolSpec = {
     const wanted = String(args.name ?? '').trim()
     if (!wanted) return { status: 'failure', message: '缺少 name' }
 
-    const skills = await scanSkills(ctx.workspaceRoot)
+    const skills = await scanSkills(ctx.workspaceRoot, ctx.port(CloudSkillPort)?.packages ?? [])
     const hit = skills.find((s) => s.name === wanted || s.dir.endsWith(wanted))
     if (!hit) {
       // 列出可用名称而不是只返回「未找到」：模型给出的名称通常只与实际名称相差一个字，
@@ -202,12 +208,20 @@ export const readSkillTool: ToolSpec = {
       }
     }
 
+    const data = { name: hit.name, dir: hit.dir, scope: hit.scope }
+    // 内置技能：本机只有标记，按行段投递，回执的形状与 `read_file` 读取云端技能文件相同。
+    if (isCloudSkillDir(hit.dir)) {
+      const target = cloudTarget(ctx, `${hit.dir}/SKILL.md`)
+      if (!target) return { status: 'failure', message: `本轮无法读取内置技能 ${hit.name}` }
+      if ('status' in target) return target
+      const read = await readCloudFile(ctx, target, {})
+      return read.status === 'success' ? { ...read, data: { ...read.data, ...data } } : read
+    }
     const text = await readFile(join(hit.dir, 'SKILL.md'), 'utf8').catch(() => null)
     if (text === null) {
       return { status: 'failure', message: `技能 ${wanted} 的 SKILL.md 读取失败` }
     }
     // SKILL.md 没有长度上限：超出本轮剩余额度时存入正文库供续读。
-    const data = { name: hit.name, dir: hit.dir, scope: hit.scope }
     return deliverReadable(ctx, {
       toolName: 'read_skill',
       sourceType: 'skill',

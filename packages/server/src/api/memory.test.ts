@@ -75,11 +75,11 @@ describe('删除技能', () => {
     const dir = join(root, '.agents', 'skills', 'release')
     await mkdir(dir, { recursive: true })
     await writeFile(join(dir, 'SKILL.md'), '---\nname: release\ndescription: 发版\n---\n', 'utf8')
-    expect(await scanSkills(scopeRoots(root))).toHaveLength(1)
+    expect(await scanSkills(scopeRoots(root), [])).toHaveLength(1)
     expect(
       (await call(root, '/api/skills/release?scope=project', { method: 'DELETE' }))!.status,
     ).toBe(200)
-    expect(await scanSkills(scopeRoots(root))).toEqual([])
+    expect(await scanSkills(scopeRoots(root), [])).toEqual([])
     expect(
       (await call(root, '/api/skills/release?scope=project', { method: 'DELETE' }))!.status,
     ).toBe(404)
@@ -128,7 +128,7 @@ describe('导入技能目录', () => {
     })
     expect(res!.status).toBe(200)
 
-    const found = await scanSkills(scopeRoots(root))
+    const found = await scanSkills(scopeRoots(root), [])
     expect(found.map((s) => s.name)).toEqual(['deploy'])
     // 附带脚本必须一并复制：技能不是单个 markdown 文件，这也是它不在网页上编辑的原因。
     expect(await readFile(join(found[0]!.dir, 'run.sh'), 'utf8')).toBe('echo hi')

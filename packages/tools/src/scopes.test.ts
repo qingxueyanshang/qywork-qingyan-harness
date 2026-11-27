@@ -119,7 +119,7 @@ describe('同名时先认领的条目生效', () => {
     await writeSkill(r.global, 'release-global', 'release', '全局的发版流程')
     await writeSkill(r.project, 'release-here', 'release', '这个项目的发版流程')
 
-    const skills = await scanSkills(r)
+    const skills = await scanSkills(r, [])
     expect(skills).toHaveLength(1)
     expect(skills[0]?.description).toBe('这个项目的发版流程')
     expect(skills[0]?.scope).toBe('project')
@@ -129,12 +129,12 @@ describe('同名时先认领的条目生效', () => {
   test('技能返回绝对目录，read_skill 据此拼接 SKILL.md 路径', async () => {
     const r = await roots()
     await writeSkill(r.global, 'deploy', 'deploy', '部署')
-    const [skill] = await scanSkills(r)
+    const [skill] = await scanSkills(r, [])
     expect(skill?.dir).toBe(join(r.global, 'skills', 'deploy'))
   })
 
   test('各层均无内容时返回空数组，不报错', async () => {
-    expect(await scanSkills(await roots())).toEqual([])
+    expect(await scanSkills(await roots(), [])).toEqual([])
     expect(await listScopedEntries(await roots())).toEqual([])
   })
 })
@@ -171,7 +171,7 @@ describe('按层分列时包含被覆盖的条目，并标出覆盖它的层', (
     await writeSkill(r.global, 'release-global', 'release', '全局的发版流程')
     await writeSkill(r.project, 'release-here', 'release', '这个项目的发版流程')
 
-    const all = await scanAllSkills(r)
+    const all = await scanAllSkills(r, [])
     expect(all).toHaveLength(2)
     expect(all.find((x) => x.item.scope === 'global')?.shadowedBy).toBe('project')
     expect(all.find((x) => x.item.scope === 'project')?.shadowedBy).toBeNull()

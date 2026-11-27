@@ -8,11 +8,12 @@
 import { type PortEntry, provide } from '@qywork/agent'
 import type { OfficeHost, QyConfig } from '@qywork/runtime'
 import type { ContentStore, Store } from '@qywork/store'
-import { OfficePort } from '@qywork/tools'
+import { CloudSkillPort, OfficePort } from '@qywork/tools'
 import type { ServerWebSocket } from 'bun'
 import type { BrowserCoordinator } from './browser/coordinator.ts'
 import type { EventBus } from './bus.ts'
 import type { CanvasService } from './canvas/service.ts'
+import { CLOUD_PROVIDER } from './cloud/account.ts'
 import type { CommandTaskTable } from './command-tasks/table.ts'
 import type { DesktopCoordinator } from './desktop/coordinator.ts'
 import type { RunManager } from './runs.ts'
@@ -56,12 +57,27 @@ export interface CommandDeps {
   office?: OfficeHost
   /** 从云端读取当前的型号与倍率并写入配置。未配置云端地址时不传入。 */
   syncCloudPrices?: () => Promise<void>
+  /** 内置技能的读取端口；未登录或型号清单中没有内置技能时为 null。未配置云端地址时不传入。 */
+  builtinSkills?: () => CloudSkillPort | null
 }
 
 /** 会话装配时的 Office 端口：宿主当前提供端口时附带，否则不附带（工具不注册）。 */
 export function officePortOf(deps: Pick<CommandDeps, 'office'>): PortEntry[] {
   const port = deps.office?.port()
   return port ? [provide(OfficePort, port)] : []
+}
+
+/**
+ * 会话装配时的内置技能端口：只在本轮经云端接口（`provider`）发送时附带。标记只由云端网关替换，
+ * 发往其他接口时模型取得的只是标记，同名的本地技能也会被内置技能覆盖。
+ */
+export function builtinSkillPortOf(
+  deps: Pick<CommandDeps, 'builtinSkills'>,
+  provider: string | undefined,
+): PortEntry[] {
+  if (provider !== CLOUD_PROVIDER) return []
+  const port = deps.builtinSkills?.()
+  return port ? [provide(CloudSkillPort, port)] : []
 }
 
 /** 每条 WebSocket 连接各自的状态。握手前 `authed` 为 false。 */

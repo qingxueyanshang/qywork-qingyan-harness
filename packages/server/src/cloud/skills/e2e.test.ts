@@ -1,8 +1,9 @@
 /**
  * 云端技能的完整链路：`read_file` 读取 `SKILL.md` → 按行段读取 → 请求中出现标记块 → 网关替换 → 压缩收纳后标记被移除；
- * 会话中途权益被取消时的终态；含标记的请求被容量拒绝后的恢复。
+ * 会话中途权益被取消时的终态；含标记的请求被容量拒绝后的恢复；`read_skill` 按技能索引读取内置技能。
  *
- * 覆盖范围：`cloud/skills/port.ts`、`runtime/session/tool-context.ts` 的云端技能通道、`tools/cloud-skills/source.ts`，
+ * 覆盖范围：`cloud/skills/port.ts`、`runtime/session/tool-context.ts` 的云端技能通道、`tools/cloud-skills/source.ts`、
+ * `tools/skills.ts` 的内置技能索引与 `read_skill`、`runtime/session/turn/prepare.ts` 的技能索引，
  * 以及经真实 `Session`、真实 Chat Completions 适配器、真实 `Store` 与 `RuntimeCompaction` 的请求装配、
  * 错误分类（`ai/errors.ts` 的 `skill_rejected`）与容量恢复（`agent/loop/compact.ts` 的 `recoverFromOverflow`）。
  * 云端由 `fake-cloud.test-helper.ts` 在本进程内提供，模型的回复由测试按请求给出。
@@ -12,7 +13,7 @@
 
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Ports, provide } from '@qywork/agent'
@@ -94,7 +95,10 @@ function config(): QyConfig {
   }
 }
 
-async function ask(prompt: string): Promise<AgentEvent[]> {
+async function ask(
+  prompt: string,
+  allowedTools = ['read_file', 'list_dir', 'glob', 'grep'],
+): Promise<AgentEvent[]> {
   const live = config()
   const session = new Session({
     content,
@@ -102,14 +106,14 @@ async function ask(prompt: string): Promise<AgentEvent[]> {
     config: live,
     workspaceRoot,
     signal: new AbortController().signal,
-    allowedTools: ['read_file', 'list_dir', 'glob', 'grep'],
+    allowedTools,
     ports: new Ports([
       provide(
         CloudSkillPort,
         cloudSkillPort({
           config: live,
           origin: cloud.origin,
-          packages: [{ package: PKG }],
+          packages: [{ id: PKG, name: '短剧流程', description: '按步骤生成短剧' }],
         }),
       ),
     ]),
@@ -178,8 +182,8 @@ test('read_file 读取 SKILL.md、按行段读取、网关替换与收纳后移�
   expect(events.find((e) => e.type === 'run.finished')).toMatchObject({ status: 'done' })
 
   const turns = cloud.received.filter((raw) => !raw.includes('交接摘要'))
-  // 第一次请求：云端技能不进入技能索引，请求中没有任何技能内容。
-  expect(turns[0]).not.toContain('按步骤生成短剧')
+  // 第一次请求：内置技能以名称与描述列入技能索引，没有技能文件的内容与标记。
+  expect(turns[0]).toContain('短剧流程：按步骤生成短剧')
   expect(markersIn(turns[0]!)).toEqual([])
 
   // read_file 读取 SKILL.md 之后：主文档以独立的标记块发送，网关替换为原文。
@@ -263,5 +267,35 @@ test('含标记的请求被容量拒绝后压缩一次再重发，重发的请�
   const run = listRuns(store, conversationId!).at(-1)!
   const decisions = listProviderRequests(store, run.id).map((r) => r.diagnostic?.retry.decision)
   expect(decisions).toContain('context_compaction')
+  expectNoProtectedText()
+}, 60_000)
+
+test('read_skill 按索引中的名称读取内置技能：回执为标记与技能目录，网关替换为原文；本地同名技能不生效', async () => {
+  const local = join(workspaceRoot, '.agents', 'skills', 'local-copy')
+  await mkdir(local, { recursive: true })
+  await writeFile(
+    join(local, 'SKILL.md'),
+    '---\nname: 短剧流程\ndescription: 本地的同名技能\n---\n\n本地正文\n',
+  )
+  conversationId = undefined
+  let result: Record<string, unknown> | null = null
+  cloud.respond = (body) => {
+    const last = lastToolResult(body)
+    if (!last) return toolCallReply('c_skill', 'read_skill', { name: '短剧流程' })
+    result = last
+    return textReply('已读取。')
+  }
+  const before = cloud.received.length
+  const events = await ask('按短剧流程处理', ['read_skill'])
+  expect(events.filter((e) => e.type === 'run.error')).toEqual([])
+
+  const sent = cloud.received.slice(before)
+  expect(sent[0]).toContain('短剧流程：按步骤生成短剧')
+  expect(sent[0]).not.toContain('本地的同名技能')
+  expect(result).toMatchObject({ name: '短剧流程', dir: `cloud-skill://${PKG}`, scope: 'builtin' })
+  const [marker] = markersIn(sent[1]!)
+  expect(parseSkillMarker(marker ?? '')).toMatchObject({ pkg: PKG, path: 'SKILL.md', start: 1 })
+  expect(cloud.forwarded.at(-1)).toContain(PROTECTED[0])
+  expect(sent.join('')).not.toContain('本地正文')
   expectNoProtectedText()
 }, 60_000)

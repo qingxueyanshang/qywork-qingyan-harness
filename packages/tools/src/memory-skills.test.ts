@@ -12,14 +12,7 @@ import {
   readMemoryTool,
   writeMemoryTool,
 } from './memory.ts'
-import {
-  moveSkillTool,
-  parseFrontmatter,
-  readSkillTool,
-  SKILLS_DIR,
-  scanSkills,
-  writeSkillTool,
-} from './skills.ts'
+import { moveSkillTool, readSkillTool, SKILLS_DIR, scanSkills, writeSkillTool } from './skills.ts'
 
 async function workspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'qywork-ms-'))
@@ -174,29 +167,6 @@ describe('记忆', () => {
   })
 })
 
-describe('技能前置元信息', () => {
-  test('解析 name 与 description', () => {
-    expect(parseFrontmatter('---\nname: 发版\ndescription: 怎么发一个版本\n---\n正文')).toEqual({
-      name: '发版',
-      description: '怎么发一个版本',
-    })
-  })
-
-  test('去除可选引号', () => {
-    expect(parseFrontmatter('---\nname: "带引号"\n---').name).toBe('带引号')
-    expect(parseFrontmatter("---\nname: '单引号'\n---").name).toBe('单引号')
-  })
-
-  test('无前置元信息时返回空，不抛出异常', () => {
-    expect(parseFrontmatter('直接是正文')).toEqual({ name: '', description: '' })
-  })
-
-  test('未知键被忽略：新增字段时已有技能不会报错', () => {
-    const m = parseFrontmatter('---\nname: a\nversion: 3\nauthor: b\n---')
-    expect(m.name).toBe('a')
-  })
-})
-
 describe('技能扫描', () => {
   async function withSkills(): Promise<string> {
     const root = await workspace()
@@ -211,13 +181,13 @@ describe('技能扫描', () => {
   }
 
   test('扫描出合法技能并跳过格式错误的技能：单个错误的技能包不应使整个技能体系不可用', async () => {
-    const skills = await scanSkills(await withSkills())
+    const skills = await scanSkills(await withSkills(), [])
     expect(skills).toHaveLength(1)
     expect(skills[0]!.name).toBe('发版')
   })
 
   test('索引只含 name 与 description，不含正文', async () => {
-    const skills = await scanSkills(await withSkills())
+    const skills = await scanSkills(await withSkills(), [])
     // 索引每轮都进入上下文末尾。正文（「打 tag」）只在 read_skill 之后出现。
     expect(JSON.stringify(skills)).not.toContain('打 tag')
     expect(skills[0]!.description).toBe('怎么发一个版本')
@@ -276,7 +246,7 @@ describe('技能扫描', () => {
   })
 
   test('没有技能目录时返回空而不是抛出异常', async () => {
-    expect(await scanSkills(await workspace())).toEqual([])
+    expect(await scanSkills(await workspace(), [])).toEqual([])
   })
 })
 

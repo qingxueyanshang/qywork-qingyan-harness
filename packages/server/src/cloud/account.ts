@@ -12,6 +12,7 @@
  *   写入的条目带 `cloud` 标记；覆盖层仍是模型库之上唯一的一层，所有权规则见 `withSpecs`。
  * - 每个型号的显示名称写入云端接口下该型号的条目（`displayName`），不写入覆盖层：覆盖层为所有接口共用，
  *   写入后用户自建接口中的同名型号也显示云端的名称。
+ * - 型号清单中的内置技能只保存在本对象中（`builtinSkills`），与型号在同一次读取中更新，退出时清除。
  * - 型号清单不等用户打开账号窗口才同步：推送通道（隧道）连上时与收到 `catalog.changed` 时立即同步；
  *   读取账号状态（窗口获得焦点、连接可用）时，清单不再最新（`fresh`）则在后台同步。写入配置后界面经
  *   `config.changed` 重新读取模型目录。
@@ -28,6 +29,7 @@ import {
   type CloudRechargeStatus,
   type CloudRedeemResult,
   type CloudRequest,
+  type CloudSkill,
   type CloudState,
   type CloudUsage,
   log,
@@ -72,6 +74,7 @@ interface CatalogMediaModel {
 interface Catalog {
   models: CatalogModel[]
   media?: CatalogMediaModel[]
+  skills: CloudSkill[]
 }
 
 /**
@@ -364,6 +367,11 @@ export class CloudAccount {
   private seen: { key: string; id: string | null } | null = null
   /** 上一次把云端型号清单写入配置的时刻；本进程尚未写入过为 0。 */
   private syncedAt = 0
+  /**
+   * 上一次取得的型号清单中的内置技能，与型号在同一次读取中更新。不写入配置：它是云端清单的副本，不是用户设置；
+   * 进程启动后第一次使用云端型号时 `syncedAt` 为 0，`syncModels` 必然读取清单。
+   */
+  private builtin: readonly CloudSkill[] = []
   /** 推送通道（隧道）连上的时刻；未连接为 null。 */
   private pushSince: number | null = null
   /** 进行中的后台同步，同一时刻只有一个。 */
@@ -493,8 +501,14 @@ export class CloudAccount {
       state: this.signedIn(me),
       usage: reply.usage,
       models: cloudModels(reply.catalog),
+      skills: reply.catalog.skills,
       requests: reply.requests.map(toRequest),
     }
+  }
+
+  /** 内置技能（上一次取得的型号清单）；未登录或尚未取得清单时为空。 */
+  builtinSkills(): readonly CloudSkill[] {
+    return this.builtin
   }
 
   /**
@@ -751,6 +765,7 @@ export class CloudAccount {
       )
     }
     this.syncedAt = Date.now()
+    this.builtin = list.skills
     this.reportRenamed(list.models)
     this.onChange()
   }
@@ -905,6 +920,7 @@ export class CloudAccount {
       }
     })
     this.syncedAt = Date.now()
+    this.builtin = list.skills
     this.reportRenamed(list.models)
   }
 
@@ -924,6 +940,7 @@ export class CloudAccount {
    * 模型库覆盖层中由云端同步写入的字段按空清单清除（`withSpecs`），否则退出后模型库仍列出云端型号。
    */
   private async remove(): Promise<void> {
+    this.builtin = []
     const result = await writeConfig(this.live, (current) => {
       if (!(CLOUD_PROVIDER in current.providers)) return current
       const { catalog: _catalog, ...rest } = current

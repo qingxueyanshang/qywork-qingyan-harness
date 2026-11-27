@@ -1,7 +1,7 @@
 /**
  * `@qywork/tools` 的对外接口。**此处列出的即对外承诺，未列出的均为内部实现。**
- * 使用具名导出，不用 `export *`（B6）：后者会把 `buildBwrapArgv`、`parseFrontmatter`、
- * `clampBody` 等内部符号一并导出到包边界之外。新增导出前先确认它确有包外调用方（B3）。
+ * 使用具名导出，不用 `export *`（B6）：后者会把 `buildBwrapArgv`、`clampBody`
+ * 等内部符号一并导出到包边界之外。新增导出前先确认它确有包外调用方（B3）。
  *
  * 包内互相引用与测试使用相对路径，不受本清单约束。
  */
@@ -198,7 +198,13 @@ export {
 export { deliverAgentOutput, observationBudget } from './sink.ts'
 export { SkillSourcePaths } from './skills/port.ts'
 // 技能：runtime/session/turn/prepare.ts 扫描索引，server/api 为设置页列出技能
-export { SKILLS_SUBDIR, type SkillMeta, scanAllSkills, scanSkills } from './skills.ts'
+export {
+  isCloudSkillDir,
+  SKILLS_SUBDIR,
+  type SkillMeta,
+  scanAllSkills,
+  scanSkills,
+} from './skills.ts'
 export { TodoBroadcast } from './todos/port.ts'
 // 外部工具按总量分档：runtime/session/extension-tools.ts 计量一次，决定全部常驻还是全部按需
 export {

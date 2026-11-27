@@ -12,10 +12,11 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
+import { isSkillDescription, parseSkillFrontmatter } from '@qywork/core'
 import { unzipSync } from 'fflate'
 import { withFileLocks } from '../file-lock.ts'
 import { scopeDir, scopeRoots } from '../scopes.ts'
-import { parseFrontmatter, type SkillMeta, scanSkillDir, scanSkills } from '../skills.ts'
+import { type SkillMeta, scanSkillDir, scanSkills } from '../skills.ts'
 
 type WritableScope = 'project' | 'global'
 export class SkillInstallError extends Error {
@@ -59,8 +60,8 @@ export async function validateSkillDirectory(
 ): Promise<{ name: string; description: string }> {
   const text = await readFile(join(dir, 'SKILL.md'), 'utf8').catch(() => null)
   if (text === null) throw new SkillInstallError(`目录中没有可读取的 SKILL.md：${dir}`)
-  const meta = parseFrontmatter(text)
-  if (!meta.description || /^[|>][+-]?\d?$/.test(meta.description)) {
+  const meta = parseSkillFrontmatter(text)
+  if (!isSkillDescription(meta.description)) {
     throw new SkillInstallError(`SKILL.md 的 description 必须是非空的单行文本：${dir}`)
   }
   return { name: meta.name || basename(dir), description: meta.description }
@@ -107,13 +108,13 @@ export async function commitSkillDirectory(
       )
       if (!installed) throw new SkillInstallError(`提交后扫描未找到技能：${target}`)
       await readFile(join(installed.dir, 'SKILL.md'))
-      const effective = (await scanSkills(workspace)).find((s) => s.name === meta.name)
+      const effective = (await scanSkills(workspace, [])).find((s) => s.name === meta.name)
       if (!effective) throw new SkillInstallError(`提交后技能未进入索引：${meta.name}`)
       if (removeSource) {
         sourceBackup = join(dirname(dirname(removeSource)), `.skill-move-${crypto.randomUUID()}`)
         await rename(removeSource, sourceBackup)
       }
-      const active = (await scanSkills(workspace)).find((s) => s.name === meta.name)!
+      const active = (await scanSkills(workspace, [])).find((s) => s.name === meta.name)!
       let cleanupError: string | undefined
       try {
         if (sourceBackup) await rm(sourceBackup, { recursive: true, force: true })

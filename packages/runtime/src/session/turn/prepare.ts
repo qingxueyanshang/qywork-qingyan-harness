@@ -20,8 +20,10 @@ import {
   workflowIdsOf,
 } from '@qywork/store'
 import {
+  CloudSkillPort,
   conversationTempDir,
   displayPath,
+  isCloudSkillDir,
   listScopedEntries,
   scanSkills,
   scopeRoots,
@@ -121,8 +123,11 @@ export async function prepareTurn(
     await loadExtensionTools(session, adapter.spec.density)
   }
   const roots = scopeRoots(session.opts.workspaceRoot)
-  const skills = await scanSkills(roots).catch(() => [])
-  session.skillDirs = skills.map((s) => s.dir)
+  // 内置技能只在装配方提供云端技能端口时列入（本轮经云端接口发送）。
+  const cloudSkills = session.ports.get(CloudSkillPort)?.packages ?? []
+  const skills = await scanSkills(roots, cloudSkills).catch(() => [])
+  // 只读目录只含本机路径：内置技能的目录是虚拟路径，由读取工具按云端技能路径识别。
+  session.skillDirs = skills.filter((s) => !isCloudSkillDir(s.dir)).map((s) => s.dir)
   const memories = await listScopedEntries(roots).catch(() => [])
   const projectInstructions = await projectInstructionFiles(session.opts.workspaceRoot)
   const canAssignModels = ['define_role', 'subagent', 'workflow'].some((name) =>

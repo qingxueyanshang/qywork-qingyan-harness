@@ -55,7 +55,7 @@ export function cloudTarget(
   const text = raw.trim()
   if (!text.startsWith(CLOUD_SKILL_SCHEME)) return null
   const [pkg = '', ...rest] = text.slice(CLOUD_SKILL_SCHEME.length).replaceAll('\\', '/').split('/')
-  if (!port.packages.includes(pkg)) {
+  if (!port.packages.some((p) => p.id === pkg)) {
     return failure(`本会话没有云端技能包：${pkg}`, 'not_found')
   }
   const parts = rest.filter((p) => p !== '' && p !== '.')

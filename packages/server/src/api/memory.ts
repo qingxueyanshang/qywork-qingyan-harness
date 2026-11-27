@@ -130,8 +130,12 @@ export const handleMemoryApi: ApiHandler = async (url, req, d) => {
     const roots = scopeRoots(d.workspaceRoot)
     return json({
       dirs: scopePaths(roots, SKILLS_SUBDIR),
-      // 与 `/api/memory` 相同：返回全部层的全部条目，并标出被同名条目覆盖的条目。
-      skills: (await scanAllSkills(roots)).map((x) => ({ ...x.item, shadowedBy: x.shadowedBy })),
+      // 与 `/api/memory` 相同：返回全部层的全部条目，并标出被同名条目覆盖的条目。内置技能按账号的型号清单列入，
+      // 与会话无关：会话使用自行添加的接口时，被内置层覆盖的本地技能在该会话中生效。
+      skills: (await scanAllSkills(roots, d.cloud?.builtinSkills() ?? [])).map((x) => ({
+        ...x.item,
+        shadowedBy: x.shadowedBy,
+      })),
     })
   }
 

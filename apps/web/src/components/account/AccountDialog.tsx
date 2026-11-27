@@ -1,6 +1,7 @@
 import {
   type CloudModel,
   type CloudRequest,
+  type CloudSkill,
   type CloudState,
   MEDIA_OUTPUTS,
   type MediaOutput,
@@ -360,6 +361,16 @@ function AccountView(props: { signed: SignedIn; retryMs: number }) {
           </Show>
         </Show>
 
+        {/* 内置技能随型号清单下发；没有时不显示这一节。 */}
+        <Show when={sections() && cloudOverview()?.skills.length ? cloudOverview()?.skills : null}>
+          {(skills) => (
+            <>
+              <h3 class="account-section">内置技能</h3>
+              <SkillTable skills={skills()} />
+            </>
+          )}
+        </Show>
+
         <Show when={sections()}>
           <h3 class="account-section">使用记录</h3>
           <RequestTable pages={requests} pending={cloudOverview() === null && loading()} />
@@ -480,6 +491,34 @@ function MediaTables(props: {
         </>
       )}
     </For>
+  )
+}
+
+/** 内置技能的名称与描述。正文只在云端，不提供查看入口。 */
+function SkillTable(props: { skills: readonly CloudSkill[] }) {
+  return (
+    <section class="lib-card">
+      <div class="lib-scroll">
+        <table class="lib-table account-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>描述</th>
+            </tr>
+          </thead>
+          <tbody>
+            <For each={props.skills}>
+              {(s) => (
+                <tr>
+                  <td>{s.name}</td>
+                  <td>{s.description}</td>
+                </tr>
+              )}
+            </For>
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }
 

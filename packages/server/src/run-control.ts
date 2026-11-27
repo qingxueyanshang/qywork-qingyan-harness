@@ -81,7 +81,7 @@ import { CLOUD_PROVIDER } from './cloud/account.ts'
 import { commandPortOf } from './command-tasks/table.ts'
 import { conversationPortOf } from './conversations/open.ts'
 import { makeDelegate } from './delegate.ts'
-import { type CommandDeps, officePortOf } from './deps.ts'
+import { builtinSkillPortOf, type CommandDeps, officePortOf } from './deps.ts'
 import { publishGitState } from './http-util.ts'
 import { makePluginPort } from './plugin-port.ts'
 import type { GoalArm } from './runs.ts'
@@ -363,6 +363,8 @@ export async function startRun(
             : []),
           // Office 同样实时判定：开关关闭或本机缺少 Python 与文档库时不提供端口，本轮没有 `office`。
           ...officePortOf(deps),
+          // 内置技能只在本轮经云端接口发送时提供。
+          ...builtinSkillPortOf(deps, runProvider),
           // 设计稿渲染使用内置浏览器的隐藏页，与浏览器端口同样实时判定；宿主不可用时画布端口不提供渲染。
           ...(deps.canvas
             ? [

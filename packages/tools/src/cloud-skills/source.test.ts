@@ -42,7 +42,7 @@ function fakePort(
   const refuse = () => ({ ok: false as const, code: opts.fail!, message: `云端拒绝：${opts.fail}` })
   return {
     reads,
-    packages: [PKG],
+    packages: [{ id: PKG, name: '演示', description: '演示用的云端技能' }],
     async files() {
       if (opts.fail) return refuse()
       const value = Object.keys(files)

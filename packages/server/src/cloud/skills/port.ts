@@ -11,6 +11,7 @@
  */
 
 import { httpStatusName, parseSkillMarker } from '@qywork/ai'
+import type { CloudSkill } from '@qywork/core'
 import type { QyConfig } from '@qywork/runtime'
 import type { CloudSkillErrorCode, CloudSkillPort, CloudSkillResult } from '@qywork/tools'
 import { cloudProviderOf } from '../account.ts'
@@ -29,7 +30,7 @@ export interface CloudSkillPortOptions {
   /** 云端服务的地址（`cloudOrigin`）。 */
   origin: string
   /** 本会话可用的技能包；`version` 缺省时读取最新版本。 */
-  packages: readonly { package: string; version?: number }[]
+  packages: readonly (CloudSkill & { version?: number })[]
   /** 每次请求的超时，默认 20 秒。 */
   timeoutMs?: number
 }
@@ -50,7 +51,7 @@ export function cloudSkillPort(opts: CloudSkillPortOptions): CloudSkillPort {
   ): Promise<CloudSkillResult<Record<string, unknown>>> {
     const key = cloudProviderOf(opts.config, opts.origin)?.apiKey
     if (!key) return unavailable('未登录云端账号')
-    const version = opts.packages.find((p) => p.package === pkg)?.version
+    const version = opts.packages.find((p) => p.id === pkg)?.version
     const query = new URLSearchParams({
       ...params,
       ...(version === undefined ? {} : { version: String(version) }),
@@ -77,7 +78,7 @@ export function cloudSkillPort(opts: CloudSkillPortOptions): CloudSkillPort {
   }
 
   return {
-    packages: opts.packages.map((p) => p.package),
+    packages: opts.packages.map(({ id, name, description }) => ({ id, name, description })),
 
     async files(pkg) {
       const r = await call(pkg, 'files', {})

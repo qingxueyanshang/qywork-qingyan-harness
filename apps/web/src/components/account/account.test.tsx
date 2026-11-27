@@ -227,6 +227,7 @@ beforeAll(async () => {
             unitPrice: { '720p': 0.2, '1080p': 0.4 },
           },
         ],
+        skills: [{ id: 'ppt', name: '演示文稿', description: '制作与排版演示文稿' }],
         requests: pages.shift() ?? [],
       } as T
     }
@@ -582,6 +583,21 @@ test('首次打开时各节显示占位，读取完成后显示内容；只发�
   expect(calls.slice(from).filter((c) => c.startsWith('GET /api/cloud/'))).toEqual([
     'GET /api/cloud/account',
   ])
+  view.close()
+})
+
+test('内置技能一节列出型号清单中的技能名称与描述，在型号价格之后', async () => {
+  cloud = SIGNED_IN
+  await cloudStore.refreshCloudState()
+  pages = [[record('1')]]
+  const view = await dialog()
+  await until(() => view.text().includes('内置技能'))
+  const sections = [...view.host.querySelectorAll('.account-section')].map((h) => h.textContent)
+  expect(sections.indexOf('内置技能')).toBeGreaterThan(
+    sections.findIndex((t) => t?.startsWith('对话')),
+  )
+  expect(view.text()).toContain('演示文稿')
+  expect(view.text()).toContain('制作与排版演示文稿')
   view.close()
 })
 
