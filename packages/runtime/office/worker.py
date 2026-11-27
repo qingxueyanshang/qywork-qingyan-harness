@@ -143,7 +143,7 @@ def do_cleanup(req, resp):
     resp["ok"] = not left
     resp["message"] = (f"已结束 {ended} 个本次调用新启动的办公软件进程"
                        + (f"；{len(left)} 个未结束：" + "、".join(
-                           f"{r['pid']}（{r.get('status')}）" for r in left) if left else ""))
+                           f"{r['pid'] or '未登记的进程'}（{r.get('status')}）" for r in left) if left else ""))
 
 
 # ───────────────────────── view ─────────────────────────

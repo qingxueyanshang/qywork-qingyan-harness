@@ -710,15 +710,15 @@ describe('在本轮内等待后台命令', () => {
     const cv = conversation()
     script.push(
       callsTurn([
-        run('call_q', { command: hold('Q'), background: true }),
-        run('call_q2', { command: hold('Q2') }),
+        run('call_r', { command: hold('R'), background: true }),
+        run('call_r2', { command: hold('R2') }),
       ]),
     )
     void startRun(cv, '后台构建后等待', undefined, deps())
-    await pidOf('Q2')
+    await pidOf('R2')
     await until(() => commands.listOf(cv).length === 1, '后台命令登记')
     const [task] = commands.listOf(cv)
-    await writeFile(join(dir, 'Q.go'), '')
+    await writeFile(join(dir, 'R.go'), '')
     await until(() => commands.listOf(cv).length === 0, '后台命令结束')
     script.push(
       callsTurn([
@@ -730,7 +730,7 @@ describe('在本轮内等待后台命令', () => {
       ]),
       textTurn('构建已完成。'),
     )
-    await writeFile(join(dir, 'Q2.go'), '')
+    await writeFile(join(dir, 'R2.go'), '')
     await until(() => bodies.length === 3, '等待之后的请求')
     expect(bodies[2]).toContain(`后台命令 ${task!.id} 已结束，结果见回执消息`)
     expect(bodies[2]).not.toContain('没有运行中的后台命令')

@@ -1,5 +1,5 @@
 """覆盖 com.py 的组件规则表（rule_for）、宿主进程号解析（host_of）、残留扫描排除本调用实例
-（foreign_residue）与异常结束后的清理（cleanup）。
+（foreign_residue）与异常结束后的清理（cleanup），包括启动后、登记前被结束的进程（starting 记录）。
 
 cleanup 用本测试自行启动的子进程代替办公软件进程，不启动 WPS / Office。
 """
@@ -86,6 +86,91 @@ class CleanupTest(unittest.TestCase):
                 e["status"] = "closed"
                 util.write_json(d / "instances.json", [e])
                 self.assertEqual(com.cleanup(d)[0]["action"], "already_closed")
+                self.assertIsNone(p.poll())
+        finally:
+            p.kill()
+            p.wait(10)
+
+
+
+class UnregisteredCleanupTest(unittest.TestCase):
+    """原始失败形状：办公软件进程已启动、登记尚未写入时 worker 被结束，cleanup 读取到的登记为空，
+    报告「已结束 0 个」，两个 WPS 自动化进程一直留在后台。"""
+
+    def setUp(self):
+        self.procs = {}
+        self.original = (com._procs, com.Lock)
+        com._procs = lambda: dict(self.procs)
+
+        class FreeLock:
+            def __init__(self, timeout_s=60):
+                pass
+
+            def acquire(self):
+                pass
+
+            def release(self):
+                pass
+
+        com.Lock = FreeLock
+
+    def tearDown(self):
+        com._procs, com.Lock = self.original
+
+    def spawn(self, cmdline):
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        time.sleep(0.3)
+        self.procs[p.pid] = {"create_time": psutil.Process(p.pid).create_time(), "cmdline": cmdline}
+        return p
+
+    def marker(self, rule, started_at, before):
+        return {"role": "starting", "marker": "m1", "status": "starting", "rule": rule,
+                "progid": "KWPS.Application", "started_at": started_at, "before": before}
+
+    def test_ends_processes_started_after_the_record(self):
+        old = self.spawn("wps.exe /prometheus /wps /Automation -Embedding")
+        started_at = time.time()
+        host = self.spawn("wps.exe /prometheus /wps /Automation -Embedding")
+        component = self.spawn("wps.exe /wps /from_prome /Automation -Embedding")
+        interactive = self.spawn("wps.exe report.docx")
+        try:
+            with TempDir() as d:
+                util.write_json(d / "instances.json", [self.marker("end", started_at, [old.pid])])
+                report = {r["pid"]: r["action"] for r in com.cleanup(d)}
+                self.assertEqual(report, {host.pid: "ended", component.pid: "ended"})
+                self.assertIsNotNone(host.wait(10))
+                self.assertIsNotNone(component.wait(10))
+                self.assertIsNone(old.poll())
+                self.assertIsNone(interactive.poll())
+                saved = util.read_json(d / "instances.json")
+                self.assertEqual([e["status"] for e in saved if e["role"] == "starting"], ["resolved"])
+        finally:
+            for p in (old, host, component, interactive):
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(10)
+
+    def test_unverified_component_is_only_reported(self):
+        started_at = time.time()
+        p = self.spawn("WINWORD.EXE /Automation -Embedding")
+        try:
+            with TempDir() as d:
+                util.write_json(d / "instances.json", [self.marker("report", started_at, [])])
+                self.assertEqual([r["action"] for r in com.cleanup(d)], ["reported"])
+                self.assertIsNone(p.poll())
+        finally:
+            p.kill()
+            p.wait(10)
+
+    def test_settled_records_are_ignored(self):
+        started_at = time.time()
+        p = self.spawn("wps.exe /prometheus /wps /Automation -Embedding")
+        try:
+            with TempDir() as d:
+                m = self.marker("end", started_at, [])
+                m["status"] = "registered"
+                util.write_json(d / "instances.json", [m])
+                self.assertEqual(com.cleanup(d), [])
                 self.assertIsNone(p.poll())
         finally:
             p.kill()

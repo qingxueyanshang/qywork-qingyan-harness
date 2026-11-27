@@ -1,7 +1,8 @@
 """办公软件实例管理。
 
 只使用本调用新启动的进程：创建后核对 COM 对象对应的进程，确认是新进程才使用，并先把登记写入
-调用目录的 instances.json，再把对象返回给调用方。
+调用目录的 instances.json，再把对象返回给调用方。启动之前先写入一条 starting 记录（启动前已有的自动化进程），
+进程启动到登记完成之间 worker 被结束时，cleanup 据此找出本调用启动而未登记的进程。
 
 文件一律只读打开，从不另存：WPS 的可写打开与另存会写入最近文档（RecentFiles 的 files、
 files_bak、Sequence）和账号的 openfilelist，且不识别 AddToRecentFiles / AddToMru 参数；
@@ -241,9 +242,14 @@ class Instance:
         import win32com.client
 
         self.lock.acquire()
+        marker = None
         try:
             self.residue = foreign_residue(self.call_dir)
+            started_at = time.time()
             before = _procs()
+            # 先记录再启动：DispatchEx 启动进程到 _register 写入登记之间约需数秒，其间 worker 被结束时
+            # 只有这条记录能说明本调用启动过进程。
+            marker = self._mark_starting(started_at, before)
             app = win32com.client.DispatchEx(self.progid)
             after = _procs()
             new = [p for p in after if p not in before]
@@ -255,11 +261,23 @@ class Instance:
                 raise Busy(f"{self.progid} 未启动新进程，现有自动化实例正被占用")
             self.app = app
             self._register(pid, after, method)
+            _settle_marker(self.call_dir, marker, "registered")
             self._configure()
         except Exception:
+            if marker is not None:
+                _settle_marker(self.call_dir, marker, "start_failed")
             self.lock.release()
             raise
         return self
+
+    def _mark_starting(self, started_at, before) -> str:
+        marker = uuid.uuid4().hex[:8]
+        _append_instances(self.call_dir, [{
+            "label": self.label, "progid": self.progid, "product": self.info["product"],
+            "version": self.info["version"], "rule": self.info["rule"], "role": "starting",
+            "marker": marker, "status": "starting", "started_at": started_at, "before": sorted(before),
+        }])
+        return marker
 
     def _identify(self, app, new, after):
         """用窗口句柄确定组件进程；WPS 演示没有 HWND 成员，按宿主进程与组件进程配对。"""
@@ -463,6 +481,36 @@ def _append_instances(call_dir, entries):
     util.write_json(_instances_path(call_dir), items)
 
 
+def _settle_marker(call_dir, marker, status):
+    items = _load_instances(call_dir)
+    for e in items:
+        if e.get("role") == "starting" and e.get("marker") == marker:
+            e["status"] = status
+    util.write_json(_instances_path(call_dir), items)
+
+
+def _adopt_unregistered(items, starting) -> list:
+    """把 starting 记录之后启动、未登记的自动化进程补登记为本调用的进程，规则取自该记录。
+
+    调用方须持有 Lock：持锁期间不会有其他调用启动实例，启动前快照之外的新自动化进程只能来自本调用。
+    """
+    known = {e.get("pid") for e in items}
+    procs = _procs()
+    for m in starting:
+        before = set(m.get("before") or [])
+        for pid, p in procs.items():
+            if pid in before or pid in known or p["create_time"] < m["started_at"] - 1:
+                continue
+            if "/automation" not in p["cmdline"].lower():
+                continue
+            items.append({**{k: m.get(k) for k in ("label", "progid", "product", "version", "rule")},
+                          "role": "unregistered", "method": "starting record", "status": "running",
+                          "pid": pid, "create_time": p["create_time"], "cmdline": p["cmdline"][:240]})
+            known.add(pid)
+        m["status"] = "resolved"
+    return items
+
+
 def _update_instances(call_dir, pids, status):
     items = _load_instances(call_dir)
     for e in items:
@@ -471,13 +519,42 @@ def _update_instances(call_dir, pids, status):
     util.write_json(_instances_path(call_dir), items)
 
 
-def cleanup(call_dir) -> list:
-    """worker 被结束后按登记处理残留：规则为 end 且 PID 与创建时间均一致时才结束进程，其余只报告。"""
+def cleanup(call_dir, lock_timeout_s: float = 20) -> list:
+    """worker 被结束后按登记处理残留：规则为 end 且 PID 与创建时间均一致时才结束进程，其余只报告。
+
+    有未完成的 starting 记录（进程启动后、登记前被结束）时先持锁补登记，再按同一规则处理；
+    lock_timeout_s 内未取得锁时这些进程只报告。
+    """
     import psutil
 
     items = _load_instances(call_dir)
     report = []
+    starting = [e for e in items if e.get("role") == "starting" and e.get("status") == "starting"]
+    lock = Lock(lock_timeout_s) if starting else None
+    if lock is not None:
+        try:
+            lock.acquire()
+        except Busy as err:
+            lock = None
+            for m in starting:
+                m["status"] = f"unresolved: {err}"
+                report.append({**m, "pid": None, "action": "reported"})
+    try:
+        if lock is not None:
+            items = _adopt_unregistered(items, starting)
+        report += _end_registered(items, psutil)
+    finally:
+        if lock is not None:
+            lock.release()
+    util.write_json(_instances_path(call_dir), items)
+    return report
+
+
+def _end_registered(items, psutil) -> list:
+    report = []
     for e in sorted(items, key=lambda x: 0 if x.get("role") == "component" else 1):
+        if e.get("role") == "starting":
+            continue
         if e.get("status") != "running":
             report.append({**e, "action": "already_closed"})
             continue
@@ -503,5 +580,4 @@ def cleanup(call_dir) -> list:
         except psutil.Error as err:
             e["status"] = f"end_failed: {err}"
             report.append({**e, "action": "end_failed"})
-    util.write_json(_instances_path(call_dir), items)
     return report
