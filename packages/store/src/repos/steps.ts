@@ -13,6 +13,7 @@ import {
   type Step,
   type StepId,
   type StepPayload,
+  TOOL_CATEGORY_HEADS,
   type ToolActionStatus,
 } from '@qywork/core'
 import type { ContentStore } from '../content.ts'
@@ -530,6 +531,37 @@ export function getConversationStep(
     )
     .get(id, conversationId)
   return row ? rowToStep(row) : null
+}
+
+/**
+ * 该会话及其子会话中画布工具（开头为「画布控制」）的目标，去重，最近使用的在前。
+ * 目标是调用参数原文：可能是绝对路径、已删除的文件或工作区之外的位置，由调用方判定。
+ *
+ * `LIKE` 先按原文筛出含该开头的行，`json_extract` 再精确判定：工具结果可能很大，逐行解析会话中全部工具行的 payload 代价过高。
+ */
+export function listConversationCanvasTargets(
+  store: Store,
+  conversationId: ConversationId,
+): string[] {
+  const head = TOOL_CATEGORY_HEADS.canvas
+  const payload = validPayload('s.payload')
+  return store.db
+    .query<{ target: string }, [string, string, string, string]>(
+      `SELECT target FROM (
+         SELECT json_extract(${payload}, '$.action.target') AS target, MAX(s.created_at) AS at
+         FROM steps s JOIN runs r ON r.id = s.run_id
+         WHERE (r.conversation_id = ?
+                OR r.conversation_id IN (SELECT id FROM conversations WHERE parent_conversation_id = ?))
+           AND s.kind = 'tool_action'
+           AND s.payload LIKE ?
+           AND json_extract(${payload}, '$.action.head') = ?
+         GROUP BY target
+       )
+       WHERE typeof(target) = 'text'
+       ORDER BY at DESC`,
+    )
+    .all(conversationId, conversationId, `%${head}%`, head)
+    .map((r) => r.target)
 }
 
 /** 只在包内使用：历史页（`messages.ts`）按同一份映射读取 step 行。 */

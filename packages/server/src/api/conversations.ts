@@ -1,6 +1,7 @@
 /** 模型目录、会话、消息与 run 的接口，前端首屏所需的数据均由此提供。 */
 
 import { rm } from 'node:fs/promises'
+import { relative } from 'node:path'
 import type { MediaOperation, MediaParamSpec, ModelSpec } from '@qywork/ai'
 import {
   applySpecOverride,
@@ -15,6 +16,7 @@ import {
   VENDORS,
 } from '@qywork/ai'
 import type {
+  ConversationBoardResponse,
   ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
   ConversationId,
@@ -62,6 +64,7 @@ import {
   getConversationStep,
   getWorkspace,
   listChildConversations,
+  listConversationCanvasTargets,
   listConversationChangesPage,
   listConversationHistoryPage,
   listConversations,
@@ -362,6 +365,22 @@ function liveSnapshot(d: ApiRequestDeps, id: ConversationId): ConversationLiveSn
   }
 }
 
+/**
+ * 看板的画布清单：按画布服务的同一判定（`CanvasDocs.locate`）保留工作区中仍存在的画布文件，转为工作区相对路径后去重。
+ * 不要只按后缀筛选：已删除或位于工作区之外的画布列出后，点击打开的是一个报错页。
+ */
+async function boardCanvases(d: ApiRequestDeps, targets: string[]): Promise<string[]> {
+  const found = await Promise.all(
+    targets.map((t) =>
+      d.canvas.docs.locate(d.workspaceRoot, t).then(
+        (abs) => relative(d.workspaceRoot, abs).replaceAll('\\', '/'),
+        () => null,
+      ),
+    ),
+  )
+  return [...new Set(found.filter((p): p is string => p !== null))]
+}
+
 export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   /** 界面只显示声明 inline 的工具图像，只为这些 step 读取字节；其余 step 只带引用。 */
   const withInlineImages = (step: Step): Step =>
@@ -635,7 +654,7 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
   }
 
   const convMatch =
-    /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue|commands|requests|request-details)$/.exec(
+    /^\/api\/conversations\/([^/]+)\/(history|changes|messages|runs|usage|queue|commands|board|requests|request-details)$/.exec(
       p,
     )
   if (convMatch) {
@@ -711,6 +730,17 @@ export const handleConversationsApi: ApiHandler = async (url, req, d) => {
     if (convMatch[2] === 'queue') return json({ queue: d.runs.queueOf(id) })
     // 正在后台运行的命令。与 `commands.changed` 同源，均读取同一张任务表。
     if (convMatch[2] === 'commands') return json({ commands: d.commands.listOf(id) })
+    if (convMatch[2] === 'board') {
+      const board: ConversationBoardResponse = {
+        subagents: listChildConversations(d.store, id).map((c) => ({
+          id: c.id,
+          title: c.title,
+          kind: c.source ?? 'temp',
+        })),
+        canvases: await boardCanvases(d, listConversationCanvasTargets(d.store, id)),
+      }
+      return json(board)
+    }
     // 本会话的完整花费。真源是账本而不是 `runs` 上的 usage：压缩摘要调用同样由本会话
     // 引发并计费，但不属于任何一轮，将各 run 相加必然少计。
     // 不设时间窗：查询的是本会话的总花费，从会话创建时起算。

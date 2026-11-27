@@ -479,6 +479,7 @@ export type {
   CloudRequest,
   CloudState,
   CloudUsage,
+  ConversationBoardResponse,
   ConversationChangeStep,
   ConversationChangesPageResponse,
   ConversationChangeTurn,

@@ -30,7 +30,6 @@ import {
   state,
   workspace,
 } from '../lib/store/index.ts'
-import { BackgroundCommands } from './BackgroundCommands.tsx'
 import { BranchPicker } from './BranchPicker.tsx'
 import { AttachButton, createAttachmentIntake, PendingAttachments } from './ComposerAttachments.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
@@ -614,11 +613,10 @@ export function Composer(props: { empty: boolean }) {
           </div>
         </Show>
 
-        {/* Goal、后台命令与等待队列共用输入框顶部的状态栏堆叠区：目标固定在上方，其余按此顺序排在下方。
-            同时出现时也只有一个外框和一套纵向次序，不互相覆盖。 */}
+        {/* Goal 与等待队列共用输入框顶部的状态栏堆叠区：目标固定在上方，队列排在下方。
+            同时出现时也只有一个外框和一套纵向次序，不互相覆盖。后台任务显示在右侧面板的看板中。 */}
         <div class="composer-rails">
           <GoalChip />
-          <BackgroundCommands />
           <FollowUpCards onEdit={editFollowUp} thumbProps={thumbProps} />
         </div>
 

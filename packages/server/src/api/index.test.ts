@@ -16,10 +16,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type {
+  ConversationBoardResponse,
   ConversationChangesPageResponse,
   ConversationHistoryPageResponse,
   ConversationRequestDetailsResponse,
@@ -57,6 +58,7 @@ import {
   settleToolStep,
   upsertWorkspace,
 } from '@qywork/store'
+import { CanvasService } from '../canvas/service.ts'
 import type { ModelsResponse } from './conversations.ts'
 import { type ApiDeps, handleApi } from './index.ts'
 
@@ -2239,6 +2241,78 @@ describe('会话诊断导出接口', () => {
     expect(runs.runs).toHaveLength(1)
     expect(runs.childRuns.map((row) => row.name).sort()).toEqual(['GLM 车组', 'Qwen 车组'])
     expect(runs.childRuns.every((row) => row.run.id !== runs.runs[0]?.id)).toBe(true)
+  })
+
+  /**
+   * 看板的子 agent 与画布。原始失败形状：画布清单只按后缀筛选时，已删除的画布与其他类目工具的目标一并列出，
+   * 点击打开的是报错页；子会话中使用的画布不列出。
+   */
+  test('看板列出子会话；画布取本会话与子会话中画布工具的目标，去重、最近使用的在前、只含仍存在的文件', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'qywork-board-'))
+    try {
+      await mkdir(join(root, '分镜'))
+      for (const f of ['分镜/第1集.canvas.json', 'b.canvas.json', 'notes.canvas.json']) {
+        await writeFile(join(root, f), '{"nodes":[],"edges":[]}')
+      }
+      const d = { ...deps(root), canvas: new CanvasService({ publish: () => {} }) } as ApiDeps & {
+        wsId: string
+      }
+      const parent = createConversation(d.store, {
+        workspaceId: d.wsId as never,
+        provider: 'p',
+        model: 'm',
+      })
+      const child = createConversation(d.store, {
+        workspaceId: d.wsId as never,
+        provider: 'p',
+        model: 'm',
+        title: '画师',
+        source: 'role',
+        sourceRef: 'painter',
+        parentConversationId: parent.id,
+      })
+      const runOf = (conversationId: string) =>
+        createRun(d.store, {
+          conversationId: conversationId as never,
+          workspaceId: d.wsId as never,
+          provider: 'p',
+          model: 'm',
+          clientRequestId: `req_${conversationId}`,
+          userMessageId: null,
+          messageIdUpperBound: null,
+          contextSnapshot: [],
+        }).id
+      const mine = runOf(parent.id)
+      const theirs = runOf(child.id)
+      let seq = 0
+      const tool = (runId: string, head: string, target: string | null, at: number) => {
+        const step = appendStep(d.store, {
+          runId: runId as never,
+          seq: ++seq,
+          kind: 'tool_action',
+          toolName: 'any',
+          payload: {
+            kind: 'tool_result',
+            action: { kind: 'read', head, verb: '读取', object: target ?? '', target },
+          } as never,
+        })
+        d.store.db.query('UPDATE steps SET created_at = ? WHERE id = ?').run(at, step.id)
+      }
+      tool(mine, '画布控制', '分镜/第1集.canvas.json', 1000)
+      tool(mine, '画布控制', '分镜/第1集.canvas.json', 500)
+      tool(theirs, '画布控制', join(root, 'b.canvas.json'), 2000)
+      tool(mine, '画布控制', 'gone.canvas.json', 3000)
+      tool(mine, '画布控制', null, 3000)
+      tool(mine, '文件读写', 'notes.canvas.json', 3000)
+
+      const res = await call(`/api/conversations/${parent.id}/board`, undefined, d)
+      expect(res?.status).toBe(200)
+      const board = (await res?.json()) as ConversationBoardResponse
+      expect(board.subagents).toEqual([{ id: child.id, title: '画师', kind: 'role' }])
+      expect(board.canvases).toEqual(['b.canvas.json', '分镜/第1集.canvas.json'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test('不存在的会话返回 404，不生成空诊断包', async () => {

@@ -349,6 +349,97 @@
   min-width: 0;
 }
 
+/* ── 看板 ──
+   待办、后台任务、子 agent 与画布四组纵向排列。组标题与变更页表头同一字号、字重与颜色。
+   左右 6px 外边距 + 行内 2px 内距 = 8px：标记与变更页的折叠符号、文件树的图标对齐，切换页签时左边缘不移动。 */
+.overview-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-1) 6px var(--s-3);
+}
+.overview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.overview-head {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 2px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.overview-section > .todo-list {
+  padding: 0 2px;
+}
+/* 行高与文件树的行相同（12px 字号 × 1.5 + 上下 1px）。可点击的行是 button，只有它们有悬停底色。 */
+.overview-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  min-width: 0;
+  padding: 1px 2px;
+  border: none;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  text-align: left;
+}
+button.overview-row {
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+button.overview-row:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* 运行中的行与待办中进行中的条目同一字色。 */
+.overview-row.running {
+  color: var(--text-primary);
+}
+/* 与 `.todo-mark` 相同的 15px 标记位，各组的文字从同一列开始。 */
+.overview-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  color: var(--text-tertiary);
+}
+.overview-label {
+  flex: 1 1 auto;
+}
+.overview-act {
+  flex: none;
+  padding: 0 var(--s-1);
+  border: none;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.overview-act:hover {
+  background: var(--bg-hover);
+  color: var(--danger);
+}
+@media (pointer: coarse) {
+  .overview-row {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+}
+
 /* ── 终端 ──
    底色与前景由 xterm 按主题设置（见 TerminalPanel 的 applyTheme），此处只负责
    填满空间与滚动。不要在此处写 background：否则形成第二处主题来源，

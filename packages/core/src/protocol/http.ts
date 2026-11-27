@@ -11,7 +11,7 @@
  * 使用同一份定义。
  */
 
-import type { MessageId, ProviderRequestId, RunId } from '../domain/ids.ts'
+import type { ConversationId, MessageId, ProviderRequestId, RunId } from '../domain/ids.ts'
 import type { MediaOutput, MediaUnit, UnitPrice } from '../domain/media.ts'
 import type {
   ContextBreakdown,
@@ -30,6 +30,7 @@ import type {
   UsageTotals,
 } from '../domain/model.ts'
 import type { CacheMissAttribution } from '../domain/monitor/cache-miss.ts'
+import type { SubagentKind } from '../domain/workflow.ts'
 import type { LogLevel } from '../log.ts'
 
 /**
@@ -405,6 +406,17 @@ export interface ConversationRunsResponse {
 export interface ConversationUsageResponse {
   totals: UsageTotals
   entries: UsageLedgerRow[]
+}
+
+/**
+ * 右侧看板中由服务端提供的两组。待办与后台任务另有实时快照（`todos`、`commands.changed`），不在此处。
+ *
+ * - `subagents`：该会话派发的子会话，按创建顺序。运行状态不在此处：取 `conversation.busy`，派发方占用子会话时发布。
+ * - `canvases`：该会话及其子会话中画布工具的目标，工作区相对路径，最近使用的在前；只含工作区中仍存在的画布文件。
+ */
+export interface ConversationBoardResponse {
+  subagents: { id: ConversationId; title: string; kind: SubagentKind }[]
+  canvases: string[]
 }
 
 /**

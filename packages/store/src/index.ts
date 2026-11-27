@@ -101,6 +101,7 @@ export {
   failThinkingSteps,
   getConversationStep,
   interruptRunningNodes,
+  listConversationCanvasTargets,
   listSteps,
   markImagesUndelivered,
   markStepExecuting,
