@@ -38,7 +38,7 @@ export function MineList(props: { onRevise: (id: string, kind: SquareKind) => vo
                 </span>
                 <Show when={item.note}>{(note) => <span class="square-error">{note()}</span>}</Show>
               </div>
-              <Show when={item.status !== 'pending'}>
+              <Show when={item.status !== 'pending' && item.source === 'upload'}>
                 <button
                   type="button"
                   class="btn-ghost sm"

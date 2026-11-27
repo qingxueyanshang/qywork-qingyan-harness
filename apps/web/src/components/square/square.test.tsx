@@ -14,6 +14,7 @@ let squareStore: typeof import('../../lib/store/square.ts')
 let originalApi: typeof import('../../lib/store/index.ts')['client']['api']
 let originalRaw: typeof import('../../lib/store/index.ts')['client']['raw']
 let published: Record<string, unknown> | null = null
+let githubSent: Record<string, unknown> | null = null
 let calls: string[] = []
 let cloud: CloudState
 
@@ -73,6 +74,10 @@ beforeAll(async () => {
     const item = /^\/api\/square\/items\/(.+)$/.exec(path)
     if (item) return structuredClone(DETAILS[decodeURIComponent(item[1]!)]) as T
     if (path === '/api/square/install') return { message: '已安装全局技能 发版流程' } as T
+    if (path === '/api/square/github') {
+      githubSent = JSON.parse(String(init?.body))
+      return { id: 'sq_gh', version: 1, status: 'pending' } as T
+    }
     if (path === '/api/square/mine') {
       return [
         {
@@ -84,6 +89,7 @@ beforeAll(async () => {
           note: '内容重复',
           listed: true,
           updatedAt: '2026-11-27T00:00:00.000Z',
+          source: 'upload',
         },
       ] as T
     }
@@ -211,5 +217,43 @@ test('发布提示词：提交后转到发布记录并显示结果；发布记�
   })
   await until(() => view.text().includes('内容重复'))
   expect(view.text()).toContain('已驳回')
+  view.close()
+})
+
+test('插件选择 GitHub 仓库为来源：提交仓库、标签与子目录', async () => {
+  const { default: SquareDialog } = await import('./SquareDialog.tsx')
+  const view = await mount(() => <SquareDialog />)
+  view.button('发布')!.click()
+  await until(() => view.host.querySelector('.square-publish') !== null)
+  const selects = () => [...view.host.querySelectorAll<HTMLSelectElement>('.square-publish select')]
+  const choose = (select: HTMLSelectElement, value: string) => {
+    select.value = value
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+  choose(selects()[0]!, 'plugin')
+  await until(() => view.text().includes('来源'))
+  choose(selects()[1]!, 'github')
+  await until(() => view.text().includes('标签或分支'))
+  const inputs = [...view.host.querySelectorAll<HTMLInputElement>('.square-publish input')]
+  const fill = (i: number, value: string) => {
+    inputs[i]!.value = value
+    inputs[i]!.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  fill(0, '天气插件')
+  fill(1, 'https://github.com/example/weather')
+  fill(2, 'v1.0.0')
+  fill(3, 'plugin')
+  view.host
+    .querySelector<HTMLFormElement>('.square-publish')!
+    .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await until(() => view.text().includes('已提交，待审核'))
+  expect(githubSent).toEqual({
+    kind: 'plugin',
+    url: 'https://github.com/example/weather',
+    ref: 'v1.0.0',
+    path: 'plugin',
+    title: '天气插件',
+    summary: '',
+  })
   view.close()
 })

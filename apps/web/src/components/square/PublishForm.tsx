@@ -1,10 +1,16 @@
 import type { SquarePublishSource } from '@qywork/core'
-import { SQUARE_KIND_LABEL, SQUARE_KINDS, type SquareKind } from '@qywork/core'
+import {
+  SQUARE_GITHUB_KINDS,
+  SQUARE_KIND_LABEL,
+  SQUARE_KINDS,
+  type SquareGithubKind,
+  type SquareKind,
+} from '@qywork/core'
 import { createResource, createSignal, For, type JSX, Match, Show, Switch } from 'solid-js'
 import { createStore } from 'solid-js/store'
 import { client } from '../../lib/store/client.ts'
 import { explainApiError } from '../../lib/store/index.ts'
-import { publishSquare } from '../../lib/store/square.ts'
+import { publishSquare, submitSquareGithub } from '../../lib/store/square.ts'
 import { captureVideoFrame } from '../canvas/frame.ts'
 
 interface Option {
@@ -88,7 +94,39 @@ export function PublishForm(props: {
     picked: '',
     text: '',
     prompt: '',
+    /** 内容的来源：本机，或 GitHub 仓库（只限 `SQUARE_GITHUB_KINDS`）。 */
+    origin: 'local' as 'local' | 'github',
+    url: '',
+    ref: '',
+    path: '',
   })
+  const fromGithub = () =>
+    form.origin === 'github' && (SQUARE_GITHUB_KINDS as readonly string[]).includes(form.kind)
+
+  /** 收录 GitHub 仓库：仓库与标签必填。 */
+  const submitGithub = async () => {
+    if (!form.url.trim() || !form.ref.trim()) {
+      setError('请填写仓库与标签')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      await submitSquareGithub({
+        kind: form.kind as SquareGithubKind,
+        url: form.url.trim(),
+        ref: form.ref.trim(),
+        ...(form.path.trim() ? { path: form.path.trim() } : {}),
+        title: form.title,
+        summary: form.summary,
+      })
+      props.onDone('已提交，待审核')
+    } catch (err) {
+      setError(explainApiError(err, '收录失败'))
+    } finally {
+      setBusy(false)
+    }
+  }
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal('')
   const [options] = createResource(
@@ -98,6 +136,7 @@ export function PublishForm(props: {
 
   const submit = async (e: Event) => {
     e.preventDefault()
+    if (fromGithub()) return submitGithub()
     const source = sourceOf(form.kind, form)
     if (!source) {
       setError('请选择要发布的内容')
@@ -156,7 +195,38 @@ export function PublishForm(props: {
           onInput={(e) => setForm('summary', e.currentTarget.value)}
         />
       </label>
+      <Show
+        when={
+          props.itemId === undefined &&
+          (SQUARE_GITHUB_KINDS as readonly string[]).includes(form.kind)
+        }
+      >
+        <label>
+          来源
+          <select
+            value={form.origin}
+            onChange={(e) => setForm('origin', e.currentTarget.value as 'local' | 'github')}
+          >
+            <option value="local">本机</option>
+            <option value="github">GitHub 仓库</option>
+          </select>
+        </label>
+      </Show>
       <Switch>
+        <Match when={fromGithub()}>
+          <label>
+            仓库
+            <input value={form.url} onInput={(e) => setForm('url', e.currentTarget.value)} />
+          </label>
+          <label>
+            标签或分支
+            <input value={form.ref} onInput={(e) => setForm('ref', e.currentTarget.value)} />
+          </label>
+          <label>
+            子目录
+            <input value={form.path} onInput={(e) => setForm('path', e.currentTarget.value)} />
+          </label>
+        </Match>
         <Match when={form.kind === 'prompt'}>
           <label>
             正文

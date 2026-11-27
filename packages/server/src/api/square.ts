@@ -6,6 +6,7 @@
  * - `POST install`：正文 `{ id }`，安装该条目的最新已上架版本（`square/install.ts`），返回 `{ message, canvas? }`。
  * - `POST publish`：multipart，`manifest` 为 `{ title, summary, source, itemId? }`（`source` 见 `square/publish.ts`），
  *   视频作品另带 `cover`（PNG）。打包、校验后上传，返回云端的 `{ id, version, status }`；校验不通过时 422。
+ * - `POST github`：正文 `SquareGithubRequest`，原样转交云端收录该仓库，返回 `{ id, version, status }`。
  *
  * 未配置云端地址时 404；云端返回的失败以 400 返回云端的说明，安装失败以 409 或 422 返回原因。
  */
@@ -19,6 +20,8 @@ import { parsePublishSource, publishToSquare } from '../square/publish.ts'
 import { type ApiHandler, json } from './types.ts'
 
 const PREFIX = '/api/square/'
+/** 收录 GitHub 仓库的超时：云端在答复之前下载并校验仓库的归档。 */
+const GITHUB_TIMEOUT_MS = 5 * 60_000
 
 /** multipart 字段中的 JSON；不是字符串或无法解析时为 null。 */
 function parseJson(field: unknown): unknown {
@@ -98,6 +101,16 @@ export const handleSquareApi: ApiHandler = async (url, req, d) => {
       return result.ok
         ? json({ id: result.id, version: result.version, status: result.status })
         : json({ error: 'invalid', message: result.error }, 422)
+    }
+    if (section === 'github' && !id && req.method === 'POST') {
+      const body = await req.text()
+      return json(
+        await account.call(
+          '/v1/square/github',
+          { method: 'POST', headers: { 'content-type': 'application/json' }, body },
+          GITHUB_TIMEOUT_MS,
+        ),
+      )
     }
     if (section === 'install' && !id && req.method === 'POST') {
       const body = (await req.json().catch(() => null)) as { id?: unknown } | null

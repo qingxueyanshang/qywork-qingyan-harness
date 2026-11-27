@@ -67,6 +67,8 @@ function publish(
 }
 
 const listQueries: string[] = []
+/** 云端收到的 GitHub 收录请求。 */
+let githubBody: unknown = null
 /** 云端收到的发布：清单与按路径的文件内容。 */
 let uploaded: {
   path: string
@@ -78,6 +80,10 @@ const cloud = Bun.serve({
   hostname: '127.0.0.1',
   async fetch(req) {
     const url = new URL(req.url)
+    if (req.method === 'POST' && url.pathname === '/v1/square/github') {
+      githubBody = await req.json()
+      return Response.json({ id: 'sq_gh', version: 1, status: 'pending' }, { status: 201 })
+    }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/square/items')) {
       const form = await req.formData()
       const manifest = JSON.parse(String(form.get('manifest'))) as {
@@ -506,4 +512,18 @@ describe('发布', () => {
     await publishLocal({ title: '皮肤', summary: '', source: { kind: 'skin' } })
     expect([...uploaded!.files.keys()].sort()).toEqual(['bg.png', 'skin.json'])
   })
+})
+
+test('收录 GitHub 仓库：正文原样转交云端，返回云端的结果', async () => {
+  const request = {
+    kind: 'skill',
+    url: 'example/skills',
+    ref: 'v2',
+    path: 'release',
+    title: '发布',
+    summary: '',
+  }
+  const res = await call('/api/square/github', { method: 'POST', body: JSON.stringify(request) })
+  expect(await res.json()).toEqual({ id: 'sq_gh', version: 1, status: 'pending' })
+  expect(githubBody).toEqual(request)
 })
