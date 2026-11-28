@@ -761,6 +761,42 @@ describe('队列卡片上的两个操作', () => {
     expect(runs.queueOf(cv)).toEqual([])
   }, 30_000)
 
+  /**
+   * 父轮出错后到达的回执不自行发起一轮，留在队列中；用户点击「发送」是用户的操作，
+   * 立即发起一轮，条目不得再次放回队列。
+   */
+  test('父轮出错后排队的回执，空闲时点击发送立即发起一轮', async () => {
+    const cv = conversation()
+    const sock = socket()
+    const receipt = '[子 agent 回执] 临时 编剧 已返回'
+
+    // 脚本为空：父轮的请求得到 401，本轮以 `provider_error` 结束。
+    await startRun(cv, '先派个活', undefined, deps())
+    await idle(cv)
+    expect(listRuns(store, cv).at(-1)?.stopReason).toBe('provider_error')
+
+    await submitMessage(
+      cv,
+      { id: 'rc_click', content: receipt, steer: true, origin: 'subagent' },
+      deps(),
+    )
+    await settle()
+    expect(runs.queueOf(cv).map((f) => f.id)).toEqual(['rc_click'])
+
+    // 卡片按钮发送的是翻转后的去向：回执的 `steer` 为 true，点击时发出 false。
+    script = [ok(textTurn('收到回执。'))]
+    await handleCommand(
+      { type: 'followup.steer', conversationId: cv, id: 'rc_click', steer: false } as never,
+      { ...deps(), ws: sock.ws },
+    )
+    await idle(cv)
+
+    expect(runs.queueOf(cv)).toEqual([])
+    expect(listRuns(store, cv).map((r) => r.stopReason)).toEqual(['provider_error', 'completed'])
+    expect(bodies.at(-1)).toContain(receipt)
+    expect(listMessages(store, cv).at(-1)?.origin).toBe('subagent')
+  }, 30_000)
+
   test('已删除的条目既不注入也不发起下一轮；无法删除时如实拒绝', async () => {
     const cv = conversation()
     const held = gate(textTurn('第一轮完。'))

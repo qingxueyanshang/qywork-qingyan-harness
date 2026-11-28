@@ -1,7 +1,7 @@
 /** 发送消息与跟进队列：发起轮次、修改排队消息的去向、删除排队消息。 */
 
 import { viewingOf, workspaceOf } from '@qywork/store'
-import { submitMessage } from '../run-control.ts'
+import { startRun, submitMessage } from '../run-control.ts'
 import { handlers } from './handler.ts'
 import { reject, rejectChildConversation } from './reject.ts'
 
@@ -56,8 +56,20 @@ export const messageCommands = handlers({
         reject(deps.ws, cmd.type, 'conflict', '该跟进消息已不在队列中')
         return
       }
-      // 使用同一个函数：该消息若是子 agent 的回执，发起轮次时来源须一并写入消息行。
-      await submitMessage(cmd.conversationId, item, deps)
+      /*
+       * 直接发起一轮，不要改为 `submitMessage`：它对带来源的条目检查父轮终态，父轮出错或被停止时
+       * 把回执放回队列，用户点击「发送」后条目原样留在队列中。点击是用户的操作，不受该检查约束。
+       * 该消息若是子 agent 的回执，来源须一并写入消息行。
+       */
+      await startRun(
+        cmd.conversationId,
+        item.content,
+        undefined,
+        deps,
+        item.attachments,
+        item.origin ? { kind: 'receipt', origin: item.origin } : undefined,
+        item.viewing,
+      )
     },
   },
 
