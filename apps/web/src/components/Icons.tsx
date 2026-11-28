@@ -251,6 +251,35 @@ export const IconGrid = (p: IconProps) => (
   </Svg>
 )
 
+/** 宠物：一个脚掌与四个趾垫。 */
+export const IconPaw = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 12.2c-2.6 0-5.2 3.2-5.2 5.4 0 1.5 1.2 2.4 2.6 2.4 1 0 1.6-.5 2.6-.5s1.6.5 2.6.5c1.4 0 2.6-.9 2.6-2.4 0-2.2-2.6-5.4-5.2-5.4Z" />
+    <circle cx="5.2" cy="10.6" r="1.7" />
+    <circle cx="9" cy="6.4" r="1.8" />
+    <circle cx="15" cy="6.4" r="1.8" />
+    <circle cx="18.8" cy="10.6" r="1.7" />
+  </Svg>
+)
+
+/** 皮肤：调色板与四个色点。 */
+export const IconPalette = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 3.6c-4.7 0-8.5 3.6-8.5 8.2s3.6 8.6 8 8.6c1.1 0 1.8-.7 1.8-1.6 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.2 0-.9.7-1.6 1.6-1.6h2.1c2.4 0 4.5-2 4.5-4.4 0-3.9-3.8-6.8-8.5-6.8Z" />
+    <circle cx="7.6" cy="11.6" r="1" fill="currentColor" stroke="none" />
+    <circle cx="9.6" cy="7.8" r="1" fill="currentColor" stroke="none" />
+    <circle cx="14" cy="7.2" r="1" fill="currentColor" stroke="none" />
+    <circle cx="17.2" cy="10" r="1" fill="currentColor" stroke="none" />
+  </Svg>
+)
+
+export const IconSearch = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="10.8" cy="10.8" r="6.3" />
+    <path d="m15.4 15.4 4.6 4.6" />
+  </Svg>
+)
+
 export const IconPlug = (p: IconProps) => (
   <Svg {...p}>
     <path d="M9 3.8v4.4M15 3.8v4.4" />

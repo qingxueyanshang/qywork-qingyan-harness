@@ -7,7 +7,7 @@
  * - 宠物：`savePet` 新建一只宠物。皮肤：`savePersonalization` 替换当前的个性化。
  * - 画布：文件放入当前项目的新目录，画布文档经 `CanvasDocs.importDoc` 写入。
  *
- * 作品与提示词没有安装：作品在线查看，提示词由界面放入输入框。
+ * 作品没有安装：作品在线查看，作品的提示词由界面放入输入框。
  */
 
 import { readFile, rm } from 'node:fs/promises'
@@ -29,7 +29,7 @@ import type { CanvasService } from '../canvas/service.ts'
 import type { CloudAccount } from '../cloud/account.ts'
 import { stageSnapshot } from './files.ts'
 
-export type InstallableKind = Exclude<SquareKind, 'work' | 'prompt'>
+export type InstallableKind = Exclude<SquareKind, 'work'>
 
 export type InstallResult =
   | { ok: true; message: string /** 导入的画布文件，工作区相对路径。 */; canvas?: string }

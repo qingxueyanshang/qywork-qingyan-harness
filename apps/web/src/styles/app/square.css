@@ -1,95 +1,152 @@
-/* ── 创作广场弹窗：尺寸固定（B9），列表与详情在 .square-body 内滚动。 ── */
+/* 创作广场：弹窗、条目列表、详情、发布记录与发布窗口。
+ *
+ * 由 `../app.css` 引入；不要单独 import 本文件。 */
 
+/* ── 弹窗 ──
+ * 左栏为类型，右栏为标题行与内容，版面与尺寸同设置弹窗（`.settings-dialog`），两处分别定义完整规则（B8）。
+ * 尺寸固定（B9）：各类型的条目数相差很大，内容超出时在 `.square-scroll` 内滚动。 */
 .square-dialog {
-  position: relative;
-  width: min(960px, 100%);
-  height: min(720px, 100%);
+  width: min(1040px, 100%);
+  height: min(700px, 100%);
   display: flex;
-  flex-direction: column;
   border-radius: var(--r-lg);
   background: var(--bg-raised);
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
+
+/* 类型导航。类型本身沿用 `.nav-item`，组间分隔沿用 `.nav-group-split`；宽度固定，随内容变宽会使版面尺寸跳变。 */
+.square-nav {
+  flex: none;
+  width: 208px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s-4) var(--s-2);
+  overflow-y: auto;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border-subtle);
+}
+.square-nav svg {
+  flex: none;
+  display: block;
+  transform: translateY(-0.5px);
+}
+
+.square-pane {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 关闭按钮的定位基准是右栏：窄屏时类目栏位于顶部，它随右栏位于类目栏下方。 */
 .square-close {
   position: absolute;
   top: var(--dialog-close-inset);
   right: var(--dialog-close-inset);
   z-index: 1;
 }
-/* 右内距留出关闭按钮的位置。 */
+/* 标题行位于滚动区之外。上下内距同设置页的页头；右内距留出关闭按钮的位置。
+   最小高度不低于返回按钮（28px），搜索框与「发布」更矮，切换列表、详情与发布记录时标题行高度不变。 */
 .square-head {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: var(--s-4);
-  padding: var(--s-5) calc(var(--s-6) + 32px) var(--s-4) var(--s-6);
-  border-bottom: 1px solid var(--border-subtle);
+  gap: var(--s-2);
+  min-height: 34px;
+  padding: var(--s-1) var(--s-10) var(--s-3) var(--s-6);
 }
-.square-tabs {
+.square-back {
+  margin-left: calc(-1 * var(--s-2));
+}
+.square-head-actions {
+  margin-left: auto;
   display: flex;
-  flex: 1;
-  min-width: 0;
-  gap: var(--s-1);
-  overflow-x: auto;
-}
-.square-tab {
-  flex: none;
-  padding: var(--s-1) var(--s-3);
-  border: 0;
-  border-radius: var(--r-full);
-  background: none;
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-}
-.square-tab:hover {
-  color: var(--text-primary);
-}
-.square-tab.active {
-  background: var(--bg-active);
-  color: var(--text-primary);
+  align-items: center;
+  gap: var(--s-2);
 }
 .square-search {
-  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 200px;
-  padding: var(--s-1) var(--s-3);
+  height: 26px;
+  padding: 0 var(--s-2);
   border: 1px solid var(--border-default);
   border-radius: var(--r-sm);
   background: var(--bg-inset);
-  color: var(--text-primary);
-  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
 }
-.square-body {
+.square-search:focus-within {
+  border-color: var(--border-focus);
+}
+.square-search svg {
+  flex: none;
+}
+.square-search input {
   flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-  padding: var(--s-5) var(--s-6) var(--s-6);
-}
-
-/* 列表：列宽按比例铺满整行。 */
-.square-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: var(--s-4);
-}
-.square-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-1);
+  min-width: 0;
   padding: 0;
   border: 0;
   background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.square-publish-button {
+  height: 26px;
+  padding: 0 var(--s-3);
+  font-size: var(--fs-xs);
+}
+/* 滚动条只在内容区；始终保留槽位，内容长短不同的类型切换时不横移。 */
+.square-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.square-inner {
+  padding: 0 var(--s-6) var(--s-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+/* ── 条目列表 ── */
+
+/* 封面网格：列宽按比例铺满整行。 */
+.square-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--s-4);
+}
+.square-tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
   color: inherit;
   text-align: left;
+  overflow: hidden;
   cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease);
+}
+.square-tile:hover {
+  border-color: var(--border-strong);
 }
 .square-cover {
-  aspect-ratio: 4 / 3;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border-subtle);
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
   background: var(--bg-inset);
+  color: var(--text-tertiary);
   overflow: hidden;
 }
 .square-cover img {
@@ -98,66 +155,146 @@
   object-fit: cover;
   display: block;
 }
-.square-card:hover .square-cover {
-  border-color: var(--border-strong);
+.square-cover.contain img {
+  object-fit: contain;
+  padding: var(--s-3);
+  box-sizing: border-box;
 }
-.square-card-title {
-  font-size: var(--fs-sm);
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.square-card-author {
-  font-size: var(--fs-xs);
-  color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.square-more {
-  display: block;
-  margin: var(--s-5) auto 0;
-}
-.square-error {
-  margin: 0 0 var(--s-3);
-  color: var(--danger);
-  font-size: var(--fs-sm);
-}
-
-/* 详情。 */
-.square-item {
+.square-tile-text {
   display: flex;
   flex-direction: column;
-  gap: var(--s-3);
+  gap: 2px;
+  padding: var(--s-2) var(--s-3) 10px;
 }
-.square-item > .square-back {
-  align-self: flex-start;
+
+/* 双列行：图标、标题与简介，右侧为操作。 */
+.square-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-2) var(--s-3);
 }
-.square-item-head {
+.square-row {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--s-4);
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  padding: 0 var(--s-3) 0 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  transition: border-color var(--t-fast) var(--ease);
 }
-.square-item-title {
-  margin: 0;
-  font-size: var(--fs-lg);
+.square-row:hover {
+  border-color: var(--border-strong);
+}
+.square-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  text-align: left;
+}
+.square-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+}
+.square-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* 列表、详情与发布记录共用的名称与次要信息：单行，超出时截断。 */
+.square-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-base);
+  font-weight: 500;
   color: var(--text-primary);
 }
-.square-item-sub {
-  font-size: var(--fs-xs);
+.square-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
   color: var(--text-tertiary);
 }
-.square-summary {
+.square-desc.bad {
+  color: var(--danger);
+}
+.square-more {
+  align-self: center;
+}
+.square-error {
   margin: 0;
+  color: var(--danger);
   font-size: var(--fs-sm);
-  color: var(--text-secondary);
-  white-space: pre-wrap;
 }
 .square-result {
   margin: 0;
   font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* ── 详情 ── */
+.square-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+.square-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+}
+.square-detail-id {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.square-detail-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.square-summary {
+  margin: 0;
+  font-size: var(--fs-base);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+.square-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.square-block-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
   color: var(--text-secondary);
 }
 .square-media {
@@ -166,114 +303,432 @@
   object-fit: contain;
   max-width: 100%;
   max-height: 420px;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   border: 1px solid var(--border-subtle);
 }
-.square-images {
+.square-pages {
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
 }
-.square-images img {
+.square-pages img {
   align-self: flex-start;
   max-width: 100%;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   border: 1px solid var(--border-subtle);
+}
+.square-frames {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--s-2);
+}
+.square-frames img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  padding: var(--s-2);
+  box-sizing: border-box;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-sunken);
 }
 .square-text {
   margin: 0;
   padding: var(--s-3) var(--s-4);
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
   font-size: var(--fs-sm);
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .square-files {
   margin: 0;
-  padding-left: var(--s-5);
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-}
-
-/* 发布表单：字段纵向排列，铺满正文的宽度。 */
-.square-publish {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-.square-publish label {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-1);
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-}
-.square-publish input,
-.square-publish select,
-.square-publish textarea {
-  padding: var(--s-2) var(--s-3);
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: var(--fs-sm);
-  resize: vertical;
-}
-.square-publish-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-/* 发布记录。 */
-.square-mine {
-  margin: 0;
-  padding: 0;
+  padding: var(--s-1);
   list-style: none;
-  display: flex;
-  flex-direction: column;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
 }
-.square-mine li {
+.square-files li {
   display: flex;
   align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-3) 0;
-  border-bottom: 1px solid var(--border-subtle);
+  gap: var(--s-2);
+  padding: 5px var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
 }
-.square-mine-main {
+.square-files li svg {
+  flex: none;
+  color: var(--text-tertiary);
+}
+.square-files li span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 发布记录 ── 条目卡沿用设置页的 `EntryCard`，此处只定义被驳回的状态色。 */
+.entry-tag.square-rejected {
+  color: var(--danger);
+}
+
+/* ── 发布窗口 ──
+ * 打开在创作广场之上。尺寸固定（B9）：各类型的内容区高度不同，正文在 `.square-publish-body` 内滚动，
+ * 标题行与按钮行位置不变。输入区使用比窗口低一级的底色，不使用 `--bg-app`：深色主题下它是纯黑，面积较大的纯黑输入框在窗口中过重。 */
+.square-publish-dialog {
+  width: min(600px, calc(100vw - 32px));
+  height: min(640px, calc(100svh - 48px));
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+/* 只在打开时改为纵向排列：写在未打开的 dialog 上会覆盖浏览器的 `display: none`。 */
+.square-publish-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.square-publish-dialog::backdrop {
+  background: var(--scrim);
+}
+/* 关闭按钮固定在窗口右上角，与创作广场及其他弹窗的位置相同，不随标题行排列。 */
+.square-publish-close {
+  position: absolute;
+  top: var(--dialog-close-inset);
+  right: var(--dialog-close-inset);
+}
+.square-publish-head {
+  flex: none;
+  padding: var(--s-4) var(--s-10) var(--s-2) var(--s-6);
+}
+.square-publish-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+.square-publish {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.square-publish-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  padding: var(--s-2) var(--s-4) var(--s-6) var(--s-6);
+}
+/* 错误与按钮同行：错误出现或消失时窗口高度不变。 */
+.square-publish-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-6) var(--s-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.square-publish-error {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+.square-publish-foot .btn-ghost {
+  align-self: auto;
+}
+
+/* 条目在创作广场中的样子：缩略图、标题与简介，标题与简介直接在卡片中填写。 */
+.square-listing {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  transition: border-color var(--t-fast) var(--ease);
+}
+.square-listing:focus-within {
+  border-color: var(--border-strong);
+}
+.square-listing-thumb {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  overflow: hidden;
+}
+.square-listing-thumb img,
+.square-listing-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.square-listing-text {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
+.square-listing-name,
+.square-listing-desc {
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  outline: none;
+}
+.square-listing-name {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+.square-listing-desc {
+  resize: none;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.square-listing-name::placeholder,
+.square-listing-desc::placeholder {
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
 
+/* 本机内容的选择卡片：两列，选中的一张以强调色描边。 */
+.square-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+.square-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  padding: 10px var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  text-align: left;
+  transition: border-color var(--t-fast) var(--ease);
+}
+.square-choice:hover {
+  border-color: var(--border-strong);
+}
+.square-choice.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.square-choice .square-icon {
+  width: 32px;
+  height: 32px;
+}
+.square-choice-check {
+  flex: none;
+  color: var(--accent);
+}
+
+/* 作品的文件：搜索框与缩略图网格。 */
+.square-publish-search {
+  width: auto;
+  height: 32px;
+}
+.square-thumbs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+.square-thumb {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  text-align: left;
+  overflow: hidden;
+  transition: border-color var(--t-fast) var(--ease);
+}
+.square-thumb:hover {
+  border-color: var(--border-strong);
+}
+.square-thumb.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.square-thumb-img {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 4 / 3;
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+  overflow: hidden;
+}
+.square-thumb-img img,
+.square-thumb-img video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.square-thumb-name {
+  padding: 5px var(--s-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+
+/* 作品的提示词。 */
+.square-editor {
+  width: 100%;
+  min-height: 96px;
+  padding: var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--t-fast) var(--ease);
+}
+.square-editor:focus {
+  border-color: var(--border-strong);
+}
+
+/* 皮肤：当前皮肤的缩略界面。顶栏与侧栏取外框色、会话区取内容色，每处只绘制一层，同界面骨架。 */
+.square-skin {
+  position: relative;
+  display: grid;
+  grid-template-columns: 26% 1fr;
+  grid-template-rows: 18px 1fr;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.square-skin-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.square-skin-top,
+.square-skin-side {
+  position: relative;
+  background: var(--frame-bg);
+}
+.square-skin-top {
+  grid-column: 1 / 3;
+}
+.square-skin-side,
+.square-skin-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: var(--s-4) var(--s-3);
+}
+.square-skin-main {
+  position: relative;
+  padding: var(--s-5);
+  border-top-left-radius: var(--r-lg);
+  background: var(--content-bg);
+}
+.square-skin-line {
+  width: 80%;
+  height: 7px;
+  border-radius: var(--r-full);
+  background: var(--text-tertiary);
+  opacity: 0.35;
+}
+.square-skin-line.short {
+  width: 50%;
+}
+.square-skin-accent {
+  width: 64px;
+  height: 20px;
+  margin-top: auto;
+  margin-left: auto;
+  border-radius: var(--r-xs);
+  background: var(--accent);
+}
+
+/* 窄屏：类型栏从左侧竖栏改为顶部横栏，同设置弹窗。覆盖限定在 `.square-nav` 内：`.nav-item` 也用于左栏。 */
 @media (max-width: 820px) {
   .square-dialog {
     height: 100%;
+    flex-direction: column;
     border-radius: var(--r-lg) var(--r-lg) 0 0;
     padding-top: var(--safe-top);
     padding-bottom: var(--safe-bottom);
   }
-  .square-close {
-    top: calc(var(--dialog-close-inset) + var(--safe-top));
+  .square-nav {
+    width: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: var(--s-2);
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .square-nav .nav-list {
+    flex-direction: row;
+  }
+  .square-nav .nav-item {
+    width: auto;
+    white-space: nowrap;
+  }
+  .square-nav .nav-group-split {
+    margin: 0 0 0 var(--s-2);
+    padding: 0 0 0 var(--s-2);
+    border-top: none;
+    border-left: 1px solid var(--border-subtle);
   }
   .square-head {
     flex-wrap: wrap;
-    padding: var(--s-4) calc(var(--s-4) + 32px) var(--s-3) var(--s-4);
-  }
-  .square-tabs {
-    flex-basis: 100%;
+    padding: var(--s-2) var(--s-10) var(--s-3) var(--s-3);
   }
   .square-search {
-    flex: 1;
-    width: auto;
+    width: 160px;
   }
-  .square-body {
-    padding: var(--s-4);
+  .square-inner {
+    padding: 0 var(--s-3) var(--s-6);
   }
-  .square-grid {
+  .square-gallery {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+  .square-list {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

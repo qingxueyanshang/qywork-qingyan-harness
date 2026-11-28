@@ -16,23 +16,13 @@ import { mimeOf } from './model.ts'
 import { isPanelEntry, parseManifest } from './plugin-manifest.ts'
 import { isSkillDescription, parseSkillFrontmatter } from './skill.ts'
 
-export const SQUARE_KINDS = [
-  'work',
-  'prompt',
-  'canvas',
-  'plugin',
-  'skill',
-  'mcp',
-  'pet',
-  'skin',
-] as const
+export const SQUARE_KINDS = ['work', 'canvas', 'plugin', 'skill', 'mcp', 'pet', 'skin'] as const
 
 export type SquareKind = (typeof SQUARE_KINDS)[number]
 
 /** 各类型的名称。电脑端的分类页签与后台的审核页共用。 */
 export const SQUARE_KIND_LABEL: Record<SquareKind, string> = {
   work: '作品',
-  prompt: '提示词',
   canvas: '画布',
   plugin: '插件',
   skill: '技能',
@@ -53,7 +43,6 @@ export type SquareWorkFormat = 'pptx' | 'video' | 'image'
 /** 各类型的 `meta`。插件与技能的字段由快照中的清单得出，发布方不填写。 */
 export interface SquareMetaByKind {
   work: { format: SquareWorkFormat; prompt?: string }
-  prompt: { text: string }
   canvas: Record<string, never>
   plugin: { pluginId: string; name: string; version: string }
   skill: { name: string; description: string }
@@ -137,7 +126,6 @@ export interface SquareGithubRequest {
  * 路径为当前项目中的工作区相对路径；技能为本机技能目录的绝对路径。
  */
 export type SquarePublishSource =
-  | { kind: 'prompt'; text: string }
   | { kind: 'work'; path: string; prompt?: string }
   | { kind: 'canvas'; path: string }
   | { kind: 'plugin'; id: string }
@@ -199,7 +187,6 @@ export interface SnapshotFile {
 /** 各类型的定义文件：校验解析其全部内容，至多 `SQUARE_LIMITS.definition` 字节。没有定义文件的类型为 null。 */
 export const SQUARE_DEFINITION: Record<SquareKind, string | null> = {
   work: null,
-  prompt: null,
   canvas: 'canvas.json',
   plugin: 'qywork.plugin.json',
   skill: 'SKILL.md',
@@ -313,18 +300,6 @@ const anyFile = () => true
 const noFiles = (files: Files) => (files.size ? fail('该类型的快照不含文件') : null)
 
 const KIND_CHECKS: Record<SquareKind, KindCheck> = {
-  prompt(meta, files) {
-    const bad = noFiles(files)
-    if (bad) return bad
-    if (!isObject(meta) || typeof meta.text !== 'string' || !meta.text.trim()) {
-      return fail('提示词不能为空')
-    }
-    if (meta.text.length > SQUARE_LIMITS.text) {
-      return fail(`提示词超过 ${SQUARE_LIMITS.text} 个字符`)
-    }
-    return { meta: { text: meta.text }, cover: null }
-  },
-
   work(meta, files) {
     if (!isObject(meta) || !['pptx', 'video', 'image'].includes(meta.format as string)) {
       return fail('作品的 format 只能是 pptx、video 或 image')

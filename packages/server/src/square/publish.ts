@@ -144,10 +144,6 @@ type Packers = {
 }
 
 const PACKERS: Packers = {
-  async prompt(src) {
-    return { ok: true, meta: { text: src.text }, files: [] }
-  },
-
   async work(src, ctx, input) {
     const abs = await resolveInWorkspace(ctx.workspaceRoot, src.path, { mustExist: true })
     const ext = extname(abs).toLowerCase()
@@ -322,8 +318,6 @@ export function parsePublishSource(raw: unknown): SquarePublishSource | string {
   const o = (raw ?? {}) as Record<string, unknown>
   if (!isSquareKind(o.kind)) return '类型不合法'
   switch (o.kind) {
-    case 'prompt':
-      return typeof o.text === 'string' ? { kind: 'prompt', text: o.text } : '缺少提示词'
     case 'work':
       return str(o.path)
         ? {

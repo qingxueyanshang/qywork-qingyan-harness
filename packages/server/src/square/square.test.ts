@@ -75,8 +75,6 @@ function publish(
 }
 
 const listQueries: string[] = []
-/** 云端收到的 GitHub 收录请求。 */
-let githubBody: unknown = null
 /** 云端收到的发布：清单与按路径的文件内容。 */
 let uploaded: {
   path: string
@@ -88,10 +86,6 @@ const cloud = Bun.serve({
   hostname: '127.0.0.1',
   async fetch(req) {
     const url = new URL(req.url)
-    if (req.method === 'POST' && url.pathname === '/v1/square/github') {
-      githubBody = await req.json()
-      return Response.json({ id: 'sq_gh', version: 1, status: 'pending' }, { status: 201 })
-    }
     if (req.method === 'POST' && url.pathname.startsWith('/v1/square/items')) {
       const form = await req.formData()
       const manifest = JSON.parse(String(form.get('manifest'))) as {
@@ -217,9 +211,9 @@ describe('浏览', () => {
 })
 
 describe('安装', () => {
-  test('提示词与作品没有安装', async () => {
-    publish('sq_prompt', 'prompt', { text: '写一首诗' }, {})
-    const res = await install('sq_prompt')
+  test('作品没有安装', async () => {
+    publish('sq_work', 'work', { format: 'image' }, { 'image.png': PNG })
+    const res = await install('sq_work')
     expect(res.status).toBe(422)
   })
 
@@ -386,34 +380,22 @@ async function publishLocal(manifest: Record<string, unknown>, cover?: Uint8Arra
 }
 
 describe('发布', () => {
-  test('提示词：标题为空时 422 且不上传；通过时上传清单', async () => {
-    const empty = await publishLocal({
-      title: ' ',
-      summary: '',
-      source: { kind: 'prompt', text: '写诗' },
-    })
+  test('标题为空时 422 且不上传；通过时上传清单', async () => {
+    const empty = await publishLocal({ title: ' ', summary: '', source: { kind: 'skin' } })
     expect(empty.status).toBe(422)
     expect(uploaded).toBeNull()
-    const res = await publishLocal({
-      title: '写诗',
-      summary: '',
-      source: { kind: 'prompt', text: '写一首诗' },
-    })
+    const res = await publishLocal({ title: '夜色', summary: '', source: { kind: 'skin' } })
     expect(await res.json()).toEqual({ id: 'sq_new', version: 1, status: 'pending' })
     expect(uploaded!.path).toBe('/v1/square/items')
-    expect(uploaded!.manifest).toMatchObject({
-      kind: 'prompt',
-      title: '写诗',
-      meta: { text: '写一首诗' },
-    })
+    expect(uploaded!.manifest).toMatchObject({ kind: 'skin', title: '夜色', meta: {} })
   })
 
   test('发布者的条目发布新版本', async () => {
     await publishLocal({
-      title: '写诗',
+      title: '夜色',
       summary: '',
       itemId: 'sq_mine',
-      source: { kind: 'prompt', text: '第二版' },
+      source: { kind: 'skin' },
     })
     expect(uploaded!.path).toBe('/v1/square/items/sq_mine/versions')
   })
@@ -571,18 +553,4 @@ describe('发布', () => {
     await publishLocal({ title: '皮肤', summary: '', source: { kind: 'skin' } })
     expect([...uploaded!.files.keys()].sort()).toEqual(['bg.png', 'skin.json'])
   })
-})
-
-test('收录 GitHub 仓库：正文原样转交云端，返回云端的结果', async () => {
-  const request = {
-    kind: 'skill',
-    url: 'example/skills',
-    ref: 'v2',
-    path: 'release',
-    title: '发布',
-    summary: '',
-  }
-  const res = await call('/api/square/github', { method: 'POST', body: JSON.stringify(request) })
-  expect(await res.json()).toEqual({ id: 'sq_gh', version: 1, status: 'pending' })
-  expect(githubBody).toEqual(request)
 })

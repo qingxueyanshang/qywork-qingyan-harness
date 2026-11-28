@@ -6,18 +6,39 @@
 import type { SquareDetail, SquareFile, SquareKind, SquareMetaByKind } from '@qywork/core'
 import { For, type JSX, Show } from 'solid-js'
 import { squareFileUrl } from '../../lib/store/square.ts'
+import { IconFile } from '../Icons.tsx'
 
-function FileList(props: { files: readonly SquareFile[] }) {
+/** 预览中的一个分区：名称与内容。 */
+function Block(props: { title: string; children: JSX.Element }) {
   return (
-    <ul class="square-files">
-      <For each={props.files}>{(f) => <li>{f.path}</li>}</For>
-    </ul>
+    <section class="square-block">
+      <h4 class="square-block-title">{props.title}</h4>
+      {props.children}
+    </section>
   )
 }
 
-function Images(props: { files: readonly SquareFile[] }) {
+function FileList(props: { files: readonly SquareFile[] }) {
   return (
-    <div class="square-images">
+    <Block title="文件">
+      <ul class="square-files">
+        <For each={props.files}>
+          {(f) => (
+            <li>
+              <IconFile size={14} />
+              <span>{f.path}</span>
+            </li>
+          )}
+        </For>
+      </ul>
+    </Block>
+  )
+}
+
+/** 演示文稿的页面按顺序纵向排列；宠物的帧图尺寸小，按网格排列。 */
+function Images(props: { files: readonly SquareFile[]; frames?: true }) {
+  return (
+    <div class={props.frames ? 'square-frames' : 'square-pages'}>
       <For each={props.files}>{(f) => <img src={squareFileUrl(f.hash)} alt={f.path} />}</For>
     </div>
   )
@@ -52,14 +73,19 @@ function WorkPreview(props: { detail: SquareDetail }) {
       <Show when={meta().format === 'pptx'}>
         <Images files={pages()} />
       </Show>
-      <Show when={meta().prompt}>{(p) => <pre class="square-text">{p()}</pre>}</Show>
+      <Show when={meta().prompt}>
+        {(p) => (
+          <Block title="提示词">
+            <pre class="square-text">{p()}</pre>
+          </Block>
+        )}
+      </Show>
     </>
   )
 }
 
 export const PREVIEWS: Record<SquareKind, (d: SquareDetail) => JSX.Element> = {
   work: (d) => <WorkPreview detail={d} />,
-  prompt: (d) => <pre class="square-text">{(d.meta as SquareMetaByKind['prompt']).text}</pre>,
   canvas: (d) => (
     <>
       <Show when={d.cover}>
@@ -71,11 +97,13 @@ export const PREVIEWS: Record<SquareKind, (d: SquareDetail) => JSX.Element> = {
   plugin: (d) => <FileList files={d.files} />,
   skill: (d) => <FileList files={d.files} />,
   mcp: (d) => (
-    <pre class="square-text">
-      {JSON.stringify((d.meta as SquareMetaByKind['mcp']).server, null, 2)}
-    </pre>
+    <Block title="配置">
+      <pre class="square-text">
+        {JSON.stringify((d.meta as SquareMetaByKind['mcp']).server, null, 2)}
+      </pre>
+    </Block>
   ),
-  pet: (d) => <Images files={d.files.filter((f) => f.path !== 'pet.json')} />,
+  pet: (d) => <Images files={d.files.filter((f) => f.path !== 'pet.json')} frames />,
   skin: (d) => (
     <Show when={d.cover}>
       {(c) => <img class="square-media" src={squareFileUrl(c())} alt="" />}

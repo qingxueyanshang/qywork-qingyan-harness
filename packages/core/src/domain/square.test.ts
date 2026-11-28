@@ -70,18 +70,6 @@ describe('快照的通用规则', () => {
 })
 
 describe('各类型', () => {
-  test('提示词：正文必填，不含文件', () => {
-    expect(checkSquareSnapshotBytes('prompt', { text: '写一首诗' }, [])).toMatchObject({
-      ok: true,
-      meta: { text: '写一首诗' },
-      cover: null,
-    })
-    expect(error(checkSquareSnapshotBytes('prompt', { text: ' ' }, []))).toBe('提示词不能为空')
-    expect(error(checkSquareSnapshotBytes('prompt', { text: 'a' }, [file('a.txt', 'x')]))).toBe(
-      '该类型的快照不含文件',
-    )
-  })
-
   test('作品：图片、视频与封面、PPT 与逐页图片；文件头与扩展名一致', () => {
     expect(
       checkSquareSnapshotBytes('work', { format: 'image' }, [file('image.png', PNG)]),

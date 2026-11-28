@@ -6,7 +6,6 @@
 import type {
   SquareCard,
   SquareDetail,
-  SquareGithubRequest,
   SquareKind,
   SquareMineItem,
   SquarePublishSource,
@@ -77,13 +76,6 @@ export async function publishSquare(
   const res = await client.raw(path, { method: 'POST', body: form })
   if (!res.ok) throw new ApiError(res.status, path, await res.text().catch(() => ''))
   return (await res.json()) as { id: string; version: number; status: string }
-}
-
-/** 收录一个 GitHub 仓库：云端下载并校验仓库的内容后生成待审核的版本。 */
-export function submitSquareGithub(
-  request: SquareGithubRequest,
-): Promise<{ id: string; version: number; status: string }> {
-  return client.api('/api/square/github', { method: 'POST', body: JSON.stringify(request) })
 }
 
 export function squareFileUrl(hash: string): string {

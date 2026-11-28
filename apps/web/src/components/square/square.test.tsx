@@ -1,6 +1,7 @@
 /**
- * 覆盖范围：`square/SquareDialog.tsx`、`SquareGrid.tsx`、`SquareItem.tsx`、`previews.tsx`、`SquareEntry.tsx`、
- * `PublishForm.tsx`（作品按名称搜索文件）与 `lib/store/square.ts`。本机服务的应答由测试给出（替换 `client.api`）。
+ * 覆盖范围：`square/SquareDialog.tsx`、`SquareGrid.tsx`、`SquareItem.tsx`、`MineList.tsx`、`actions.ts`、
+ * `previews.tsx`、`SquareEntry.tsx`、`PublishDialog.tsx`（各类型的内容区、作品按名称搜索文件）
+ * 与 `lib/store/square.ts`。本机服务的应答由测试给出（替换 `client.api`）。
  */
 
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
@@ -14,8 +15,9 @@ let squareStore: typeof import('../../lib/store/square.ts')
 let originalApi: typeof import('../../lib/store/index.ts')['client']['api']
 let originalRaw: typeof import('../../lib/store/index.ts')['client']['raw']
 let published: Record<string, unknown> | null = null
-let githubSent: Record<string, unknown> | null = null
 let calls: string[] = []
+/** 给出时 `/api/square/mine` 等它完成后才应答。 */
+let mineGate: Promise<void> | null = null
 let cloud: CloudState
 
 const card = (id: string, kind: SquareCard['kind'], title: string): SquareCard => ({
@@ -33,10 +35,10 @@ const card = (id: string, kind: SquareCard['kind'], title: string): SquareCard =
 })
 
 const DETAILS: Record<string, SquareDetail> = {
-  sq_prompt: {
-    ...card('sq_prompt', 'prompt', '写诗'),
-    meta: { text: '写一首关于海的诗' },
-    files: [],
+  sq_work: {
+    ...card('sq_work', 'work', '海边'),
+    meta: { format: 'image', prompt: '写一首关于海的诗' },
+    files: [{ path: 'image.png', hash: 'b'.repeat(64), size: 10, mime: 'image/png' }],
     mine: false,
   },
   sq_skill: {
@@ -84,16 +86,16 @@ beforeAll(async () => {
       return { matches: hit ? [{ path: deck, kind: 'file' }] : [], truncated: false } as T
     }
     if (path === '/api/square/install') return { message: '已安装全局技能 发版流程' } as T
-    if (path === '/api/square/github') {
-      githubSent = JSON.parse(String(init?.body))
-      return { id: 'sq_gh', version: 1, status: 'pending' } as T
+    if (path === '/api/plugins') {
+      return { plugins: [{ id: 'weather', name: '天气', version: '1.0.0' }] } as T
     }
     if (path === '/api/square/mine') {
+      if (mineGate) await mineGate
       return [
         {
           id: 'sq_mine',
-          kind: 'prompt',
-          title: '我的提示词',
+          kind: 'work',
+          title: '我的作品',
           version: 2,
           status: 'rejected',
           note: '内容重复',
@@ -109,6 +111,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   calls = []
+  mineGate = null
   cloud = {
     state: 'signed_in',
     email: 'me@example.com',
@@ -173,133 +176,171 @@ test('入口只在已登录且云端开通创作广场时出现', async () => {
   view.close()
 })
 
-test('按类型列出条目；提示词「使用」把正文放入输入框并关闭弹窗', async () => {
+const navItem = (host: HTMLElement, label: string) =>
+  [...host.querySelectorAll<HTMLButtonElement>('.square-nav .nav-item')].find(
+    (b) => b.textContent?.trim() === label,
+  )!
+
+/** 切换到该类型后按「发布」，返回打开的发布窗口。 */
+async function openPublish(host: HTMLElement, label: string) {
+  navItem(host, label).click()
+  host.querySelector<HTMLButtonElement>('.square-publish-button')!.click()
+  await until(() => host.querySelector('.square-publish-dialog') !== null)
+  return host.querySelector<HTMLDialogElement>('.square-publish-dialog')!
+}
+
+function fill(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  el.value = value
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+/** 按名称取得发布窗口中的输入控件。 */
+const control = (dialog: HTMLElement, label: string) =>
+  dialog.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!
+
+const submit = (dialog: HTMLElement) =>
+  dialog
+    .querySelector<HTMLFormElement>('.square-publish')!
+    .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+
+test('类型中没有提示词；作品详情的「使用提示词」把提示词放入输入框并关闭弹窗', async () => {
   const { default: SquareDialog } = await import('./SquareDialog.tsx')
   squareStore.setSquareOpen(true)
   const view = await mount(() => <SquareDialog />)
-  await until(() => calls.some((c) => c.includes('kind=work')))
-  view.button('提示词')!.click()
-  await until(() => view.text().includes('写诗'))
-  ;[...view.host.querySelectorAll<HTMLButtonElement>('.square-card')][0]!.click()
-  await until(() => view.text().includes('写一首关于海的诗'))
-  view.button('使用')!.click()
-  expect(store.composerSeed()).toBe('写一首关于海的诗')
+  const labels = [...view.host.querySelectorAll('.square-nav .nav-item')].map((b) =>
+    b.textContent?.trim(),
+  )
+  expect(labels).toEqual(['作品', '画布', '插件', '技能', 'MCP', '宠物', '皮肤', '发布记录'])
+  await until(() => view.host.querySelector('.square-tile') !== null)
+  view.host.querySelector<HTMLButtonElement>('.square-tile')!.click()
+  await until(() => view.host.querySelector('.square-detail') !== null)
+  view.button('使用提示词')!.click()
+  await until(() => store.composerSeed() === '写一首关于海的诗')
   expect(squareStore.squareOpen()).toBe(false)
   view.close()
 })
 
-test('技能「安装」调用安装接口并显示结果；返回后回到列表', async () => {
+test('技能行上的「安装」不读取详情，结果显示在本行', async () => {
   const { default: SquareDialog } = await import('./SquareDialog.tsx')
   const view = await mount(() => <SquareDialog />)
-  view.button('技能')!.click()
-  await until(() => view.text().includes('发版流程'))
-  ;[...view.host.querySelectorAll<HTMLButtonElement>('.square-card')][0]!.click()
-  await until(() => view.text().includes('按步骤发布版本'))
+  navItem(view.host, '技能').click()
+  await until(() => view.host.querySelector('.square-row') !== null)
+  view.button('安装')!.click()
+  await until(
+    () =>
+      view.host.querySelector('.square-row .square-desc')?.textContent ===
+      '已安装全局技能 发版流程',
+  )
+  expect(calls).toContain('POST /api/square/install')
+  expect(calls).not.toContain('GET /api/square/items/sq_skill')
+  view.close()
+})
+
+test('技能详情显示文件并可安装；标题行的返回回到列表', async () => {
+  const { default: SquareDialog } = await import('./SquareDialog.tsx')
+  const view = await mount(() => <SquareDialog />)
+  navItem(view.host, '技能').click()
+  await until(() => view.host.querySelector('.square-row-main') !== null)
+  view.host.querySelector<HTMLButtonElement>('.square-row-main')!.click()
+  await until(() => view.host.querySelector('.square-detail') !== null)
+  expect(view.text()).toContain('按步骤发布版本')
   expect(view.text()).toContain('SKILL.md')
   view.button('安装')!.click()
   await until(() => view.text().includes('已安装全局技能 发版流程'))
   expect(calls).toContain('POST /api/square/install')
-  view.button('返回')!.click()
-  await until(() => view.host.querySelector('.square-card') !== null)
+  view.host.querySelector<HTMLButtonElement>('[aria-label="返回"]')!.click()
+  await until(() => view.host.querySelector('.square-row') !== null)
+  expect(view.host.querySelector('.square-detail')).toBeNull()
   view.close()
 })
 
-test('发布提示词：提交后转到发布记录并显示结果；发布记录列出状态与驳回原因', async () => {
+test('打开发布记录时弹窗不被移出文档：读取期间保留上一项，完成后显示状态与驳回原因', async () => {
+  const { Suspense } = await import('solid-js')
+  const { default: SquareDialog } = await import('./SquareDialog.tsx')
+  let release = () => {}
+  mineGate = new Promise((resolve) => {
+    release = resolve
+  })
+  // 与 `App.tsx` 相同，弹窗位于 Suspense 之内：其中的读取使它挂起时，整个弹窗被移出文档。
+  const view = await mount(() => (
+    <Suspense>
+      <SquareDialog />
+    </Suspense>
+  ))
+  await until(() => view.host.querySelector('.square-dialog') !== null)
+  const dialog = view.host.querySelector('.square-dialog')
+  navItem(view.host, '发布记录').click()
+  await until(() => calls.includes('GET /api/square/mine'))
+  for (let i = 0; i < 5; i++) {
+    expect(view.host.querySelector('.square-dialog')).toBe(dialog)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+  }
+  release()
+  await until(() => view.text().includes('内容重复'))
+  expect(view.host.querySelector('.square-dialog')).toBe(dialog)
+  expect(view.text()).toContain('已驳回')
+  view.close()
+})
+
+test('发布当前类型：皮肤的发布窗口没有选择列表，提交后转到发布记录', async () => {
   const { default: SquareDialog } = await import('./SquareDialog.tsx')
   const view = await mount(() => <SquareDialog />)
-  view.button('发布')!.click()
-  await until(() => view.host.querySelector('.square-publish') !== null)
-  const title = view.host.querySelector<HTMLInputElement>('.square-publish input')!
-  title.value = '海边的诗'
-  title.dispatchEvent(new Event('input', { bubbles: true }))
-  const body = [...view.host.querySelectorAll<HTMLTextAreaElement>('.square-publish textarea')].at(
-    -1,
-  )!
-  body.value = '写一首关于海的诗'
-  body.dispatchEvent(new Event('input', { bubbles: true }))
-  view.host
-    .querySelector<HTMLFormElement>('.square-publish')!
-    .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-  await until(() => view.text().includes('已提交，待审核'))
-  expect(published).toMatchObject({
-    title: '海边的诗',
-    source: { kind: 'prompt', text: '写一首关于海的诗' },
-  })
+  const dialog = await openPublish(view.host, '皮肤')
+  expect(dialog.open).toBe(true)
+  expect(dialog.querySelector('.square-publish-title')?.textContent).toBe('发布皮肤')
+  expect(dialog.querySelector('.square-choices, .square-thumbs')).toBeNull()
+  expect(dialog.querySelector('.square-skin')).not.toBeNull()
+  fill(control(dialog, '标题'), '夜色')
+  submit(dialog)
+  await until(() => view.host.querySelector('.square-publish-dialog') === null)
+  expect(published).toMatchObject({ title: '夜色', source: { kind: 'skin' } })
   await until(() => view.text().includes('内容重复'))
-  expect(view.text()).toContain('已驳回')
+  expect(navItem(view.host, '发布记录').classList.contains('active')).toBe(true)
+  expect(view.host.querySelector('.square-publish-button')).toBeNull()
+  view.close()
+})
+
+test('发布插件：从已安装的插件卡片中选择；缺少标题或内容时窗口内显示原因且不提交', async () => {
+  const { default: SquareDialog } = await import('./SquareDialog.tsx')
+  const view = await mount(() => <SquareDialog />)
+  published = null
+  const dialog = await openPublish(view.host, '插件')
+  expect(dialog.querySelector('.square-publish-title')?.textContent).toBe('发布插件')
+  expect(dialog.textContent).not.toContain('GitHub')
+  submit(dialog)
+  await until(() => dialog.querySelector('.square-publish-error')?.textContent === '请填写标题')
+  fill(control(dialog, '标题'), '天气插件')
+  submit(dialog)
+  await until(() => dialog.querySelector('.square-publish-error')?.textContent === '请选择插件')
+  expect(published).toBeNull()
+  await until(() => dialog.querySelector('.square-choice') !== null)
+  dialog.querySelector<HTMLButtonElement>('.square-choice')!.click()
+  expect(dialog.querySelector('.square-choice')?.getAttribute('aria-selected')).toBe('true')
+  submit(dialog)
+  await until(() => published !== null)
+  expect(published).toMatchObject({ title: '天气插件', source: { kind: 'plugin', id: 'weather' } })
   view.close()
 })
 
 test('作品按名称搜索文件：空查询列不到的深层文件可以搜到并发布', async () => {
   const { default: SquareDialog } = await import('./SquareDialog.tsx')
   const view = await mount(() => <SquareDialog />)
-  view.button('发布')!.click()
-  await until(() => view.host.querySelector('.square-publish') !== null)
-  const kind = view.host.querySelector<HTMLSelectElement>('.square-publish select')!
-  kind.value = 'work'
-  kind.dispatchEvent(new Event('change', { bubbles: true }))
-  await until(() => view.host.querySelector('.square-publish input[type="search"]') !== null)
-  const options = () => [...view.host.querySelectorAll<HTMLOptionElement>('.square-publish option')]
-  await until(() => options().some((o) => o.value === '.tmp/a.png'))
-  expect(options().some((o) => o.value.endsWith('千石有声.pptx'))).toBe(false)
-  const search = view.host.querySelector<HTMLInputElement>('.square-publish input[type="search"]')!
-  search.value = '千石'
-  search.dispatchEvent(new Event('input', { bubbles: true }))
+  const dialog = await openPublish(view.host, '作品')
+  const rows = () => [...dialog.querySelectorAll<HTMLButtonElement>('.square-thumb')]
+  await until(() => rows().some((r) => r.textContent?.includes('a.png')))
+  expect(rows().some((r) => r.textContent?.includes('千石有声.pptx'))).toBe(false)
+  fill(dialog.querySelector<HTMLInputElement>('input[type="search"]')!, '千石')
   const deck = '09_其他项目/01_千石有声/原稿/千石有声.pptx'
-  await until(() => options().some((o) => o.value === deck))
+  await until(() => rows().some((r) => r.textContent?.includes('千石有声.pptx')))
   expect(calls.some((c) => c.includes('q=%E5%8D%83%E7%9F%B3') && c.includes('office=pptx'))).toBe(
     true,
   )
-  const content = [...view.host.querySelectorAll<HTMLSelectElement>('.square-publish select')].at(
-    -1,
-  )!
-  content.value = deck
-  content.dispatchEvent(new Event('change', { bubbles: true }))
-  const title = view.host.querySelector<HTMLInputElement>('.square-publish input')!
-  title.value = '千石有声'
-  title.dispatchEvent(new Event('input', { bubbles: true }))
-  view.host
-    .querySelector<HTMLFormElement>('.square-publish')!
-    .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-  await until(() => view.text().includes('已提交，待审核'))
+  rows()
+    .find((r) => r.textContent?.includes('千石有声.pptx'))!
+    .click()
+  fill(control(dialog, '标题'), '千石有声')
+  submit(dialog)
+  await until(() => view.host.querySelector('.square-publish-dialog') === null)
   expect(published).toMatchObject({ title: '千石有声', source: { kind: 'work', path: deck } })
-  view.close()
-})
-
-test('插件选择 GitHub 仓库为来源：提交仓库、标签与子目录', async () => {
-  const { default: SquareDialog } = await import('./SquareDialog.tsx')
-  const view = await mount(() => <SquareDialog />)
-  view.button('发布')!.click()
-  await until(() => view.host.querySelector('.square-publish') !== null)
-  const selects = () => [...view.host.querySelectorAll<HTMLSelectElement>('.square-publish select')]
-  const choose = (select: HTMLSelectElement, value: string) => {
-    select.value = value
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-  }
-  choose(selects()[0]!, 'plugin')
-  await until(() => view.text().includes('来源'))
-  choose(selects()[1]!, 'github')
-  await until(() => view.text().includes('标签或分支'))
-  const inputs = [...view.host.querySelectorAll<HTMLInputElement>('.square-publish input')]
-  const fill = (i: number, value: string) => {
-    inputs[i]!.value = value
-    inputs[i]!.dispatchEvent(new Event('input', { bubbles: true }))
-  }
-  fill(0, '天气插件')
-  fill(1, 'https://github.com/example/weather')
-  fill(2, 'v1.0.0')
-  fill(3, 'plugin')
-  view.host
-    .querySelector<HTMLFormElement>('.square-publish')!
-    .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-  await until(() => view.text().includes('已提交，待审核'))
-  expect(githubSent).toEqual({
-    kind: 'plugin',
-    url: 'https://github.com/example/weather',
-    ref: 'v1.0.0',
-    path: 'plugin',
-    title: '天气插件',
-    summary: '',
-  })
   view.close()
 })
