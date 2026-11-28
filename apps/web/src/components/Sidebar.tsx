@@ -266,8 +266,8 @@ export function Sidebar(props: { onClose?: () => void }) {
             列表的空间，而左栏的主要职责是会话。它们是设置弹窗中的五个类目。
             账号与创作广场不是设置的子项：它们打开独立的弹窗，数据来自云端。 */}
         <ul class="nav-list">
-          <SquareEntry />
           <AccountEntry />
+          <SquareEntry />
           <li>
             <button class="nav-item" type="button" onClick={() => openSettings()}>
               <IconSettings size={15} />
