@@ -108,7 +108,7 @@ export const SQUARE_GITHUB_KINDS = ['plugin', 'skill', 'pet', 'skin', 'canvas'] 
 
 export type SquareGithubKind = (typeof SQUARE_GITHUB_KINDS)[number]
 
-/** 收录 GitHub 仓库的请求（`POST /v1/square/github`）。 */
+/** 收录 GitHub 仓库的请求：云端后台发起，云端下载并校验仓库的内容。 */
 export interface SquareGithubRequest {
   kind: SquareGithubKind
   /** `https://github.com/<owner>/<repo>` 或 `<owner>/<repo>`。 */
