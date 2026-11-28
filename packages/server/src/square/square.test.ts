@@ -1,5 +1,5 @@
 /**
- * 覆盖范围：`api/square.ts` 的各路由、`square/files.ts`（按哈希保存、哈希核对、快照目录）与 `square/install.ts`
+ * 覆盖范围：`api/square.ts` 的各路由、`square/files.ts`（查看时按流转发并透传 Range、安装时续传与哈希核对、快照目录）与 `square/install.ts`
  * 的安装表，以及 `canvas/docs.ts` 的 `importDoc`。云端由本文件中的模拟服务提供，条目的 `meta` 与 MIME 取自
  * `@qywork/core` 的 `checkSquareSnapshotBytes`，与云端保存时相同。全局数据目录由测试预载按进程分开。
  */
@@ -30,7 +30,10 @@ const blobs = new Map<string, Uint8Array>()
 const items = new Map<string, SquareDetail>()
 /** 云端答复文件时的改写：用于构造内容与哈希不一致。 */
 const tampered = new Set<string>()
-let fileReads = 0
+/** 答复到一半即断开连接一次的文件：用于构造下载中断后续传。 */
+const cutOnce = new Set<string>()
+/** 云端收到的文件请求的 Range 头（没有时为空串）。 */
+const fileRanges: string[] = []
 
 /** 按 core 的校验得出 `meta`、封面与 MIME，登记为云端的一个条目。 */
 function publish(
@@ -103,10 +106,32 @@ const cloud = Bun.serve({
     }
     const file = /^\/v1\/square\/files\/([0-9a-f]{64})$/.exec(url.pathname)
     if (file) {
-      fileReads++
-      const bytes = blobs.get(file[1]!)
-      if (!bytes) return Response.json({ error: { code: 'not_found' } }, { status: 404 })
-      return new Response(tampered.has(file[1]!) ? enc('改写后的内容') : bytes)
+      const hash = file[1]!
+      const range = req.headers.get('range') ?? ''
+      fileRanges.push(range)
+      const stored = blobs.get(hash)
+      if (!stored) return Response.json({ error: { code: 'not_found' } }, { status: 404 })
+      const bytes = tampered.has(hash) ? enc('改写后的内容') : stored
+      if (cutOnce.delete(hash)) {
+        const half = bytes.subarray(0, Math.ceil(bytes.length / 2))
+        return new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(half)
+              setTimeout(() => c.error(new Error('断开')), 20)
+            },
+          }),
+          { headers: { 'content-length': String(bytes.length) } },
+        )
+      }
+      const from = /^bytes=(\d+)-$/.exec(range)
+      const type = { 'content-type': 'image/png' }
+      if (!from) return new Response(bytes, { headers: type })
+      const start = Number(from[1])
+      return new Response(bytes.subarray(start), {
+        status: 206,
+        headers: { ...type, 'content-range': `bytes ${start}-${bytes.length - 1}/${bytes.length}` },
+      })
     }
     const item = /^\/v1\/square\/items\/([^/]+)$/.exec(url.pathname)
     if (item) {
@@ -175,29 +200,19 @@ describe('浏览', () => {
     )
   })
 
-  test('文件按哈希保存在本机：第二次读取不再访问云端；类型按文件头判定', async () => {
+  test('查看文件按流转发云端的响应：透传 Range，类型只取图片与视频，不在本机保存', async () => {
     const d = publish('sq_img', 'work', { format: 'image' }, { 'image.png': PNG })
     const hash = d.files[0]!.hash
-    const before = fileReads
-    const first = await call(`/api/square/files/${hash}`)
-    expect(first.headers.get('content-type')).toBe('image/png')
-    expect(new Uint8Array(await first.arrayBuffer())).toEqual(PNG)
-    await call(`/api/square/files/${hash}`)
-    expect(fileReads).toBe(before + 1)
-  })
-
-  test('取得的内容与哈希不一致时 502，不保存', async () => {
-    const d = publish(
-      'sq_bad',
-      'work',
-      { format: 'image' },
-      { 'image.png': new Uint8Array([...PNG, 9]) },
-    )
-    const hash = d.files[0]!.hash
-    tampered.add(hash)
-    const res = await call(`/api/square/files/${hash}`)
-    expect(res.status).toBe(502)
-    expect(await stat(join(squareDir(), 'files', hash)).catch(() => null)).toBeNull()
+    const whole = await call(`/api/square/files/${hash}`)
+    expect(whole.headers.get('content-type')).toBe('image/png')
+    expect(whole.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(new Uint8Array(await whole.arrayBuffer())).toEqual(PNG)
+    const part = await call(`/api/square/files/${hash}`, { headers: { range: 'bytes=4-' } })
+    expect(part.status).toBe(206)
+    expect(part.headers.get('content-range')).toBe(`bytes 4-${PNG.length - 1}/${PNG.length}`)
+    expect(new Uint8Array(await part.arrayBuffer())).toEqual(PNG.subarray(4))
+    expect(fileRanges.slice(-2)).toEqual(['', 'bytes=4-'])
+    expect(await stat(join(squareDir(), 'files')).catch(() => null)).toBeNull()
   })
 })
 
@@ -230,6 +245,34 @@ describe('安装', () => {
         'utf8',
       ),
     ).toBe('print(1)\n')
+    expect(await readdir(join(squareDir(), 'stage'))).toEqual([])
+  })
+
+  test('下载中途断开时按 Range 从已收到处续传，核对哈希后安装', async () => {
+    const md = `---\nname: 续传技能\ndescription: 中断后续传\n---\n\n${'正文。'.repeat(200)}`
+    const d = publish('sq_resume', 'skill', {}, { 'SKILL.md': md })
+    const hash = d.files[0]!.hash
+    cutOnce.add(hash)
+    const before = fileRanges.length
+    const res = await install('sq_resume')
+    expect(res.status).toBe(200)
+    const ranges = fileRanges.slice(before)
+    expect(ranges).toHaveLength(2)
+    expect(ranges[0]).toBe('')
+    expect(ranges[1]).toMatch(/^bytes=\d+-$/)
+    expect(await readdir(join(squareDir(), 'stage'))).toEqual([])
+  })
+
+  test('取得的内容与哈希不一致时安装失败（502），不留快照目录', async () => {
+    const d = publish(
+      'sq_bad',
+      'skill',
+      {},
+      { 'SKILL.md': '---\nname: 被改写\ndescription: 哈希不一致\n---\n' },
+    )
+    tampered.add(d.files[0]!.hash)
+    const res = await install('sq_bad')
+    expect(res.status).toBe(502)
     expect(await readdir(join(squareDir(), 'stage'))).toEqual([])
   })
 

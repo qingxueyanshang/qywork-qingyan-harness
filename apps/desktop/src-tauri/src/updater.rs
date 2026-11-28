@@ -213,7 +213,13 @@ async fn execute(app: &AppHandle, owner: &UpdateOwner, action: &str) -> Result<(
             )
             .endpoints(vec![ENDPOINT.parse().map_err(|_| "更新地址无效")?])
             .map_err(|e| e.to_string())?
-            .timeout(Duration::from_secs(120))
+            // 不要改用 `.timeout`：它覆盖安装包下载的全过程，慢速网络下下载必然超时。
+            // `read_timeout` 是两次读取之间的间隔，数据仍在到达时不中止。
+            .configure_client(|client| {
+                client
+                    .connect_timeout(Duration::from_secs(30))
+                    .read_timeout(Duration::from_secs(60))
+            })
             .on_before_exit(move || {
                 crate::terminal::shutdown(&exit_app.state::<crate::terminal::TerminalHandle>());
                 // 桌面 worker 是独立进程，安装程序会替换其可执行文件，必须先结算进行中的

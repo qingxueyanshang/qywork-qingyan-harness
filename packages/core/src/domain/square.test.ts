@@ -49,12 +49,12 @@ describe('快照的通用规则', () => {
           null,
         ),
       ),
-    ).toBe('video.mp4 超过 200 MB')
+    ).toBe('video.mp4 超过 1 GB')
   })
 
   test('定义文件超过上限时拒绝；快照中有定义文件而未传入其内容时按缺少处理', () => {
     const md = enc('---\nname: a\ndescription: b\n---\n')
-    const big = { path: 'SKILL.md', size: SQUARE_LIMITS.other + 1, head: md }
+    const big = { path: 'SKILL.md', size: SQUARE_LIMITS.definition + 1, head: md }
     expect(error(checkSquareSnapshot('skill', {}, [big], md))).toBe('SKILL.md 超过 20 MB')
     const skill = { path: 'SKILL.md', size: md.length, head: md.subarray(0, 16) }
     expect(checkSquareSnapshot('skill', {}, [skill], md).ok).toBe(true)

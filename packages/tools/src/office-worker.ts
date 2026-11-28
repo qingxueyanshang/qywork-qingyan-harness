@@ -12,7 +12,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chargeImage, type ToolContext, type ToolOutcome } from '@qywork/agent'
 import { imageSizeOf } from '@qywork/core'
@@ -28,6 +28,14 @@ import { commandEnv } from './shell.ts'
 /** 只读动作（read、view、frames、frame）的超时。 */
 export const READ_TIMEOUT_MS = 180_000
 const CLEANUP_TIMEOUT_MS = 60_000
+/**
+ * 页面渲染的静默上限：办公软件逐页导出到渲染缓存，连续该时长既没有输出、也没有导出新的页面即判定已停止响应；
+ * 仍在逐页导出时不中止，耗时随页数变化。打开很大的文件时，导出第一页之前即可能需要数分钟。
+ */
+const RENDER_IDLE_MS = 5 * 60_000
+
+/** 调用的期限：总时长，或按进展计时（`busy` 返回 true 表示仍有进展，见 `collectProcess`）。 */
+export type WorkerLimit = number | { idleMs: number; busy: () => Promise<boolean> }
 
 export interface WorkerStage {
   name: string
@@ -99,7 +107,7 @@ export async function runWorker(
   ctx: WorkerScope,
   port: OfficePort,
   request: Record<string, unknown>,
-  timeoutMs: number,
+  limit: WorkerLimit,
 ): Promise<WorkerRun> {
   const runDir = officeRunDir(ctx.workspaceRoot, ctx.conversationId, ctx.runId)
   const callDir = join(runDir, `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`)
@@ -119,7 +127,7 @@ export async function runWorker(
   // 不写入 `__pycache__`：安装目录可能不可写，从源码运行时会在仓库中留下编译缓存。
   const env = { ...(await commandEnv(ctx)), PYTHONDONTWRITEBYTECODE: '1' }
 
-  const invoke = async (body: Record<string, unknown>, ms: number, signal?: AbortSignal) => {
+  const invoke = async (body: Record<string, unknown>, ms: WorkerLimit, signal?: AbortSignal) => {
     const reqPath = join(callDir, `${String(body.action)}-request.json`)
     await writeFile(reqPath, JSON.stringify({ ...base, ...body }), 'utf8')
     const { proc } = await spawnGuarded({
@@ -129,7 +137,7 @@ export async function runWorker(
       policy,
     })
     const got = await collectProcess(proc, {
-      timeoutMs: ms,
+      ...(typeof ms === 'number' ? { timeoutMs: ms } : ms),
       ...(signal ? { signal } : {}),
       maxChars: 100_000,
     })
@@ -139,7 +147,7 @@ export async function runWorker(
     return { got, response }
   }
 
-  const main = await invoke(request, timeoutMs, ctx.signal)
+  const main = await invoke(request, limit, ctx.signal)
   const aborted = ctx.signal.aborted
   let cleanup: WorkerResponse | null = null
   if (main.got.timedOut || aborted || main.response === null) {
@@ -161,9 +169,17 @@ export async function runWorker(
   }
 }
 
+/** 文件的 SHA-256（十六进制），按块读取。 */
+async function sha256File(abs: string): Promise<string> {
+  const hasher = createHash('sha256')
+  for await (const chunk of Bun.file(abs).stream()) hasher.update(chunk)
+  return hasher.digest('hex')
+}
+
 /**
- * Office 文件全部页面的 PNG（`view` 动作），按页码顺序。先渲染第 1 页取得页数，再取得全部页：渲染结果按文件哈希缓存在
- * 同一个 run 目录中，第二次调用不重复渲染。页数超过 `maxPages` 时不取得其余页，返回失败。
+ * Office 文件全部页面的 PNG（`view` 动作），按页码顺序复制到 `outDir/<页码>.png`，返回这些路径；页面图不读入内存。
+ * 先渲染第 1 页取得页数，再取得全部页：办公软件一次导出全部页面到按文件哈希命名的渲染缓存，第二次调用不重复渲染。
+ * 两次调用都按进展计时（`RENDER_IDLE_MS`），不设总时长。页数超过 `maxPages` 时不取得其余页，返回失败。
  * 用完后调用方删除 `officeRunDir(scope…)`。
  */
 export async function renderOfficePages(
@@ -171,16 +187,27 @@ export async function renderOfficePages(
   port: OfficePort,
   abs: string,
   maxPages: number,
-): Promise<{ ok: true; pages: Uint8Array[] } | { ok: false; message: string }> {
-  const expected = createHash('sha256')
-    .update(await readFile(abs))
-    .digest('hex')
+  outDir: string,
+): Promise<{ ok: true; pages: string[] } | { ok: false; message: string }> {
+  const expected = await sha256File(abs)
+  const cache = join(
+    officeRunDir(scope.workspaceRoot, scope.conversationId, scope.runId),
+    'cache',
+    expected,
+  )
+  let exported = -1
+  const busy = async () => {
+    const n = (await readdir(cache).catch(() => [])).length
+    const moved = n !== exported
+    exported = n
+    return moved
+  }
   const view = (pages: string[]) =>
     runWorker(
       scope,
       port,
       { action: 'view', path: abs, expected_sha256: expected, pages },
-      READ_TIMEOUT_MS,
+      { idleMs: RENDER_IDLE_MS, busy },
     )
   const first = await view(['1'])
   const count = first.response?.ok ? first.response.files?.[0]?.pages : null
@@ -191,9 +218,13 @@ export async function renderOfficePages(
   const images = all.response?.ok ? all.response.images : null
   if (!images?.length)
     return { ok: false, message: all.response?.message ?? noResponse(all).message }
-  const pages = await Promise.all(
-    images.map(async (img) => new Uint8Array(await readFile(img.path))),
-  )
+  await mkdir(outDir, { recursive: true })
+  const pages: string[] = []
+  for (const [i, img] of images.entries()) {
+    const dest = join(outDir, `${i + 1}.png`)
+    await copyFile(img.path, dest)
+    pages.push(dest)
+  }
   await releaseCall(all)
   return { ok: true, pages }
 }

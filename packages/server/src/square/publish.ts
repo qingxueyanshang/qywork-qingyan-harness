@@ -1,6 +1,7 @@
 /**
- * 发布到创作广场：按类型把本机已有的内容打包为快照，以 `@qywork/core` 的 `checkSquareSnapshotBytes` 校验（与云端保存前相同），
+ * 发布到创作广场：按类型把本机已有的内容打包为快照，以 `@qywork/core` 的 `checkSquareSnapshot` 校验（与云端保存前相同），
  * 再上传到云端（`POST /v1/square/items`，或发布者条目的 `POST /v1/square/items/:id/versions`）。
+ * 快照中的文件从磁盘按块上传，校验只读取大小与开头的字节，文件不整体读入内存；上传按进展计时，不设总时长。
  *
  * 不变量：
  * - 快照只取本机已有、已通过本机校验的内容：已安装的插件与技能、配置中的 MCP、宠物库中的宠物、当前的皮肤、
@@ -12,17 +13,20 @@
 
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { extname, join, relative, sep } from 'node:path'
+import { type MultipartField, multipartBody, UPLOAD_IDLE_MS } from '@qywork/ai'
 import {
   artMediaRefs,
   type CanvasDoc,
   type CanvasGenerateNode,
   canvasFilePaths,
-  checkSquareSnapshotBytes,
+  checkSquareSnapshot,
   isSquareKind,
   type McpServerSpec,
   parseCanvas,
   petFrameFiles,
   resolveArtRef,
+  SQUARE_DEFINITION,
+  SQUARE_HEAD_BYTES,
   SQUARE_LIMITS,
   type SquareKind,
   type SquarePublishSource,
@@ -67,18 +71,21 @@ export interface PublishContext {
   office: OfficeHost | undefined
 }
 
-/** 打包得到的文件：本机发布时整份读入内存。 */
+/** 打包得到的文件：磁盘上的文件（`Bun.file`），或打包时生成的内容（定义文件、封面）。 */
 interface PackedFile {
   path: string
-  bytes: Uint8Array
+  file: Blob
 }
 
-type Packed = { ok: true; meta: unknown; files: PackedFile[] } | { ok: false; error: string }
+/** `cleanup` 删除打包时生成的临时文件，在上传结束之后调用。 */
+type Packed =
+  | { ok: true; meta: unknown; files: PackedFile[]; cleanup?: () => Promise<void> }
+  | { ok: false; error: string }
 
-/** 上传的超时：视频可达 `SQUARE_LIMITS.video`。 */
-const UPLOAD_TIMEOUT_MS = 30 * 60_000
-/** PPT 渲染的超时。 */
-const RENDER_TIMEOUT_MS = 10 * 60_000
+const generated = (path: string, content: string | Uint8Array): PackedFile => ({
+  path,
+  file: new Blob([content]),
+})
 /** 打包目录时跳过的目录：缓存与版本库。 */
 const SKIPPED_DIRS = new Set(['__pycache__', '.pytest_cache', '.git'])
 
@@ -92,7 +99,7 @@ async function readTree(root: string, dir = root): Promise<PackedFile[]> {
     if (entry.isDirectory()) {
       if (!SKIPPED_DIRS.has(entry.name)) out.push(...(await readTree(root, full)))
     } else if (entry.isFile()) {
-      out.push({ path: relative(root, full).split(sep).join('/'), bytes: await readFile(full) })
+      out.push({ path: relative(root, full).split(sep).join('/'), file: Bun.file(full) })
     }
   }
   return out
@@ -145,12 +152,12 @@ const PACKERS: Packers = {
     const abs = await resolveInWorkspace(ctx.workspaceRoot, src.path, { mustExist: true })
     const ext = extname(abs).toLowerCase()
     const meta = { ...(src.prompt?.trim() ? { prompt: src.prompt } : {}) }
-    const bytes = await readFile(abs)
+    const file = Bun.file(abs)
     if (IMAGE_EXT.has(ext)) {
       return {
         ok: true,
         meta: { ...meta, format: 'image' },
-        files: [{ path: `image${ext}`, bytes }],
+        files: [{ path: `image${ext}`, file }],
       }
     }
     if (VIDEO_EXT.has(ext)) {
@@ -158,10 +165,7 @@ const PACKERS: Packers = {
       return {
         ok: true,
         meta: { ...meta, format: 'video' },
-        files: [
-          { path: `video${ext}`, bytes },
-          { path: 'cover.png', bytes: input.cover },
-        ],
+        files: [{ path: `video${ext}`, file }, generated('cover.png', input.cover)],
       }
     }
     if (ext !== '.pptx') return fail('作品只能是图片、mp4 或 webm 视频、PPTX 文件')
@@ -175,25 +179,35 @@ const PACKERS: Packers = {
       workspaceRoot: ctx.workspaceRoot,
       conversationId: 'square',
       runId: crypto.randomUUID(),
-      signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
+      signal: new AbortController().signal,
       secrets: collectSecrets(ctx.config),
     }
+    const runDir = officeRunDir(scope.workspaceRoot, scope.conversationId, scope.runId)
+    const cleanup = () => rm(runDir, { recursive: true, force: true })
     try {
-      const pages = await renderOfficePages(scope, port, abs, SQUARE_LIMITS.pages)
-      if (!pages.ok) return fail(`无法渲染 PPT 的页面：${pages.message}`)
+      const pages = await renderOfficePages(
+        scope,
+        port,
+        abs,
+        SQUARE_LIMITS.pages,
+        join(runDir, 'pages'),
+      )
+      if (!pages.ok) {
+        await cleanup()
+        return fail(`无法渲染 PPT 的页面：${pages.message}`)
+      }
       return {
         ok: true,
         meta: { ...meta, format: 'pptx' },
         files: [
-          { path: 'deck.pptx', bytes },
-          ...pages.pages.map((page, i) => ({ path: `pages/${i + 1}.png`, bytes: page })),
+          { path: 'deck.pptx', file },
+          ...pages.pages.map((page, i) => ({ path: `pages/${i + 1}.png`, file: Bun.file(page) })),
         ],
+        cleanup,
       }
-    } finally {
-      await rm(officeRunDir(scope.workspaceRoot, scope.conversationId, scope.runId), {
-        recursive: true,
-        force: true,
-      })
+    } catch (err) {
+      await cleanup()
+      throw err
     }
   },
 
@@ -230,13 +244,13 @@ const PACKERS: Packers = {
         if (target) refs.add(target)
       }
     }
-    const files: PackedFile[] = [{ path: 'canvas.json', bytes: Buffer.from(serializeCanvas(doc)) }]
+    const files: PackedFile[] = [generated('canvas.json', serializeCanvas(doc))]
     for (const ref of refs) {
       const file = await resolveInWorkspace(ctx.workspaceRoot, ref, { mustExist: true }).catch(
         () => null,
       )
       if (!file) return fail(`画布引用的文件不存在：${ref}`)
-      files.push({ path: `files/${ref}`, bytes: await readFile(file) })
+      files.push({ path: `files/${ref}`, file: Bun.file(file) })
     }
     return { ok: true, meta: {}, files }
   },
@@ -282,10 +296,8 @@ const PACKERS: Packers = {
       ok: true,
       meta: {},
       files: [
-        { path: 'pet.json', bytes: Buffer.from(JSON.stringify(entry.pack)) },
-        ...(await Promise.all(
-          frames.map(async (f) => ({ path: f, bytes: await readFile(join(petsDir(), src.id, f)) })),
-        )),
+        generated('pet.json', JSON.stringify(entry.pack)),
+        ...frames.map((f) => ({ path: f, file: Bun.file(join(petsDir(), src.id, f)) })),
       ],
     }
   },
@@ -294,10 +306,10 @@ const PACKERS: Packers = {
     const read = await readPersonalization()
     if (!read.ok) return fail(read.error)
     const value = read.entry.personalization
-    const files: PackedFile[] = [{ path: 'skin.json', bytes: Buffer.from(JSON.stringify(value)) }]
+    const files: PackedFile[] = [generated('skin.json', JSON.stringify(value))]
     if (value.background.kind === 'image') {
       const file = value.background.file
-      files.push({ path: file, bytes: await readFile(join(personalizationDir(), file)) })
+      files.push({ path: file, file: Bun.file(join(personalizationDir(), file)) })
     }
     return { ok: true, meta: {}, files }
   },
@@ -353,33 +365,92 @@ export async function publishToSquare(
   ) => Promise<Packed>
   const packed = await pack(input.source, ctx, input)
   if (!packed.ok) return packed
-  const checked = checkSquareSnapshotBytes(input.source.kind, packed.meta, packed.files)
-  if (!checked.ok) return checked
-  const form = new FormData()
-  form.set(
-    'manifest',
-    JSON.stringify({
-      kind: input.source.kind,
-      title: input.title.trim(),
-      summary: input.summary.trim(),
-      meta: packed.meta,
-      files: packed.files.map((f) => ({ path: f.path })),
-    }),
-  )
-  for (const [i, f] of packed.files.entries()) {
-    form.set(
-      `file:${i}`,
-      new Blob([f.bytes], { type: checked.mime[f.path] ?? 'application/octet-stream' }),
-      f.path.split('/').pop(),
-    )
+  try {
+    return await upload(input, ctx, packed.meta, packed.files)
+  } finally {
+    await packed.cleanup?.()
   }
+}
+
+/** 文件开头的 `SQUARE_HEAD_BYTES` 个字节（文件更短时为全部内容），只读取开头的一块。 */
+async function headOf(file: Blob): Promise<Uint8Array> {
+  const reader = file.stream().getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (size < SQUARE_HEAD_BYTES) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      size += value.byteLength
+    }
+  } finally {
+    await reader.cancel()
+  }
+  const head = new Uint8Array(size)
+  let at = 0
+  for (const c of chunks) {
+    head.set(c, at)
+    at += c.byteLength
+  }
+  return head.subarray(0, SQUARE_HEAD_BYTES)
+}
+
+/** 校验快照（只读取各文件的大小与开头的字节，定义文件读取全部内容）并按流上传。 */
+async function upload(
+  input: PublishInput,
+  ctx: PublishContext,
+  meta: unknown,
+  files: readonly PackedFile[],
+): Promise<PublishResult> {
+  const kind = input.source.kind
+  const snapshot = await Promise.all(
+    files.map(async (f) => ({
+      path: f.path,
+      size: f.file.size,
+      head: await headOf(f.file),
+    })),
+  )
+  const defPath = SQUARE_DEFINITION[kind]
+  const def = files.find((f) => f.path === defPath)
+  // 超过上限的定义文件不读取：校验按大小拒绝，不使用其内容。
+  const definition = def
+    ? def.file.size <= SQUARE_LIMITS.definition
+      ? new Uint8Array(await def.file.arrayBuffer())
+      : new Uint8Array()
+    : null
+  const checked = checkSquareSnapshot(kind, meta, snapshot, definition)
+  if (!checked.ok) return checked
+  const fields: MultipartField[] = [
+    {
+      name: 'manifest',
+      value: JSON.stringify({
+        kind,
+        title: input.title.trim(),
+        summary: input.summary.trim(),
+        meta,
+        files: files.map((f) => ({ path: f.path })),
+      }),
+    },
+    ...files.map((f, i) => ({
+      name: `file:${i}`,
+      filename: f.path.split('/').pop() as string,
+      type: checked.mime[f.path] ?? 'application/octet-stream',
+      file: f.file,
+    })),
+  ]
+  const body = multipartBody(fields)
   const path = input.itemId
     ? `/v1/square/items/${encodeURIComponent(input.itemId)}/versions`
     : '/v1/square/items'
   const res = await ctx.account.call<{ id: string; version: number; status: string }>(
     path,
-    { method: 'POST', body: form },
-    UPLOAD_TIMEOUT_MS,
+    {
+      method: 'POST',
+      headers: { 'content-type': body.contentType, 'content-length': String(body.length) },
+      body: body.body,
+    },
+    UPLOAD_IDLE_MS,
   )
   return { ok: true, ...res }
 }

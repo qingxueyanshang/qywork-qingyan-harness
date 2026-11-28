@@ -223,6 +223,16 @@ export {
   type VideoRule,
   videoOutOfRange,
 } from './tokens.ts'
+// 按有无进展判定连接失效的上传与下载
+export {
+  DOWNLOAD_IDLE_MS,
+  fetchWithIdle,
+  formFields,
+  type MultipartField,
+  multipartBody,
+  TransferStalled,
+  UPLOAD_IDLE_MS,
+} from './transfer/idle.ts'
 // 流空闲上限的基准：agent 按思考档位放宽该值，runtime 的摘要直接使用该值
 export { CLOUD_REQUEST_ID_HEADER, HEDGE_AFTER_MS, STREAM_IDLE_TIMEOUT_MS } from './transport.ts'
 // 协议无关的请求与事件形状

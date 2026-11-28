@@ -13,8 +13,8 @@ import { client } from './client.ts'
 import { cloudState, markSupportRead, refreshCloudState } from './cloud.ts'
 
 /** 每条消息的附件个数与合计大小上限，与云端相同；超出时云端拒绝并返回原因。 */
-export const SUPPORT_FILES_MAX = 9
-export const SUPPORT_BYTES_MAX = 50 * 1024 * 1024
+export const SUPPORT_FILES_MAX = 20
+export const SUPPORT_BYTES_MAX = 200 * 1024 * 1024
 
 /** `null` 表示尚未读取。 */
 const [messages, setMessages] = createSignal<SupportMessage[] | null>(null)

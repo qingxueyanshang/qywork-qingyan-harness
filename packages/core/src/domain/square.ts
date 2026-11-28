@@ -155,19 +155,24 @@ export interface SquarePublishManifest {
   files: { path: string }[]
 }
 
+/**
+ * 字节上限按云端的磁盘与带宽设定，与内存无关：电脑端从磁盘按流上传，云端边收边写入磁盘，校验只读取大小与开头的字节。
+ * 定义文件（`SQUARE_DEFINITION`）例外：校验解析其全部内容，云端读入内存，上限单独设定。
+ */
 export const SQUARE_LIMITS = {
   title: 60,
   summary: 500,
-  text: 20_000,
-  files: 500,
-  pages: 200,
+  text: 100_000,
+  files: 5000,
+  pages: 500,
   /** 单个文件的字节上限，按类别。 */
-  image: 20 * 1024 * 1024,
-  video: 200 * 1024 * 1024,
-  pptx: 100 * 1024 * 1024,
-  other: 20 * 1024 * 1024,
+  image: 50 * 1024 * 1024,
+  video: 1024 * 1024 * 1024,
+  pptx: 500 * 1024 * 1024,
+  other: 100 * 1024 * 1024,
+  definition: 20 * 1024 * 1024,
   /** 一个版本全部文件的字节上限。 */
-  total: 300 * 1024 * 1024,
+  total: 2 * 1024 * 1024 * 1024,
 } as const
 
 /** 快照内的相对路径是否合法（见文件头的不变量）。 */
@@ -191,7 +196,7 @@ export interface SnapshotFile {
   head: Uint8Array
 }
 
-/** 各类型的定义文件：校验解析其全部内容，至多 `SQUARE_LIMITS.other` 字节。没有定义文件的类型为 null。 */
+/** 各类型的定义文件：校验解析其全部内容，至多 `SQUARE_LIMITS.definition` 字节。没有定义文件的类型为 null。 */
 export const SQUARE_DEFINITION: Record<SquareKind, string | null> = {
   work: null,
   prompt: null,
@@ -267,7 +272,7 @@ const fail = (error: string): Fail => ({ ok: false, error })
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
-const MB = (n: number) => `${n / 1024 / 1024} MB`
+const MB = (n: number) => (n >= 1024 ** 3 ? `${n / 1024 ** 3} GB` : `${n / 1024 / 1024} MB`)
 
 interface Checked {
   meta: SquareMeta
@@ -510,8 +515,8 @@ export function checkSquareSnapshot(
   if (total > SQUARE_LIMITS.total) return fail(`文件合计超过 ${MB(SQUARE_LIMITS.total)}`)
   const defPath = SQUARE_DEFINITION[kind]
   const def = defPath === null ? undefined : map.get(defPath)
-  if (def && def.size > SQUARE_LIMITS.other) {
-    return fail(`${defPath} 超过 ${MB(SQUARE_LIMITS.other)}`)
+  if (def && def.size > SQUARE_LIMITS.definition) {
+    return fail(`${defPath} 超过 ${MB(SQUARE_LIMITS.definition)}`)
   }
   const checked = KIND_CHECKS[kind](meta, map, def ? definition : null)
   if ('ok' in checked) return checked

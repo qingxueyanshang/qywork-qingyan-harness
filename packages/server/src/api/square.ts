@@ -11,17 +11,20 @@
  * 未配置云端地址时 404；云端返回的失败按云端的状态码与说明返回，未取得云端答复时 400；安装失败以 409 或 422 返回原因。
  */
 
-import { type SquareDetail, squareMediaMime } from '@qywork/core'
+import type { SquareDetail } from '@qywork/core'
 import { CanvasFailure } from '../canvas/docs.ts'
 import { CloudAccountError } from '../cloud/account.ts'
-import { SquareFileError, squareFile } from '../square/files.ts'
+import { SquareFileError, squareFileResponse } from '../square/files.ts'
 import { installSquareItem } from '../square/install.ts'
 import { parsePublishSource, publishToSquare } from '../square/publish.ts'
 import { type ApiHandler, json } from './types.ts'
 
 const PREFIX = '/api/square/'
-/** 收录 GitHub 仓库的超时：云端在答复之前下载并校验仓库的归档。 */
-const GITHUB_TIMEOUT_MS = 5 * 60_000
+/**
+ * 收录 GitHub 仓库的静默上限：云端在答复之前下载并校验仓库的归档，期间连接上没有数据，本值即等待答复的上限。
+ * 云端下载归档时按有无数据判定连接失效，不设总时长。
+ */
+const GITHUB_IDLE_MS = 10 * 60_000
 
 /** multipart 字段中的 JSON；不是字符串或无法解析时为 null。 */
 function parseJson(field: unknown): unknown {
@@ -61,14 +64,7 @@ export const handleSquareApi: ApiHandler = async (url, req, d) => {
       return json(await account.call('/v1/square/mine'))
     }
     if (section === 'files' && id && req.method === 'GET') {
-      const file = Bun.file(await squareFile(account, id))
-      const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
-      return new Response(file, {
-        headers: {
-          'content-type': squareMediaMime(head) ?? 'application/octet-stream',
-          'cache-control': 'private, max-age=31536000, immutable',
-        },
-      })
+      return await squareFileResponse(account, id, req.headers.get('range'))
     }
     if (section === 'publish' && !id && req.method === 'POST') {
       const form = await req.formData().catch(() => null)
@@ -108,7 +104,7 @@ export const handleSquareApi: ApiHandler = async (url, req, d) => {
         await account.call(
           '/v1/square/github',
           { method: 'POST', headers: { 'content-type': 'application/json' }, body },
-          GITHUB_TIMEOUT_MS,
+          GITHUB_IDLE_MS,
         ),
       )
     }

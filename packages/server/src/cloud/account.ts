@@ -18,7 +18,13 @@
  *   `config.changed` 重新读取模型目录。
  */
 
-import { httpStatusName, lookupModel, transportFailureKind } from '@qywork/ai'
+import {
+  fetchWithIdle,
+  httpStatusName,
+  lookupModel,
+  TransferStalled,
+  transportFailureKind,
+} from '@qywork/ai'
 import {
   type Announcement,
   CLOUD_MEDIA_KIND,
@@ -707,22 +713,36 @@ export class CloudAccount {
 
   /**
    * 以设备密钥调用云端接口，返回成功的原始响应（附件等非 JSON 内容）。失败时抛出 `CloudAccountError`；
-   * 云端答复设备已被移除时删除本地接口。`timeoutMs` 只用于写入请求，缺省为本对象的超时；上传大文件时由调用方加长。
+   * 云端答复设备已被移除时删除本地接口。
+   *
+   * `idleMs` 缺省时为几 KB 的请求：本对象的超时覆盖整个请求，它就是等待云端答复的时间。
+   * 给出时为上传与下载：不设总时长，连续 `idleMs` 没有进展才中止（`fetchWithIdle`），返回的响应正文同样按进展计时；
+   * 耗时随文件大小与网速变化的请求都必须给出，否则大文件在慢速网络下必然超时。
    */
-  async request(path: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
+  async request(path: string, init: RequestInit = {}, idleMs?: number): Promise<Response> {
     const provider = cloudProviderOf(this.live, this.origin)
     if (!provider?.apiKey) throw new CloudAccountError('未登录')
     let res: Response
     const authorization = `Bearer ${provider.apiKey}`
+    const url = `${this.origin}${path}`
     try {
-      res = init.method
-        ? await fetch(`${this.origin}${path}`, {
-            ...init,
-            headers: { ...init.headers, authorization },
-            signal: timeoutMs === undefined ? this.timeout() : AbortSignal.timeout(timeoutMs),
-          })
-        : await this.read(path, { authorization })
+      res =
+        idleMs !== undefined
+          ? await fetchWithIdle(
+              url,
+              { ...init, headers: { ...init.headers, authorization } },
+              idleMs,
+            )
+          : init.method
+            ? await fetch(url, {
+                ...init,
+                headers: { ...init.headers, authorization },
+                signal: this.timeout(),
+              })
+            : await this.read(path, { authorization })
     } catch (err) {
+      if (err instanceof TransferStalled)
+        throw new CloudAccountError(`${err.message}，请检查网络后重试`)
       throw unreachable(err)
     }
     if (res.ok) return res
@@ -740,9 +760,9 @@ export class CloudAccount {
     )
   }
 
-  /** 以设备密钥调用云端接口并解析 JSON；204 返回 undefined。失败的处理与 `timeoutMs` 同 `request`。 */
-  async call<T>(path: string, init: RequestInit = {}, timeoutMs?: number): Promise<T> {
-    const res = await this.request(path, init, timeoutMs)
+  /** 以设备密钥调用云端接口并解析 JSON；204 返回 undefined。失败的处理与 `idleMs` 同 `request`。 */
+  async call<T>(path: string, init: RequestInit = {}, idleMs?: number): Promise<T> {
+    const res = await this.request(path, init, idleMs)
     if (res.status === 204) return undefined as T
     return (await res.json()) as T
   }
