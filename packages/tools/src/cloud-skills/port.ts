@@ -27,6 +27,8 @@ export interface CloudSkillPort {
   ): Promise<CloudSkillResult<CloudSkillSegment>>
   /** 按字面文本检索；`prefix` 限定路径前缀，空串为整个技能包。 */
   search(pkg: string, query: string, prefix: string): Promise<CloudSkillResult<CloudSkillMatches>>
+  /** 可运行的脚本（`scripts/` 下的 Python 文件）的原文，只交给解释器的标准输入，不写成文件、不放入工具结果。 */
+  script(pkg: string, path: string): Promise<CloudSkillResult<string>>
 }
 
 export const CloudSkillPort = definePort<CloudSkillPort>('cloudSkills')
@@ -58,8 +60,8 @@ export interface CloudSkillMatches {
 }
 
 /**
- * 读取失败的类别。前六项是云端读取接口的错误码；`unavailable` 是其余失败：未登录、设备密钥无效、连接失败、
- * 云端故障与无法解析的响应。
+ * 读取失败的类别。前七项是云端读取接口的错误码（`skill_script_run_only`：可运行的脚本只能运行，不能读取）；
+ * `unavailable` 是其余失败：未登录、设备密钥无效、连接失败、云端故障与无法解析的响应。
  */
 export type CloudSkillErrorCode =
   | 'skill_not_granted'
@@ -67,6 +69,7 @@ export type CloudSkillErrorCode =
   | 'skill_file_not_found'
   | 'skill_file_binary'
   | 'skill_range_invalid'
+  | 'skill_script_run_only'
   | 'invalid_request'
   | 'unavailable'
 

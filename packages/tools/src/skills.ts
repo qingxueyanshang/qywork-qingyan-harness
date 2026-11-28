@@ -215,7 +215,15 @@ export const readSkillTool: ToolSpec = {
       if (!target) return { status: 'failure', message: `本轮无法读取内置技能 ${hit.name}` }
       if ('status' in target) return target
       const read = await readCloudFile(ctx, target, {})
-      return read.status === 'success' ? { ...read, data: { ...read.data, ...data } } : read
+      // 内置技能的脚本不能读取，只能经命令执行运行（`cloud-skills/script.ts`）：在回执中给出写法。
+      return read.status === 'success'
+        ? {
+            ...read,
+            message: `${read.message}
+内置技能的脚本以「python ${hit.dir}/scripts/<文件>.py 参数」经 run_command 运行，脚本内容不能读取。`,
+            data: { ...read.data, ...data },
+          }
+        : read
     }
     const text = await readFile(join(hit.dir, 'SKILL.md'), 'utf8').catch(() => null)
     if (text === null) {

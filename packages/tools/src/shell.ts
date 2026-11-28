@@ -44,6 +44,7 @@ import {
 } from '@qywork/agent'
 import type { FileChange, IntermediateResourceRef } from '@qywork/core'
 import { idArg } from './args.ts'
+import { builtinScript } from './cloud-skills/script.ts'
 import { writeWholeFile } from './files.ts'
 import { classifyAddress } from './net-safety.ts'
 import {
@@ -522,6 +523,9 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
     async fn(args, ctx) {
       const command = String(args.command ?? '').trim()
       if (!command) return { status: 'failure', executed: false, message: '命令为空' }
+      // 内置技能的脚本：从云端取得原文，经标准输入交给解释器，不写成文件（`cloud-skills/script.ts`）。
+      const skillScript = await builtinScript(ctx, command)
+      if (skillScript && 'status' in skillScript) return skillScript
 
       const cwd = await resolveCommandDir(rootsOf(ctx), String(args.cwd ?? '.'))
       const timeout = resolveCommandTimeout(args.timeout_ms)
@@ -633,16 +637,21 @@ export function makeShellTool(shell: CommandShell, opts: { background?: boolean 
       // 读取输入的程序立即读取到输入结束，不会无人响应地等待。
       const { proc, sandbox, input } = await spawnGuarded({
         shell,
-        command,
+        command: skillScript?.command ?? command,
         cwd,
         policy,
         env: pipe?.env ?? env,
-        ...(background ? { input: true } : {}),
+        ...(background || skillScript ? { input: true } : {}),
       }).catch(async (e: unknown) => {
         await changeWindow.close()
         await pipe?.read()
         throw e
       })
+      // 脚本原文写入解释器的标准输入后关闭：解释器读取到输入结束才开始执行。
+      if (skillScript && input) {
+        input.write(new TextEncoder().encode(skillScript.source))
+        input.end()
+      }
 
       // 每条流使用一个脱敏器：脱敏器各自持有跨分片缓冲，共用会使两条流的末尾相互混合。
       const redactors = {

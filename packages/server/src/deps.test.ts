@@ -9,6 +9,7 @@ const port: CloudSkillPort = {
   files: async () => ({ ok: true, value: [] }),
   read: async () => ({ ok: false, code: 'unavailable', message: '' }),
   search: async () => ({ ok: true, value: { matches: [], truncated: false } }),
+  script: async () => ({ ok: false, code: 'unavailable', message: '' }),
 }
 
 describe('内置技能端口', () => {

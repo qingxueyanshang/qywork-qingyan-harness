@@ -80,6 +80,7 @@ export function cloudFailure(
     skill_file_not_found: `云端技能包中没有该文件：${target.shown}`,
     skill_file_binary: `${target.shown} 不是文本文件，无法读取。`,
     skill_range_invalid: `读取 ${target.shown} 失败：${error.message}`,
+    skill_script_run_only: error.message,
     invalid_request: `读取 ${target.shown} 失败：${error.message}`,
     unavailable: `无法读取云端技能：${error.message}`,
   }

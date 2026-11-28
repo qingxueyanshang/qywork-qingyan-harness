@@ -1,14 +1,14 @@
 /**
  * 文件工具按虚拟路径只读访问云端技能包。
  *
- * 覆盖范围：`cloud-skills/source.ts`；`files.ts` 的 `read_file` / `list_dir` / `write_file` / `edit_file` 与
- * `search.ts` 的 `glob` / `grep` 中识别云端技能路径的分支。
+ * 覆盖范围：`cloud-skills/source.ts`、`cloud-skills/script.ts`；`files.ts` 的 `read_file` / `list_dir` / `write_file` / `edit_file`、
+ * `search.ts` 的 `glob` / `grep` 中识别云端技能路径的分支，与 `shell.ts` 的 `run_command` 运行内置技能脚本的分支。
  *
  * 端口由测试内的内存实现提供，标记用 `@qywork/ai` 的 `issueSkillMarker` 签发，行的划分与云端读取接口相同。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -23,10 +23,14 @@ import {
 } from '@qywork/agent'
 import { DEFAULT_DENSITY, issueSkillMarker, parseSkillMarker } from '@qywork/ai'
 import { editFileTool, listDirTool, readFileTool, writeFileTool } from '../files.ts'
+import { commandShell } from '../process/command-shell.ts'
 import { globTool, grepTool } from '../search.ts'
+import { makeShellTool } from '../shell.ts'
 import { type CloudSkillErrorCode, CloudSkillPort } from './port.ts'
 
 const PKG = 'demo-pkg'
+/** 内置技能的脚本：打印收到的参数。 */
+const SCRIPT = ['import sys', 'print("参数", sys.argv[1:])', ''].join('\n')
 const KEY = new Uint8Array(32).fill(7)
 
 function linesOf(text: string): string[] {
@@ -49,6 +53,13 @@ function fakePort(
         .sort()
         .map((path) => ({ path, size: Buffer.byteLength(files[path]!) }))
       return { ok: true, value }
+    },
+    async script(_pkg, path) {
+      if (opts.fail) return refuse()
+      const text = files[path]
+      return text === undefined
+        ? { ok: false, code: 'skill_file_not_found', message: `没有该脚本：${path}` }
+        : { ok: true, value: text }
     },
     async read(_pkg, path, start, end) {
       if (opts.fail) return refuse()
@@ -261,6 +272,7 @@ describe('读取失败的分类', () => {
       skill_file_not_found: '云端技能包中没有该文件：cloud-skill://demo-pkg/a.md',
       skill_file_binary: 'cloud-skill://demo-pkg/a.md 不是文本文件，无法读取。',
       skill_range_invalid: '读取 cloud-skill://demo-pkg/a.md 失败：云端拒绝：skill_range_invalid',
+      skill_script_run_only: '云端拒绝：skill_script_run_only',
       invalid_request: '读取 cloud-skill://demo-pkg/a.md 失败：云端拒绝：invalid_request',
       unavailable: '无法读取云端技能：云端拒绝：unavailable',
     }
@@ -269,6 +281,52 @@ describe('读取失败的分类', () => {
       const out = await readFileTool.fn({ path: 'cloud-skill://demo-pkg/a.md' }, ctx(root, port))
       expect([out.status, out.errorKind, out.message]).toEqual(['failure', code, message])
     }
+  })
+})
+
+describe('内置技能脚本的运行', () => {
+  /**
+   * 原始失败形状：内置技能的脚本只能按行段读取，模型取得原文后写入工作区再运行，脚本随之留在用户的磁盘上。
+   * run_command 收到「python cloud-skill://…」时从云端取得原文，经标准输入交给解释器，工作区中不出现脚本文件。
+   */
+  test('python cloud-skill://… 经标准输入运行、参数原样传入，工作区不写入文件；其他写法不执行', async () => {
+    const shell = commandShell()
+    if (!shell) throw new Error('本机没有可用的 shell')
+    const tool = makeShellTool(shell)
+    const root = await workspace()
+    const port = fakePort({ 'scripts/hello.py': SCRIPT })
+    const run = await tool.fn(
+      { command: 'python cloud-skill://demo-pkg/scripts/hello.py a "b c"' },
+      { ...ctx(root, port), signal: new AbortController().signal },
+    )
+    expect(run.status).toBe('success')
+    expect(run.data?.stdout).toContain("参数 ['a', 'b c']")
+    // 工作区中只有命令的临时目录（`.tmp`），没有脚本文件。
+    const written = (await readdir(root, { recursive: true })).map(String)
+    expect(written.filter((f) => f.endsWith('.py'))).toEqual([])
+    for (const command of [
+      'cat cloud-skill://demo-pkg/scripts/hello.py',
+      'python cloud-skill://demo-pkg/scripts/hello.py && python cloud-skill://demo-pkg/scripts/hello.py',
+    ]) {
+      const refused = await tool.fn(
+        { command },
+        { ...ctx(root, port), signal: new AbortController().signal },
+      )
+      expect(refused).toMatchObject({
+        status: 'failure',
+        executed: false,
+        errorKind: 'bad_request',
+      })
+    }
+    const missing = await tool.fn(
+      { command: 'python cloud-skill://demo-pkg/scripts/none.py' },
+      { ...ctx(root, port), signal: new AbortController().signal },
+    )
+    expect(missing).toMatchObject({
+      status: 'failure',
+      executed: false,
+      errorKind: 'skill_file_not_found',
+    })
   })
 })
 

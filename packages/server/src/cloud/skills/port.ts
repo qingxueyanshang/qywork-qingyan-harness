@@ -22,6 +22,7 @@ const SKILL_ERRORS: ReadonlySet<string> = new Set<CloudSkillErrorCode>([
   'skill_file_not_found',
   'skill_file_binary',
   'skill_range_invalid',
+  'skill_script_run_only',
   'invalid_request',
 ])
 
@@ -44,11 +45,12 @@ const unavailable = (message: string) => ({
 export function cloudSkillPort(opts: CloudSkillPortOptions): CloudSkillPort {
   const timeoutMs = opts.timeoutMs ?? 20_000
 
-  async function call(
+  /** 以设备密钥请求云端技能接口；成功时返回响应，失败按错误码归类。 */
+  async function request(
     pkg: string,
-    action: 'files' | 'read' | 'search',
+    action: 'files' | 'read' | 'search' | 'script',
     params: Record<string, string>,
-  ): Promise<CloudSkillResult<Record<string, unknown>>> {
+  ): Promise<CloudSkillResult<Response>> {
     const key = cloudProviderOf(opts.config, opts.origin)?.apiKey
     if (!key) return unavailable('未登录云端账号')
     const version = opts.packages.find((p) => p.id === pkg)?.version
@@ -65,8 +67,8 @@ export function cloudSkillPort(opts: CloudSkillPortOptions): CloudSkillPort {
     } catch (err) {
       return unavailable(`无法连接云端：${err instanceof Error ? err.message : String(err)}`)
     }
+    if (res.ok) return { ok: true, value: res }
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null
-    if (res.ok) return body ? { ok: true, value: body } : unavailable('云端技能接口的响应无法解析')
     const error = (body?.error ?? null) as { code?: unknown; message?: unknown } | null
     const message = typeof error?.message === 'string' ? error.message : ''
     if (typeof error?.code === 'string' && SKILL_ERRORS.has(error.code)) {
@@ -77,8 +79,25 @@ export function cloudSkillPort(opts: CloudSkillPortOptions): CloudSkillPort {
     )
   }
 
+  async function call(
+    pkg: string,
+    action: 'files' | 'read' | 'search',
+    params: Record<string, string>,
+  ): Promise<CloudSkillResult<Record<string, unknown>>> {
+    const r = await request(pkg, action, params)
+    if (!r.ok) return r
+    const body = (await r.value.json().catch(() => null)) as Record<string, unknown> | null
+    return body ? { ok: true, value: body } : unavailable('云端技能接口的响应无法解析')
+  }
+
   return {
     packages: opts.packages.map(({ id, name, description }) => ({ id, name, description })),
+
+    async script(pkg, path) {
+      const r = await request(pkg, 'script', { path })
+      if (!r.ok) return r
+      return { ok: true, value: await r.value.text() }
+    },
 
     async files(pkg) {
       const r = await call(pkg, 'files', {})
