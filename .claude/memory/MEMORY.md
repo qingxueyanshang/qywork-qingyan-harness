@@ -51,3 +51,4 @@ qywork 自身的记忆存放于此，每条一个文件，下方每行对应一�
 - [Linux 端到端经 WSL](linux-e2e-via-wsl.md) — Mac/Linux 引擎只在非 Windows 上编译；在 WSL 中编译 Linux 外壳、Xvfb 下运行，从 Windows 经 localhost 转发驱动；root 须 --no-sandbox，WSL 的 Bun 是 1.3
 - [Art 页面中视频的真实浏览器验证](art-video-probe.md) — `.tmp/probe/art-video` 以真实引导页与 `loadArtPage` / `connectArt` 在无头 Edge 中截取；测试视频每秒一色，按中心像素判断进度
 - [远程访问下画布状态的时序实测](remote-canvas-timing-probe.md) — `.tmp/probe/canvas-run` 的模拟视频接口、远程监听器代理（延迟、慢读取）与窄屏 WebKit 脚本；不用 page.route 加延迟
+- [驱动用户已打开的 Edge 与 QyWork](drive-user-apps-via-host.md) — host.ts 直接驱动 qy-computer-host；前台动作置 foreground；地址栏先点击再填写再回车；型号菜单点外部关闭
