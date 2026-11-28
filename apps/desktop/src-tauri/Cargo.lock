@@ -2897,6 +2897,7 @@ name = "qywork"
 version = "0.3.31"
 dependencies = [
  "anyhow",
+ "dunce",
  "gtk-sys",
  "libc",
  "log",

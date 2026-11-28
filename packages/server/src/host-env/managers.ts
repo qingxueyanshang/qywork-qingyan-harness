@@ -150,8 +150,8 @@ export function canOpenTerminal(platform: string = process.platform): boolean {
  * 在新的终端窗口中执行 `argv`（工作目录 `cwd`），返回启动终端的 argv。`title` 只在 Windows 上使用，只用 ASCII：
  * 本机控制台代码页是 GBK，中文标题显示为乱码。
  *
- * Windows：`start` 打开新的控制台窗口，`cmd /k` 使窗口在命令结束后保留。逐段交给 spawn，不拼接字符串：
- * `start` 之后带空格的标题需要引号，由 spawn 处理更可靠。
+ * Windows：`start` 打开新的控制台窗口，`cmd /k` 使窗口在命令结束后保留，`/wait` 使发起进程在窗口关闭后才退出，
+ * 安装路由据此判定窗口是否仍打开。逐段交给 spawn，不拼接字符串：`start` 之后带空格的标题需要引号，由 spawn 处理更可靠。
  * macOS：经 AppleScript 让「终端」执行一段 shell 命令。Linux：见 `LINUX_TERMINALS`。
  */
 export function terminalArgv(
@@ -161,7 +161,7 @@ export function terminalArgv(
   platform: string = process.platform,
 ): string[] | null {
   if (platform === 'win32') {
-    return ['cmd.exe', '/d', '/c', 'start', title, 'cmd', '/d', '/k', ...argv]
+    return ['cmd.exe', '/d', '/c', 'start', title, '/wait', 'cmd', '/d', '/k', ...argv]
   }
   const script = `${cwd ? `cd ${shellQuote(cwd)} && ` : ''}${argv.map(shellQuote).join(' ')}; ${HOLD}`
   if (platform === 'darwin') {

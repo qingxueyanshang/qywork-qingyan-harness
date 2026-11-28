@@ -48,6 +48,8 @@ portable-pty = "0.9"
 # tauri 运行时创建窗口失败时只写入 `log::error!` 并按成功返回；未注册 logger 时该错误不会输出。
 # 见 lib.rs 的 `ShellLog`。log 已在依赖树中。
 log = "0.4"
+# 去掉资源目录的 `\\?\` 前缀，见 sidecar.rs 的 `resource_paths`。dunce 已在依赖树中（1.0）。
+dunce = "1"
 
 [dev-dependencies]
 # 回归测试以虚拟时间模拟超过 20 秒的慢启动，不实际等待。
@@ -77,6 +79,8 @@ windows = { version = "0.61", features = [
   "Win32_System_Diagnostics_ToolHelp",
   # 内置浏览器监听主窗口所属弹出窗口的显示事件（SetWinEventHook），见 browser/webview2.rs。
   "Win32_UI_Accessibility",
+  # sidecar 的 PATH 追加注册表中的环境变量，见 sidecar.rs 的 `registry_path`。
+  "Win32_System_Registry",
 ] }
 # 逐下载钩子绑定的是 `DownloadStarting` 提供的 `ICoreWebView2DownloadOperation` 本身，
 # 见 browser/webview2.rs。版本与 tauri 传递依赖中的版本一致（0.38），否则 `PlatformWebview::controller()`

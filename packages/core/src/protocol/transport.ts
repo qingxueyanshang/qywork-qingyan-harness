@@ -190,6 +190,8 @@ export interface EnvDependency {
   id: string
   /** 由 QyWork 自行下载安装、正在进行时的进度（0–1）；其余情况不给出。 */
   progress?: number
+  /** 该依赖的安装窗口已打开、尚未关闭；其余情况不给出。此时 `canInstall` 为 `false`。 */
+  installing?: true
   /** 界面上显示的名称。 */
   label: string
   /** 找到的可执行文件路径；`null` 表示未安装。 */

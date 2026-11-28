@@ -162,6 +162,93 @@ fn credentials_line(
     format!("{}\n", serde_json::Value::Object(fields))
 }
 
+/// sidecar 使用的两个资源路径：入口脚本与 Office 执行程序目录。
+///
+/// 资源目录取自经 `canonicalize` 的可执行文件路径，Windows 上带 `\\?\` 前缀，必须去掉：cmd.exe 以带前缀的路径
+/// 作为工作目录时按 UNC 路径处理并改用 Windows 目录，运行环境的安装命令按相对路径读取依赖清单，随之无法找到文件。
+/// 去掉前缀后超过 MAX_PATH 等无法安全去掉的路径原样保留。
+fn resource_paths(resources: &Path) -> (PathBuf, PathBuf) {
+    let root = dunce::simplified(resources);
+    (root.join("sidecar").join("index.js"), root.join("office"))
+}
+
+/// sidecar 的 PATH：继承值之后追加 `registry` 中有而继承值中没有的目录，继承值中的目录与顺序不变。
+///
+/// 外壳的环境取自启动它的进程，此后安装的程序写入系统与用户环境变量的目录不在其中。sidecar 探测与调用外部程序
+/// 都只读取启动时的 PATH（Bun 在启动时缓存环境），不追加时从旧终端启动的 QyWork 重启后仍无法找到这些程序。
+/// 目录按不区分大小写、忽略末尾分隔符比较。
+fn merged_path(inherited: &str, registry: &[String]) -> String {
+    let key = |dir: &str| dir.trim_end_matches(['\\', '/']).to_lowercase();
+    let mut seen: std::collections::HashSet<String> = inherited
+        .split(';')
+        .filter(|d| !d.is_empty())
+        .map(key)
+        .collect();
+    let mut out = inherited.trim_end_matches(';').to_string();
+    for dir in registry.iter().flat_map(|v| v.split(';')) {
+        if dir.trim().is_empty() || !seen.insert(key(dir)) {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(';');
+        }
+        out.push_str(dir);
+    }
+    out
+}
+
+/// 注册表中系统与用户环境变量的 `Path`，按新登录进程的顺序（系统在前）。`REG_EXPAND_SZ` 中的变量
+/// 由 `RegGetValueW` 展开；读取失败的一项跳过。
+#[cfg(windows)]
+fn registry_path() -> Vec<String> {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::System::Registry::{
+        RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
+    };
+    let read = |root: HKEY, key: PCWSTR| -> Option<String> {
+        let mut size = 0u32;
+        unsafe {
+            RegGetValueW(
+                root,
+                key,
+                w!("Path"),
+                RRF_RT_REG_SZ,
+                None,
+                None,
+                Some(&mut size),
+            )
+        }
+        .ok()
+        .ok()?;
+        let mut buf = vec![0u16; (size as usize).div_ceil(2)];
+        unsafe {
+            RegGetValueW(
+                root,
+                key,
+                w!("Path"),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&mut size),
+            )
+        }
+        .ok()
+        .ok()?;
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..len]))
+    };
+    [
+        (
+            HKEY_LOCAL_MACHINE,
+            w!(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        ),
+        (HKEY_CURRENT_USER, w!("Environment")),
+    ]
+    .into_iter()
+    .filter_map(|(root, key)| read(root, key))
+    .collect()
+}
+
 /**
  * 启动一个 qy serve。首次启动时端口与令牌不预先指定；异常恢复时固定复用原值，
  * 使已加载的 WebView 与手机端都无需另一套端点更新协议。
@@ -176,23 +263,27 @@ fn spawn_process(
 ) -> Result<(Receiver<CommandEvent>, Child)> {
     // `qy` 是 Bun 运行时，第一个参数必须是入口脚本。脚本目录经 `tauri.conf.json` 的 `resources`
     // 随包分发；macOS 上资源目录与可执行文件不在同一目录，因此不按可执行文件的位置拼接。
-    let script = app
+    // Office 执行程序位于同一资源目录的 office/ 下，显式交给 sidecar，原因相同。
+    let resources = app
         .path()
         .resource_dir()
-        .map_err(|e| anyhow!("无法定位资源目录：{e}"))?
-        .join("sidecar")
-        .join("index.js");
+        .map_err(|e| anyhow!("无法定位资源目录：{e}"))?;
+    let (script, office) = resource_paths(&resources);
 
-    let mut command = app
+    let command = app
         .shell()
         .sidecar("qy")
         .map_err(|e| anyhow!("未找到 qy sidecar：{e}"))?
-        .args(serve_args(&script, port, workspace));
-    // Office 执行程序位于安装资源目录的 office/ 下，显式交给 sidecar。macOS 上资源目录是
-    // Contents/Resources，与可执行文件不在同一目录，sidecar 按自身位置无法找到。
-    if let Ok(dir) = app.path().resource_dir() {
-        command = command.env("QYWORK_OFFICE_DIR", dir.join("office"));
-    }
+        .args(serve_args(&script, port, workspace))
+        .env("QYWORK_OFFICE_DIR", office);
+    #[cfg(windows)]
+    let command = {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        command.env(
+            "PATH",
+            merged_path(&inherited.to_string_lossy(), &registry_path()),
+        )
+    };
     let (rx, mut process) = command.spawn().map_err(|source| -> anyhow::Error {
         // 使用 shell 插件解析实际路径，诊断不另行推导安装目录。
         let executable = app.shell().sidecar("qy").ok().map(|command| {
@@ -702,13 +793,65 @@ pub fn write_last_workspace(path: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_stderr_tail, await_handshake, credentials_line, init_script, origin_of, take_dev_launch,
-        serve_args, shutdown_handle, stop_or_kill, watch_exit, PreviousExit, SidecarHandle,
-        SidecarInfo, STDERR_TAIL_BYTES, STOP_GRACE, STOP_LINE,
+        append_stderr_tail, await_handshake, credentials_line, init_script, merged_path, origin_of,
+        resource_paths, take_dev_launch, serve_args, shutdown_handle, stop_or_kill, watch_exit,
+        PreviousExit, SidecarHandle, SidecarInfo, STDERR_TAIL_BYTES, STOP_GRACE, STOP_LINE,
     };
     use std::time::Duration;
     use tauri_plugin_shell::process::{CommandEvent, TerminatedPayload};
     use tokio::sync::{mpsc, watch};
+
+    /// 资源目录按 Tauri 的取法得到（`canonicalize`，Windows 上带 `\\?\` 前缀）。以交给 sidecar 的 Office 目录
+    /// 作为工作目录启动 cmd.exe，必须能按相对路径读取其中的依赖清单：运行环境安装文档库的窗口即如此执行 pip。
+    #[cfg(windows)]
+    #[test]
+    fn cmd_started_in_the_office_dir_reads_the_manifest_by_relative_path() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../.tmp/cargo-tests")
+            .join(format!("sidecar-resources-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("office")).expect("必须能创建临时目录");
+        std::fs::write(root.join("office").join("requirements.txt"), "pip\r\n")
+            .expect("必须能写入依赖清单");
+        let resources = root.canonicalize().expect("临时目录必须存在");
+        assert!(resources.to_string_lossy().starts_with(r"\\?\"));
+
+        let (script, office) = resource_paths(&resources);
+        assert!(!office.to_string_lossy().starts_with(r"\\?\"));
+        assert!(script.ends_with("sidecar/index.js"));
+        let out = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "type", "requirements.txt"])
+            .current_dir(&office)
+            .output()
+            .expect("必须能启动 cmd.exe");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "pip");
+    }
+
+    /// 注册表中新增的目录追加在继承值之后；已有的目录不重复，比较不区分大小写与末尾分隔符。
+    #[test]
+    fn registry_directories_missing_from_the_inherited_path_are_appended() {
+        let registry = [r"C:\b;C:\Tools\rg;".to_string(), r"c:\a\;D:\Bin".to_string()];
+        assert_eq!(
+            merged_path(r"C:\A;C:\B\;", &registry),
+            r"C:\A;C:\B\;C:\Tools\rg;D:\Bin"
+        );
+        assert_eq!(merged_path("", &registry), r"C:\b;C:\Tools\rg;c:\a\;D:\Bin");
+        assert_eq!(merged_path(r"C:\A", &[]), r"C:\A");
+    }
+
+    /// 读取的是展开后的值：系统 `Path` 以 `%SystemRoot%` 书写 System32，进程无法按未展开的目录查找程序。
+    #[cfg(windows)]
+    #[test]
+    fn registry_path_is_read_with_variables_expanded() {
+        let dirs = super::registry_path().join(";").to_lowercase();
+        assert!(dirs.contains(r"\system32"), "{dirs}");
+        assert!(!dirs.contains("%systemroot%"), "{dirs}");
+    }
 
     /// 测试用进程：记录收到的停止指令与终止。
     #[derive(Default)]

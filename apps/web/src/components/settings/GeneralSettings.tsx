@@ -72,6 +72,8 @@ const PERMISSION_MODES: { id: PermissionMode; label: string }[] = [
  *
  * 按钮只在服务端声明可以安装时出现（`canInstall`：本机有可用的包管理器与终端、该依赖有包名），
  * 不提供点击即报错的按钮（B5）。由 QyWork 自行下载的一项（内置浏览器）在下载期间显示进度，每秒重新读取一次。
+ * 安装窗口打开期间该行显示「安装中」、不显示按钮，每 3 秒重新读取一次，窗口关闭后显示安装结果。间隔不取 1 秒：
+ * 每次读取对缺失的依赖各执行一次 winget 探测（约 80 ms，阻塞服务进程）。
  */
 function EnvironmentRows() {
   void reloadEnvironment()
@@ -79,8 +81,13 @@ function EnvironmentRows() {
   const [busy, setBusy] = createSignal('')
   const [result, setResult] = createSignal('')
   createEffect(() => {
-    if (!deps().some((d) => d.progress !== undefined)) return
-    const timer = setTimeout(() => void reloadEnvironment(), 1000)
+    const ms = deps().some((d) => d.progress !== undefined)
+      ? 1000
+      : deps().some((d) => d.installing)
+        ? 3000
+        : 0
+    if (!ms) return
+    const timer = setTimeout(() => void reloadEnvironment(), ms)
     onCleanup(() => clearTimeout(timer))
   })
 
@@ -117,11 +124,13 @@ function EnvironmentRows() {
                 {d.label}
                 {d.progress !== undefined
                   ? ` · 下载中 ${Math.round(d.progress * 100)}%`
-                  : d.path === null
-                    ? d.required
-                      ? ' · 需要安装'
-                      : ' · 未安装（可选）'
-                    : ' · 已安装'}
+                  : d.installing
+                    ? ' · 安装中'
+                    : d.path === null
+                      ? d.required
+                        ? ' · 需要安装'
+                        : ' · 未安装（可选）'
+                      : ' · 已安装'}
               </span>
               {/* 已安装时只显示路径：排查同一条命令在终端中能运行而在应用中不能运行的问题时，
                   唯一有用的信息是当前使用的是哪一个可执行文件。 */}

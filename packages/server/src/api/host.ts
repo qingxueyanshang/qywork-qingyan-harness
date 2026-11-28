@@ -284,25 +284,38 @@ const DEPS: DepSpec[] = [
 ]
 
 /**
- * 本机能否一键安装。握手与安装路由使用同一个判据。
+ * 已打开、尚未关闭的安装窗口，按窗口中执行的命令记录（`windowKey`）：同一条命令只打开一个窗口。
+ * 两个 winget 进程安装同一个包时，后一个无法删除前一个正在写入的安装包，下载从头开始；
+ * 文档库与视频解码库执行同一条 pip 命令，bash 与 git 安装同一个 winget 包，各自只打开一个窗口。
+ *
+ * Windows 上发起进程在窗口关闭后才退出（`terminalArgv` 的 `start /wait`）。macOS 与 Linux 的终端程序多数立即返回，
+ * 记录随即清除，这两个平台不阻止重复打开。
+ */
+const openWindows = new Set<string>()
+
+const windowKey = (argv: readonly string[]) => argv.join('\0')
+
+/** 安装窗口中执行的命令；不经终端安装，或本机没有所需的解释器、包管理器、包名时为 `null`。 */
+function installArgv(dep: DepSpec, ctx: EnvProbeContext): string[] | null {
+  if (dep.via === 'pip') {
+    const target = pipTarget(ctx)
+    return target && pipCommand(target.python)
+  }
+  if (dep.via === 'packages') return installCommand(dep.packages ?? {})?.argv ?? null
+  return null
+}
+
+/**
+ * 本机能否一键安装。握手与安装路由使用同一个判据；`argv` 取自 `installArgv`。
  *
  * 分开计算时，界面会显示一个点击后返回 409 的按钮；B5 规定：
  * 「能力在某端不存在时，握手中声明 false、界面不显示入口，
  * 而不是显示一个点击即报错的按钮」。
  */
-function canInstall(dep: DepSpec, ctx: EnvProbeContext): boolean {
-  switch (dep.via) {
-    case 'pip':
-      return pipTarget(ctx) !== null && canOpenTerminal()
-    case 'packages':
-      return installCommand(dep.packages ?? {}) !== null && canOpenTerminal()
-    case 'chromium': {
-      const state = chromiumInstallState()
-      return (
-        chromiumBuild() !== null && Boolean(ctx.restartBrowser) && !(state && 'progress' in state)
-      )
-    }
-  }
+function canInstall(dep: DepSpec, ctx: EnvProbeContext, argv: string[] | null): boolean {
+  if (dep.via !== 'chromium') return argv !== null && canOpenTerminal()
+  const state = chromiumInstallState()
+  return chromiumBuild() !== null && Boolean(ctx.restartBrowser) && !(state && 'progress' in state)
 }
 
 /** 安装文档库所需的解释器与清单所在目录；缺少任一项时不提供安装按钮。 */
@@ -321,13 +334,16 @@ export function probeEnvironment(ctx: EnvProbeContext): EnvDependency[] {
   return DEPS.filter((d) => !d.platforms || d.platforms.includes(process.platform)).map((d) => {
     const { path, required, hint } = d.probe(ctx)
     const install = d.via === 'chromium' ? chromiumInstallState() : null
+    const argv = path === null ? installArgv(d, ctx) : null
+    const installing = argv !== null && openWindows.has(windowKey(argv))
     return {
       id: d.id,
       label: d.label,
       path,
       required,
       hint: path === null ? hint : '',
-      canInstall: path === null && canInstall(d, ctx),
+      canInstall: path === null && !installing && canInstall(d, ctx, argv),
+      ...(installing ? { installing: true as const } : {}),
       ...(install && 'progress' in install ? { progress: install.progress } : {}),
     }
   })
@@ -358,17 +374,25 @@ export function pipCommand(python: string, platform: string = process.platform):
   ]
 }
 
-/** 启动安装窗口；启动失败（例如没有终端程序）同样如实返回，不能让按钮显示为操作成功。 */
+/**
+ * 启动安装窗口并记入 `openWindows`，发起进程退出时移除。同一条命令的窗口仍打开时返回 409；
+ * 启动失败（例如没有终端程序）同样如实返回，不能让按钮显示为操作成功。
+ */
 function launch(title: string, argv: string[], cwd: string | null): Response | null {
+  const key = windowKey(argv)
+  if (openWindows.has(key)) return json({ error: 'installing', message: '安装窗口已打开。' }, 409)
   const terminal = terminalArgv(title, argv, cwd)
   if (!terminal) return json({ error: 'no terminal', message: '没有可用的终端程序。' }, 409)
   try {
-    Bun.spawn(terminal, {
+    const proc = Bun.spawn(terminal, {
       ...(cwd ? { cwd } : {}),
       stdin: 'ignore',
       stdout: 'ignore',
       stderr: 'ignore',
-    }).unref()
+    })
+    proc.unref()
+    openWindows.add(key)
+    void proc.exited.finally(() => openWindows.delete(key))
   } catch (e) {
     return json({ error: 'spawn failed', message: e instanceof Error ? e.message : String(e) }, 500)
   }
@@ -382,8 +406,9 @@ export const handleHostApi: ApiHandler = async (url, req, d) => {
     restartBrowser: d.restartBrowser ?? null,
   }
   if (url.pathname === '/api/host/environment' && req.method === 'GET') {
-    // 文档库一行读取 Office 宿主的探测结果，安装后再次查询时先重新探测。
-    await d.office?.refresh()
+    // 文档库一行读取 Office 宿主的探测结果，安装后再次查询时先重新探测。安装窗口打开期间不探测：
+    // 界面此时每 3 秒查询一次，每次探测都启动一个 Python 进程；窗口关闭后的第一次查询取得安装结果。
+    if (openWindows.size === 0) await d.office?.refresh()
     return json({ environment: probeEnvironment(ctx) })
   }
 

@@ -1,7 +1,7 @@
 /**
  * 通用设置：新对话默认权限（配置读取、即时保存、连续切换、失败回滚，不修改当前会话）；
  * 主题三项始终可选，选择后提交到电脑上的界面偏好；「个性化」一行打开个性化弹窗（颜色选择可选空值，修改后保存，恢复默认需确认）；
- * 个性化弹窗中选择图片后界面与服务端一致（`PersonalizationDialog.tsx`）。
+ * 个性化弹窗中选择图片后界面与服务端一致（`PersonalizationDialog.tsx`）；运行环境一行在安装窗口打开期间与关闭后的显示。
  */
 import { afterAll, beforeAll, beforeEach, expect, jest, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
@@ -249,6 +249,55 @@ test('个性化一行打开弹窗：雾面可选颜色与「无」，修改后�
   } finally {
     store.paintPersonalization(null)
     view.close()
+  }
+})
+
+/**
+ * 原始失败形状：点击安装后按钮仍在，再次点击打开第二个安装窗口；窗口中安装结束后界面不更新。
+ * 安装窗口打开期间该行显示「安装中」、没有按钮；窗口关闭后不重新打开本页即显示结果。
+ */
+test('安装窗口打开期间不提供安装按钮，窗口关闭后自动显示结果', async () => {
+  let open = false
+  let path: string | null = null
+  const installs: string[] = []
+  const api = store.client.api
+  store.client.api = (async (p: string, init?: RequestInit) => {
+    if (p === '/api/host/install') {
+      installs.push(JSON.parse(String(init?.body)).id)
+      open = true
+      return { started: true, note: '安装窗口已打开，完成后重启 QyWork 生效。' }
+    }
+    if (p !== '/api/host/environment') return api(p, init)
+    const row = { id: 'ripgrep', label: 'ripgrep', path, required: false, hint: '较慢。' }
+    return {
+      environment: [
+        { ...row, canInstall: !open && path === null, ...(open ? { installing: true } : {}) },
+      ],
+    }
+  }) as typeof api
+  const settle = async (check: () => boolean) => {
+    for (let i = 0; i < 100 && !check(); i++) await new Promise((r) => setImmediate(r))
+    return check()
+  }
+  const ui = await mount()
+  const button = () => [...ui.host.querySelectorAll('button')].find((b) => b.textContent === '安装')
+  const text = (s: string) => () => ui.host.textContent?.includes(s) ?? false
+  jest.useFakeTimers()
+  try {
+    expect(await settle(() => button() !== undefined)).toBe(true)
+    button()?.click()
+    expect(await settle(text('ripgrep · 安装中'))).toBe(true)
+    expect(button()).toBeUndefined()
+    expect(installs).toEqual(['ripgrep'])
+
+    open = false
+    path = 'C:\\tools\\rg.exe'
+    jest.advanceTimersByTime(3000)
+    expect(await settle(text('ripgrep · 已安装'))).toBe(true)
+  } finally {
+    jest.useRealTimers()
+    ui.close()
+    store.client.api = api
   }
 })
 
