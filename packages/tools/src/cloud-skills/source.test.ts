@@ -30,7 +30,7 @@ import { type CloudSkillErrorCode, CloudSkillPort } from './port.ts'
 
 const PKG = 'demo-pkg'
 /** 内置技能的脚本：打印收到的参数。 */
-const SCRIPT = ['import sys', 'print("参数", sys.argv[1:])', ''].join('\n')
+const SCRIPT = ['import sys', 'print("参数", sys.argv[1:], sys.argv[0])', ''].join('\n')
 const KEY = new Uint8Array(32).fill(7)
 
 function linesOf(text: string): string[] {
@@ -300,7 +300,8 @@ describe('内置技能脚本的运行', () => {
       { ...ctx(root, port), signal: new AbortController().signal },
     )
     expect(run.status).toBe('success')
-    expect(run.data?.stdout).toContain("参数 ['a', 'b c']")
+    // 程序名是脚本的文件名，不是标准输入的 `-`。
+    expect(run.data?.stdout).toContain("参数 ['a', 'b c'] hello.py")
     // 工作区中只有命令的临时目录（`.tmp`），没有脚本文件。
     const written = (await readdir(root, { recursive: true })).map(String)
     expect(written.filter((f) => f.endsWith('.py'))).toEqual([])

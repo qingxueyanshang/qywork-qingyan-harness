@@ -46,5 +46,22 @@ export async function builtinScript(
   if ('status' in target) return { ...target, executed: false }
   const got = await target.port.script(target.pkg, target.path)
   if (!got.ok) return { ...cloudFailure(got, target), executed: false }
-  return { command: `${m[1]}-${command.slice(m[0].length)}`, source: got.value }
+  return {
+    command: `${m[1]}-${command.slice(m[0].length)}`,
+    source: launcher(target.path, got.value),
+  }
+}
+
+/**
+ * 经标准输入交给解释器的程序：把 `sys.argv[0]` 设为脚本的文件名后编译执行原文，帮助与报错中的程序名是文件名而不是 `-`。
+ * 原文以 JSON 字符串字面量嵌入（也是合法的 Python 字符串字面量）；按文件名编译，磁盘上没有该文件，报错不显示源码行。
+ */
+function launcher(path: string, source: string): string {
+  const name = JSON.stringify(path.split('/').pop() ?? path)
+  return [
+    'import sys',
+    `sys.argv[0] = ${name}`,
+    `exec(compile(${JSON.stringify(source)}, ${name}, 'exec'), {'__name__': '__main__', '__builtins__': __builtins__})`,
+    '',
+  ].join('\n')
 }
