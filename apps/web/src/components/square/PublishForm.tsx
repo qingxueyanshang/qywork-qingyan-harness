@@ -6,8 +6,18 @@ import {
   type SquareGithubKind,
   type SquareKind,
 } from '@qywork/core'
-import { createResource, createSignal, For, type JSX, Match, Show, Switch } from 'solid-js'
+import {
+  createEffect,
+  createResource,
+  createSignal,
+  For,
+  type JSX,
+  Match,
+  Show,
+  Switch,
+} from 'solid-js'
 import { createStore } from 'solid-js/store'
+import { createFileSearch } from '../../lib/file-search.ts'
 import { client } from '../../lib/store/client.ts'
 import { explainApiError } from '../../lib/store/index.ts'
 import { publishSquare, submitSquareGithub } from '../../lib/store/square.ts'
@@ -21,19 +31,14 @@ interface Option {
 const paths = (r: { matches: { path: string; kind: string }[] }): Option[] =>
   r.matches.filter((m) => m.kind === 'file').map((m) => ({ value: m.path, label: m.path }))
 
-/** 各类型可发布的本机内容；为 null 的类型不需要选择（提示词填写正文，皮肤取当前的皮肤）。 */
+/**
+ * 各类型可发布的本机内容。为 null 的类型不从这里列出：提示词填写正文，皮肤取当前的皮肤，作品按名称搜索（`createFileSearch`）。
+ * 作品不要改回一次列出全部文件：服务端的查找有条数上限，按目录逐层遍历，工作区文件多时深层目录中的文件不在结果中。
+ */
 const SOURCES: Record<SquareKind, (() => Promise<Option[]>) | null> = {
   prompt: null,
   skin: null,
-  work: async () => {
-    const [media, decks] = await Promise.all([
-      client.api<{ matches: { path: string; kind: string }[] }>(
-        '/api/files/find?q=&kinds=image,video',
-      ),
-      client.api<{ matches: { path: string; kind: string }[] }>('/api/files/find?q=&office=pptx'),
-    ])
-    return [...paths(media), ...paths(decks)]
-  },
+  work: null,
   canvas: async () =>
     paths(await client.api('/api/files/find?q=.canvas.json')).filter((o) =>
       o.value.endsWith('.canvas.json'),
@@ -133,6 +138,15 @@ export function PublishForm(props: {
     () => form.kind,
     (kind) => SOURCES[kind]?.() ?? Promise.resolve([] as Option[]),
   )
+  const media = createFileSearch(() => ({ kinds: ['image', 'video'] }))
+  const decks = createFileSearch(() => ({ office: 'pptx' }))
+  const searchWork = (text: string) => {
+    media.search(text)
+    decks.search(text)
+  }
+  createEffect(() => {
+    if (form.kind === 'work') searchWork('')
+  })
 
   const submit = async (e: Event) => {
     e.preventDefault()
@@ -235,6 +249,26 @@ export function PublishForm(props: {
               value={form.text}
               onInput={(e) => setForm('text', e.currentTarget.value)}
             />
+          </label>
+        </Match>
+        <Match when={form.kind === 'work'}>
+          <label>
+            内容
+            <input
+              type="search"
+              placeholder="搜索文件"
+              spellcheck={false}
+              onInput={(e) => {
+                setForm('picked', '')
+                searchWork(e.currentTarget.value)
+              }}
+            />
+            <select value={form.picked} onChange={(e) => setForm('picked', e.currentTarget.value)}>
+              <option value="" />
+              <For each={[...media.hits(), ...decks.hits()]}>
+                {(path) => <option value={path}>{path}</option>}
+              </For>
+            </select>
           </label>
         </Match>
         <Match when={SOURCES[form.kind]}>

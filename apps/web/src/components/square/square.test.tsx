@@ -1,6 +1,6 @@
 /**
- * 覆盖范围：`square/SquareDialog.tsx`、`SquareGrid.tsx`、`SquareItem.tsx`、`previews.tsx`、`SquareEntry.tsx` 与
- * `lib/store/square.ts`。本机服务的应答由测试给出（替换 `client.api`）。
+ * 覆盖范围：`square/SquareDialog.tsx`、`SquareGrid.tsx`、`SquareItem.tsx`、`previews.tsx`、`SquareEntry.tsx`、
+ * `PublishForm.tsx`（作品按名称搜索文件）与 `lib/store/square.ts`。本机服务的应答由测试给出（替换 `client.api`）。
  */
 
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
@@ -73,6 +73,16 @@ beforeAll(async () => {
     }
     const item = /^\/api\/square\/items\/(.+)$/.exec(path)
     if (item) return structuredClone(DETAILS[decodeURIComponent(item[1]!)]) as T
+    if (path.startsWith('/api/files/find?')) {
+      const p = new URLSearchParams(path.split('?')[1])
+      // 空查询只返回浅层的临时文件，与服务端按目录逐层遍历、条数有上限时的结果相同。
+      if (!p.get('q')) {
+        return { matches: [{ path: '.tmp/a.png', kind: 'file' }], truncated: true } as T
+      }
+      const deck = '09_其他项目/01_千石有声/原稿/千石有声.pptx'
+      const hit = p.get('office') === 'pptx' && deck.includes(p.get('q') ?? '')
+      return { matches: hit ? [{ path: deck, kind: 'file' }] : [], truncated: false } as T
+    }
     if (path === '/api/square/install') return { message: '已安装全局技能 发版流程' } as T
     if (path === '/api/square/github') {
       githubSent = JSON.parse(String(init?.body))
@@ -217,6 +227,42 @@ test('发布提示词：提交后转到发布记录并显示结果；发布记�
   })
   await until(() => view.text().includes('内容重复'))
   expect(view.text()).toContain('已驳回')
+  view.close()
+})
+
+test('作品按名称搜索文件：空查询列不到的深层文件可以搜到并发布', async () => {
+  const { default: SquareDialog } = await import('./SquareDialog.tsx')
+  const view = await mount(() => <SquareDialog />)
+  view.button('发布')!.click()
+  await until(() => view.host.querySelector('.square-publish') !== null)
+  const kind = view.host.querySelector<HTMLSelectElement>('.square-publish select')!
+  kind.value = 'work'
+  kind.dispatchEvent(new Event('change', { bubbles: true }))
+  await until(() => view.host.querySelector('.square-publish input[type="search"]') !== null)
+  const options = () => [...view.host.querySelectorAll<HTMLOptionElement>('.square-publish option')]
+  await until(() => options().some((o) => o.value === '.tmp/a.png'))
+  expect(options().some((o) => o.value.endsWith('千石有声.pptx'))).toBe(false)
+  const search = view.host.querySelector<HTMLInputElement>('.square-publish input[type="search"]')!
+  search.value = '千石'
+  search.dispatchEvent(new Event('input', { bubbles: true }))
+  const deck = '09_其他项目/01_千石有声/原稿/千石有声.pptx'
+  await until(() => options().some((o) => o.value === deck))
+  expect(calls.some((c) => c.includes('q=%E5%8D%83%E7%9F%B3') && c.includes('office=pptx'))).toBe(
+    true,
+  )
+  const content = [...view.host.querySelectorAll<HTMLSelectElement>('.square-publish select')].at(
+    -1,
+  )!
+  content.value = deck
+  content.dispatchEvent(new Event('change', { bubbles: true }))
+  const title = view.host.querySelector<HTMLInputElement>('.square-publish input')!
+  title.value = '千石有声'
+  title.dispatchEvent(new Event('input', { bubbles: true }))
+  view.host
+    .querySelector<HTMLFormElement>('.square-publish')!
+    .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await until(() => view.text().includes('已提交，待审核'))
+  expect(published).toMatchObject({ title: '千石有声', source: { kind: 'work', path: deck } })
   view.close()
 })
 
