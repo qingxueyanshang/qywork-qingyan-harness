@@ -494,7 +494,7 @@ function MediaTables(props: {
   )
 }
 
-/** 内置技能的名称与描述。正文只在云端，不提供查看入口。 */
+/** 内置技能的名称与描述。描述超出一行时省略，全文经悬停提示显示。正文只在云端，不提供查看入口。 */
 function SkillTable(props: { skills: readonly CloudSkill[] }) {
   return (
     <section class="lib-card">
@@ -511,7 +511,9 @@ function SkillTable(props: { skills: readonly CloudSkill[] }) {
               {(s) => (
                 <tr>
                   <td>{s.name}</td>
-                  <td>{s.description}</td>
+                  <td class="account-skill-desc" data-tip={s.description}>
+                    {s.description}
+                  </td>
                 </tr>
               )}
             </For>

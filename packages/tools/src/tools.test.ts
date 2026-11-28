@@ -2031,7 +2031,9 @@ describe('搜索与命令', () => {
     const computing = ps
       ? "$e = (Get-Date).AddSeconds(6); while ((Get-Date) -lt $e) {}; 'finished'"
       : 'end=$((SECONDS+6)); while [ $SECONDS -lt $end ]; do :; done; echo finished'
-    const silent = ps ? 'Start-Sleep -Seconds 20' : 'sleep 20'
+    // 不要缩短：判定停滞要两次读取进程表（Windows 上经 PowerShell 查询），负载高时一次可达十余秒；
+    // 命令在判定完成前自行结束时结果为成功。判定为停滞后命令随即被终止，时长不影响正常用时。
+    const silent = ps ? 'Start-Sleep -Seconds 45' : 'sleep 45'
 
     const started = Date.now()
     const ok = await registry().execute(

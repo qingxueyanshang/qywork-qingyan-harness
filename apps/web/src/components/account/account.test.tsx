@@ -598,7 +598,10 @@ test('内置技能一节列出型号清单中的技能名称与描述，在型�
     sections.findIndex((t) => t?.startsWith('对话')),
   )
   expect(view.text()).toContain('演示文稿')
-  expect(view.text()).toContain('制作与排版演示文稿')
+  // 描述在单元格内省略，全文经悬停提示显示。
+  const desc = view.host.querySelector<HTMLElement>('td.account-skill-desc')
+  expect(desc?.dataset.tip).toBe('制作与排版演示文稿')
+  expect(desc?.textContent?.trim()).toBe('制作与排版演示文稿')
   view.close()
 })
 

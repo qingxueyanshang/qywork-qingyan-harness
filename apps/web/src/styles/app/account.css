@@ -745,6 +745,14 @@
   color: var(--danger);
 }
 /* 可用模型的最后一列：「设为默认」靠右，与模型设置页同一个按钮（`DefaultToggle`）。 */
+/* 内置技能的描述：占满名称之外的宽度，超出部分省略，全文经悬停提示（`data-tip`）显示。不要去掉 `max-width: 0`：
+   列宽按内容分配时，描述的全文把整张表撑宽，表格出现横向滚动条。 */
+.lib-table.account-table td.account-skill-desc {
+  width: 100%;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .lib-table.account-table td.account-default {
   padding-top: 0;
   padding-bottom: 0;
