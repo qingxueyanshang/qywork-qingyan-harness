@@ -14,7 +14,7 @@ import {
   shapeChoices,
 } from '@qywork/core'
 import type { MediaModelSpec } from './catalog.ts'
-import type { MediaRequest } from './types.ts'
+import type { MediaInput } from './types.ts'
 
 const OPERATION_LABEL: Record<MediaOperation, string> = {
   generate: '生成',
@@ -50,6 +50,20 @@ export function operationLabel(op: MediaOperation): string {
   return OPERATION_LABEL[op]
 }
 
+/** 校验用到的输入信息：用途、类型与字节数。云端校验时素材在磁盘上，不读入内存。 */
+export interface MediaInputInfo {
+  role: MediaInput['role']
+  mime: string
+  size: number
+}
+
+/** 内存中的输入对应的校验信息。 */
+export const mediaInputInfo = (i: MediaInput): MediaInputInfo => ({
+  role: i.role,
+  mime: i.mime,
+  size: i.bytes.length,
+})
+
 /**
  * 按目录校验一次调用。返回问题清单，空数组表示可以发送。
  *
@@ -66,7 +80,7 @@ export function validateMediaCall(
     firstFrames?: number
     lastFrames?: number
   },
-  content?: Pick<MediaRequest, 'prompt' | 'inputs'>,
+  content?: { prompt: string; inputs: readonly MediaInputInfo[] },
 ): string[] {
   const problems: string[] = []
   if (content) {
@@ -75,7 +89,7 @@ export function validateMediaCall(
     for (const input of content.inputs.filter((i) => i.role === 'audio')) {
       if (spec.inputs.audioMimeTypes && !spec.inputs.audioMimeTypes.includes(input.mime))
         problems.push(`${spec.id} 不支持参考音频格式 ${input.mime}`)
-      if (spec.inputs.maxAudioBytes && input.bytes.length > spec.inputs.maxAudioBytes)
+      if (spec.inputs.maxAudioBytes && input.size > spec.inputs.maxAudioBytes)
         problems.push(
           `${spec.id} 每段参考音频不得超过 ${spec.inputs.maxAudioBytes / 1024 / 1024} MB`,
         )

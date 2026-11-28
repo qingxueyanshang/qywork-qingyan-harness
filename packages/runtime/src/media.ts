@@ -19,6 +19,7 @@ import {
   type MediaOperation,
   type MediaUsage,
   mediaCost,
+  mediaInputInfo,
   operationLabel,
   validateMediaCall,
 } from '@qywork/ai'
@@ -204,7 +205,7 @@ export function makeMediaPort(
             firstFrames: call.inputs.filter((i) => i.role === 'first_frame').length,
             lastFrames: call.inputs.filter((i) => i.role === 'last_frame').length,
           },
-          call,
+          { prompt: call.prompt, inputs: call.inputs.map(mediaInputInfo) },
         )
         if (problems.length > 0) {
           const others = candidates

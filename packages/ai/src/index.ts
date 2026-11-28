@@ -102,7 +102,13 @@ export {
 } from './media/http.ts'
 export { isImageResult, resolveImages } from './media/image-result.ts'
 export { buildMediaAdapter } from './media/index.ts'
-export { describeParam, operationLabel, validateMediaCall } from './media/params.ts'
+export {
+  describeParam,
+  type MediaInputInfo,
+  mediaInputInfo,
+  operationLabel,
+  validateMediaCall,
+} from './media/params.ts'
 export {
   afterSubmit,
   failureDetail,
