@@ -2,7 +2,7 @@
 name = "qywork"
 # 本行与 Cargo.lock 中本 crate 的 version 由 `scripts/sync-version.ts` 按仓库根
 # `VERSION` 同时写入，不要手工修改：只修改其中一处时，带 `--locked` 的门禁检查以退出码 101 失败。
-version = "0.3.31"
+version = "0.3.32"
 description = "多模型接入、多 Agent 协作的轻量化开源 Agent Harness"
 authors = ["QyWork"]
 edition = "2021"
