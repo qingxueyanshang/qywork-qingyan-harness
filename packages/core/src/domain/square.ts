@@ -177,9 +177,30 @@ export function isSquarePath(path: string): boolean {
   return path.split('/').every((s) => s !== '' && s !== '.' && s !== '..')
 }
 
+/** 按文件头判定类型所需的字节数：WebP 的标识位于第 8 至 11 字节。 */
+export const SQUARE_HEAD_BYTES = 16
+
+/**
+ * 快照中的一个文件。校验只读取大小与开头的字节，云端接收的文件因此不必放入内存；
+ * 该类型的定义文件（`SQUARE_DEFINITION`）的全部内容另行传入。
+ */
 export interface SnapshotFile {
   path: string
-  bytes: Uint8Array
+  size: number
+  /** 文件开头的字节：至少 `SQUARE_HEAD_BYTES` 个，文件更短时为全部内容。 */
+  head: Uint8Array
+}
+
+/** 各类型的定义文件：校验解析其全部内容，至多 `SQUARE_LIMITS.other` 字节。没有定义文件的类型为 null。 */
+export const SQUARE_DEFINITION: Record<SquareKind, string | null> = {
+  work: null,
+  prompt: null,
+  canvas: 'canvas.json',
+  plugin: 'qywork.plugin.json',
+  skill: 'SKILL.md',
+  mcp: null,
+  pet: 'pet.json',
+  skin: 'skin.json',
 }
 
 export type SnapshotCheck =
@@ -253,11 +274,14 @@ interface Checked {
   cover: string | null
 }
 
-type KindCheck = (meta: unknown, files: ReadonlyMap<string, Uint8Array>) => Checked | Fail
+type Files = ReadonlyMap<string, SnapshotFile>
+
+/** `definition` 为该类型定义文件的全部内容；快照中没有定义文件时为 null。 */
+type KindCheck = (meta: unknown, files: Files, definition: Uint8Array | null) => Checked | Fail
 
 /** 只允许列出的路径或前缀，且必须有 `required` 中的每一个。 */
 function layout(
-  files: ReadonlyMap<string, Uint8Array>,
+  files: Files,
   allowed: (path: string) => boolean,
   required: readonly string[],
 ): Fail | null {
@@ -268,11 +292,11 @@ function layout(
   return null
 }
 
-function image(files: ReadonlyMap<string, Uint8Array>, path: string, max: number): Fail | null {
-  const b = files.get(path)
-  if (!b) return fail(`快照中缺少 ${path}`)
-  if (!imageMime(b)) return fail(`${path} 不是 PNG、JPEG、WebP 或 GIF 图片`)
-  if (b.length > max) return fail(`${path} 超过 ${MB(max)}`)
+function image(files: Files, path: string, max: number): Fail | null {
+  const f = files.get(path)
+  if (!f) return fail(`快照中缺少 ${path}`)
+  if (!imageMime(f.head)) return fail(`${path} 不是 PNG、JPEG、WebP 或 GIF 图片`)
+  if (f.size > max) return fail(`${path} 超过 ${MB(max)}`)
   return null
 }
 
@@ -281,8 +305,7 @@ function image(files: ReadonlyMap<string, Uint8Array>, path: string, max: number
  */
 const anyFile = () => true
 
-const noFiles = (files: ReadonlyMap<string, Uint8Array>) =>
-  files.size ? fail('该类型的快照不含文件') : null
+const noFiles = (files: Files) => (files.size ? fail('该类型的快照不含文件') : null)
 
 const KIND_CHECKS: Record<SquareKind, KindCheck> = {
   prompt(meta, files) {
@@ -326,8 +349,8 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
       ])
       if (bad) return bad
       const v = files.get(video!)!
-      if (!videoMime(v)) return fail(`${video} 不是 mp4 或 webm 视频`)
-      if (v.length > SQUARE_LIMITS.video) return fail(`${video} 超过 ${MB(SQUARE_LIMITS.video)}`)
+      if (!videoMime(v.head)) return fail(`${video} 不是 mp4 或 webm 视频`)
+      if (v.size > SQUARE_LIMITS.video) return fail(`${video} 超过 ${MB(SQUARE_LIMITS.video)}`)
       return image(files, cover!, SQUARE_LIMITS.image) ?? { meta: out, cover: cover! }
     }
     const pages = [...files.keys()].filter((p) => /^pages\/\d+\.png$/.test(p)).length
@@ -337,8 +360,8 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
     ])
     if (bad) return bad
     const deck = files.get('deck.pptx')!
-    if (!isZip(deck)) return fail('deck.pptx 不是 PPTX 文件')
-    if (deck.length > SQUARE_LIMITS.pptx) return fail(`deck.pptx 超过 ${MB(SQUARE_LIMITS.pptx)}`)
+    if (!isZip(deck.head)) return fail('deck.pptx 不是 PPTX 文件')
+    if (deck.size > SQUARE_LIMITS.pptx) return fail(`deck.pptx 超过 ${MB(SQUARE_LIMITS.pptx)}`)
     if (pages > SQUARE_LIMITS.pages) return fail(`页面图片超过 ${SQUARE_LIMITS.pages} 张`)
     for (let n = 1; n <= pages; n++) {
       const problem = image(files, `pages/${n}.png`, SQUARE_LIMITS.image)
@@ -347,9 +370,8 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
     return { meta: out, cover: 'pages/1.png' }
   },
 
-  canvas(_meta, files) {
-    const raw = files.get('canvas.json')
-    const content = raw ? text(raw) : null
+  canvas(_meta, files, definition) {
+    const content = definition ? text(definition) : null
     if (content === null) return fail('快照中缺少 canvas.json')
     const parsed = parseCanvas(content)
     if (!parsed.ok) return fail(`canvas.json 不合法：${parsed.error}`)
@@ -366,20 +388,19 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
       refs.map((r) => `files/${r}`),
     )
     if (bad) return bad
-    for (const [path, b] of files) {
-      const max = videoMime(b) ? SQUARE_LIMITS.video : SQUARE_LIMITS.other
-      if (b.length > max) return fail(`${path} 超过 ${MB(max)}`)
+    for (const [path, f] of files) {
+      const max = videoMime(f.head) ? SQUARE_LIMITS.video : SQUARE_LIMITS.other
+      if (f.size > max) return fail(`${path} 超过 ${MB(max)}`)
     }
-    const cover = refs.find((r) => imageMime(files.get(`files/${r}`)!) !== null)
+    const cover = refs.find((r) => imageMime(files.get(`files/${r}`)!.head) !== null)
     return { meta: {}, cover: cover ? `files/${cover}` : null }
   },
 
-  plugin(_meta, files) {
-    const raw = files.get('qywork.plugin.json')
-    if (!raw) return fail('快照中缺少 qywork.plugin.json')
+  plugin(_meta, files, definition) {
+    if (!definition) return fail('快照中缺少 qywork.plugin.json')
     let manifest: ReturnType<typeof parseManifest>
     try {
-      manifest = parseManifest(json(raw), 'qywork.plugin.json')
+      manifest = parseManifest(json(definition), 'qywork.plugin.json')
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err))
     }
@@ -394,9 +415,8 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
     }
   },
 
-  skill(_meta, files) {
-    const raw = files.get('SKILL.md')
-    const content = raw ? text(raw) : null
+  skill(_meta, _files, definition) {
+    const content = definition ? text(definition) : null
     if (content === null) return fail('快照中缺少 SKILL.md')
     const fm = parseSkillFrontmatter(content)
     if (!isSkillDescription(fm.description)) {
@@ -431,25 +451,22 @@ const KIND_CHECKS: Record<SquareKind, KindCheck> = {
     return { meta: { name: meta.name, server: spec }, cover: null }
   },
 
-  pet(_meta, files) {
-    const raw = files.get('pet.json')
-    if (!raw) return fail('快照中缺少 pet.json')
-    const parsed = parsePetPack(json(raw))
+  pet(_meta, files, definition) {
+    if (!definition) return fail('快照中缺少 pet.json')
+    const parsed = parsePetPack(json(definition))
     if (!parsed.ok) return fail(`pet.json 不合法：${parsed.error}`)
     const frames = petFrameFiles(parsed.value)
     const bad = layout(files, anyFile, frames)
     if (bad) return bad
     for (const frame of frames) {
-      const b = files.get(frame)!
-      if (b.length > 4 * 1024 * 1024) return fail(`${frame} 超过 4 MB`)
+      if (files.get(frame)!.size > 4 * 1024 * 1024) return fail(`${frame} 超过 4 MB`)
     }
     return { meta: {}, cover: parsed.value.states.idle.frames[0] ?? null }
   },
 
-  skin(_meta, files) {
-    const raw = files.get('skin.json')
-    if (!raw) return fail('快照中缺少 skin.json')
-    const parsed = parsePersonalization(json(raw))
+  skin(_meta, files, definition) {
+    if (!definition) return fail('快照中缺少 skin.json')
+    const parsed = parsePersonalization(json(definition))
     if (!parsed.ok) return fail(`skin.json 不合法：${parsed.error}`)
     const bg = parsed.value.background
     const imagePath = bg.kind === 'image' ? bg.file : null
@@ -471,29 +488,57 @@ export function canvasFilePaths(doc: { nodes: readonly CanvasNode[] }): string[]
   return [...out]
 }
 
-/** 校验一份快照并得出 `meta` 与封面。云端在保存之前、电脑端在上传之前调用。 */
+/**
+ * 校验一份快照并得出 `meta` 与封面。云端在保存之前、电脑端在上传之前调用。
+ * `definition` 为 `SQUARE_DEFINITION[kind]` 的全部内容，快照中没有该文件时为 null。
+ */
 export function checkSquareSnapshot(
   kind: SquareKind,
   meta: unknown,
   files: readonly SnapshotFile[],
+  definition: Uint8Array | null,
 ): SnapshotCheck {
   if (files.length > SQUARE_LIMITS.files) return fail(`文件超过 ${SQUARE_LIMITS.files} 个`)
-  const map = new Map<string, Uint8Array>()
+  const map = new Map<string, SnapshotFile>()
   let total = 0
   for (const f of files) {
     if (!isSquarePath(f.path)) return fail(`路径不合法：${f.path}`)
     if (map.has(f.path)) return fail(`路径重复：${f.path}`)
-    map.set(f.path, f.bytes)
-    total += f.bytes.length
+    map.set(f.path, f)
+    total += f.size
   }
   if (total > SQUARE_LIMITS.total) return fail(`文件合计超过 ${MB(SQUARE_LIMITS.total)}`)
-  const checked = KIND_CHECKS[kind](meta, map)
+  const defPath = SQUARE_DEFINITION[kind]
+  const def = defPath === null ? undefined : map.get(defPath)
+  if (def && def.size > SQUARE_LIMITS.other) {
+    return fail(`${defPath} 超过 ${MB(SQUARE_LIMITS.other)}`)
+  }
+  const checked = KIND_CHECKS[kind](meta, map, def ? definition : null)
   if ('ok' in checked) return checked
   const mime: Record<string, string> = {}
-  for (const [path, bytes] of map) {
-    mime[path] = squareMediaMime(bytes) ?? mimeOf(path)
+  for (const [path, f] of map) {
+    mime[path] = squareMediaMime(f.head) ?? mimeOf(path)
   }
   return { ok: true, meta: checked.meta, cover: checked.cover, mime }
+}
+
+/** 内存中的文件按 `checkSquareSnapshot` 校验：电脑端发布之前调用。 */
+export function checkSquareSnapshotBytes(
+  kind: SquareKind,
+  meta: unknown,
+  files: readonly { path: string; bytes: Uint8Array }[],
+): SnapshotCheck {
+  const defPath = SQUARE_DEFINITION[kind]
+  return checkSquareSnapshot(
+    kind,
+    meta,
+    files.map((f) => ({
+      path: f.path,
+      size: f.bytes.length,
+      head: f.bytes.subarray(0, SQUARE_HEAD_BYTES),
+    })),
+    files.find((f) => f.path === defPath)?.bytes ?? null,
+  )
 }
 
 /** 标题与简介：去除首尾空白后非空，且不超过上限。 */

@@ -1,5 +1,5 @@
 /**
- * 发布到创作广场：按类型把本机已有的内容打包为快照，以 `@qywork/core` 的 `checkSquareSnapshot` 校验（与云端保存前相同），
+ * 发布到创作广场：按类型把本机已有的内容打包为快照，以 `@qywork/core` 的 `checkSquareSnapshotBytes` 校验（与云端保存前相同），
  * 再上传到云端（`POST /v1/square/items`，或发布者条目的 `POST /v1/square/items/:id/versions`）。
  *
  * 不变量：
@@ -17,13 +17,12 @@ import {
   type CanvasDoc,
   type CanvasGenerateNode,
   canvasFilePaths,
-  checkSquareSnapshot,
+  checkSquareSnapshotBytes,
   isSquareKind,
   type McpServerSpec,
   parseCanvas,
   petFrameFiles,
   resolveArtRef,
-  type SnapshotFile,
   SQUARE_LIMITS,
   type SquareKind,
   type SquarePublishSource,
@@ -68,7 +67,13 @@ export interface PublishContext {
   office: OfficeHost | undefined
 }
 
-type Packed = { ok: true; meta: unknown; files: SnapshotFile[] } | { ok: false; error: string }
+/** 打包得到的文件：本机发布时整份读入内存。 */
+interface PackedFile {
+  path: string
+  bytes: Uint8Array
+}
+
+type Packed = { ok: true; meta: unknown; files: PackedFile[] } | { ok: false; error: string }
 
 /** 上传的超时：视频可达 `SQUARE_LIMITS.video`。 */
 const UPLOAD_TIMEOUT_MS = 30 * 60_000
@@ -80,8 +85,8 @@ const SKIPPED_DIRS = new Set(['__pycache__', '.pytest_cache', '.git'])
 const fail = (error: string): Packed => ({ ok: false, error })
 
 /** 目录中的全部普通文件，路径相对 `root`、以 `/` 分隔。符号链接与 `SKIPPED_DIRS` 不计入。 */
-async function readTree(root: string, dir = root): Promise<SnapshotFile[]> {
-  const out: SnapshotFile[] = []
+async function readTree(root: string, dir = root): Promise<PackedFile[]> {
+  const out: PackedFile[] = []
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
@@ -225,9 +230,7 @@ const PACKERS: Packers = {
         if (target) refs.add(target)
       }
     }
-    const files: SnapshotFile[] = [
-      { path: 'canvas.json', bytes: Buffer.from(serializeCanvas(doc)) },
-    ]
+    const files: PackedFile[] = [{ path: 'canvas.json', bytes: Buffer.from(serializeCanvas(doc)) }]
     for (const ref of refs) {
       const file = await resolveInWorkspace(ctx.workspaceRoot, ref, { mustExist: true }).catch(
         () => null,
@@ -291,7 +294,7 @@ const PACKERS: Packers = {
     const read = await readPersonalization()
     if (!read.ok) return fail(read.error)
     const value = read.entry.personalization
-    const files: SnapshotFile[] = [{ path: 'skin.json', bytes: Buffer.from(JSON.stringify(value)) }]
+    const files: PackedFile[] = [{ path: 'skin.json', bytes: Buffer.from(JSON.stringify(value)) }]
     if (value.background.kind === 'image') {
       const file = value.background.file
       files.push({ path: file, bytes: await readFile(join(personalizationDir(), file)) })
@@ -350,7 +353,7 @@ export async function publishToSquare(
   ) => Promise<Packed>
   const packed = await pack(input.source, ctx, input)
   if (!packed.ok) return packed
-  const checked = checkSquareSnapshot(input.source.kind, packed.meta, packed.files)
+  const checked = checkSquareSnapshotBytes(input.source.kind, packed.meta, packed.files)
   if (!checked.ok) return checked
   const form = new FormData()
   form.set(

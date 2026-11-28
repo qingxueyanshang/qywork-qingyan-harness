@@ -1,7 +1,7 @@
 /**
  * 覆盖范围：`api/square.ts` 的各路由、`square/files.ts`（按哈希保存、哈希核对、快照目录）与 `square/install.ts`
  * 的安装表，以及 `canvas/docs.ts` 的 `importDoc`。云端由本文件中的模拟服务提供，条目的 `meta` 与 MIME 取自
- * `@qywork/core` 的 `checkSquareSnapshot`，与云端保存时相同。全局数据目录由测试预载按进程分开。
+ * `@qywork/core` 的 `checkSquareSnapshotBytes`，与云端保存时相同。全局数据目录由测试预载按进程分开。
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
@@ -9,7 +9,12 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkSquareSnapshot, parseCanvas, type SquareDetail, type SquareKind } from '@qywork/core'
+import {
+  checkSquareSnapshotBytes,
+  parseCanvas,
+  type SquareDetail,
+  type SquareKind,
+} from '@qywork/core'
 import { globalPluginsDir, listPets, type QyConfig, readPersonalization } from '@qywork/runtime'
 import { handleSquareApi } from '../api/square.ts'
 import type { ApiRequestDeps } from '../api/types.ts'
@@ -38,7 +43,7 @@ function publish(
     path,
     bytes: typeof b === 'string' ? enc(b) : b,
   }))
-  const checked = checkSquareSnapshot(kind, meta, list)
+  const checked = checkSquareSnapshotBytes(kind, meta, list)
   if (!checked.ok) throw new Error(checked.error)
   for (const f of list) blobs.set(sha(f.bytes), f.bytes)
   const detail: SquareDetail = {
