@@ -21,12 +21,14 @@ import {
   retryAfterOf,
   upstreamFailureCode,
 } from '../errors.ts'
+import { formFields, multipartBody, observeBody } from '../transfer/idle.ts'
 import { PROVIDER_HEADERS, PROVIDER_HTTP } from '../types.ts'
 import { type DownloadOptions, MediaError, type MediaInput, type MediaRunOptions } from './types.ts'
 
 /**
  * 各阶段的静默上限：连续该时长没有收到任何数据（响应头或正文字节）即判定连接已失效，数据仍在到达时不中止。
- * 素材上传每个请求最多等待 5 分钟响应；上传失败时生成尚未提交，可由用户重试，不能无限期占用卡片。
+ * 素材上传连续 5 分钟既没有发出数据也没有收到答复即中止：表单按流发出，Bun 每读取一块重新计时；
+ * 上传失败时生成尚未提交，可由用户重试，不能无限期占用卡片。
  * 查询与下载是只读请求，中止后重发不丢失结果。生成请求不设上限：同步接口在生成完成之前不返回任何数据，
  * 静默时长就是生成耗时，任何上限都会截断仍在进行的生成；它只在收到响应、连接被关闭或重置、用户停止时结束。
  */
@@ -314,10 +316,22 @@ export async function send(
     if (stage === 'generate') runContext.getStore()?.onSubmit?.()
     try {
       heard()
+      // 素材上传的表单按流发出，Bun 每读取一块计为一次进展：上传耗时随素材大小与网速变化，不按总时长中止。
+      const upload =
+        stage === 'upload' && init.body instanceof FormData
+          ? multipartBody(formFields(init.body))
+          : null
       response = await fetch(url, {
         ...PROVIDER_HTTP.fetchOptions,
         ...init,
-        headers: { ...PROVIDER_HEADERS, ...Object.fromEntries(new Headers(init.headers)) },
+        ...(upload ? { body: observeBody(upload.body, heard) } : {}),
+        headers: {
+          ...PROVIDER_HEADERS,
+          ...Object.fromEntries(new Headers(init.headers)),
+          ...(upload
+            ? { 'content-type': upload.contentType, 'content-length': String(upload.length) }
+            : {}),
+        },
         signal: AbortSignal.any([signal, silence.signal]),
       })
       heard()

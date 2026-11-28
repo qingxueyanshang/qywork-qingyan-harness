@@ -747,6 +747,15 @@ impl BrowserHost {
         }
     }
 
+    /// 授权下载的进展：服务端据此重新计时，数据仍在写入时不判定下载超时。调用方负责限频（每秒至多一次）。
+    fn note_download_progress(&self, tab_id: &str, received: u64, download_id: &str) {
+        let download_id = download_id.to_owned();
+        self.emit("download.progress", tab_id.to_owned(), move |f| {
+            f.received_bytes = Some(received);
+            f.download_id = Some(download_id);
+        });
+    }
+
     /// 下载上报终态。只有消费过授权的下载会到达此处，因此身份必定存在。
     fn note_download_finished(
         &self,

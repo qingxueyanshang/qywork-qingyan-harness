@@ -764,7 +764,7 @@ test('页面被占用后，另一个执行者的每种页面操作均被拒绝�
       tabId,
       ref: '',
       absolutePath: target,
-      timeoutMs: 1_000,
+      idleMs: 1_000,
     }),
     other?.close(tabId),
   ]
@@ -1596,7 +1596,7 @@ test('不属于本会话的标签页在发送请求之前被拦截，属于本�
           tabId: 'bt_9',
           ref: firstRef(ob),
           absolutePath: target,
-          timeoutMs: 5_000,
+          idleMs: 5_000,
         }),
       )
     ).message,
@@ -1609,7 +1609,7 @@ test('不属于本会话的标签页在发送请求之前被拦截，属于本�
     tabId: tab?.tabId ?? '',
     ref: firstRef(ob),
     absolutePath: target,
-    timeoutMs: 5_000,
+    idleMs: 5_000,
   })
   await until(() => host.arms.has('bt_1'), '宿主登记下载授权')
   const arm = host.received.findLast((f) => f.op === 'download.arm')
@@ -1886,7 +1886,7 @@ test('下载：先授权再点击，等待宿主返回终态，最后核对磁�
     tabId: tab?.tabId ?? '',
     ref: firstRef(ob),
     absolutePath: target,
-    timeoutMs: 5_000,
+    idleMs: 5_000,
   })
   await until(() => devtools.clicks() === 1, '下载点击已发出')
   // 授权必须先于点击到达宿主：顺序颠倒时钩子无法取得授权，本次下载会被取消。
@@ -1912,7 +1912,7 @@ test('被拦截的下载如实写入结果，不误报成功', async () => {
     tabId: tab?.tabId ?? '',
     ref: firstRef(ob),
     absolutePath: join(tmpdir(), 'never-written.bin'),
-    timeoutMs: 5_000,
+    idleMs: 5_000,
   })
   await until(() => host.arms.has('bt_1'), '宿主登记下载授权')
   host.finishDownload('bt_1', {
@@ -1921,6 +1921,39 @@ test('被拦截的下载如实写入结果，不误报成功', async () => {
     suggestedName: 'fixture.bin',
   })
   expect(await pending).toEqual({ blocked: 'exists', suggestedName: 'fixture.bin' })
+})
+
+test('宿主上报进展时重新计时：持续写入超过静默上限不判定失败；没有进展时按静默上限失败', async () => {
+  const { handle, host } = await ready()
+  const port = handle.browser?.portFor('cv_1', WS)
+  const tab = await port?.open('http://127.0.0.1:1/page')
+  const ob = await port?.observe({ tabId: tab?.tabId ?? '' })
+  const target = join(tmpdir(), `progress-${Date.now()}.bin`)
+  const pending = port?.download({
+    tabId: tab?.tabId ?? '',
+    ref: firstRef(ob),
+    absolutePath: target,
+    idleMs: 300,
+  })
+  await until(() => host.arms.has('bt_1'), '宿主登记下载授权')
+  const downloadId = host.arms.get('bt_1')?.downloadId ?? ''
+  // 进展持续 600 毫秒，长于静默上限 300 毫秒。
+  for (let i = 1; i <= 6; i++) {
+    await Bun.sleep(100)
+    host.emit({ kind: 'download.progress', tabId: 'bt_1', receivedBytes: i * 1024, downloadId })
+  }
+  writeFileSync(target, 'qywork', 'utf8')
+  host.finishDownload('bt_1', { kind: 'download.finished', path: target, success: true })
+  expect(await pending).toEqual({ path: target, bytes: 6 })
+
+  const again = await port?.observe({ tabId: tab?.tabId ?? '' })
+  const stalled = port?.download({
+    tabId: tab?.tabId ?? '',
+    ref: firstRef(again),
+    absolutePath: join(tmpdir(), `stalled-${Date.now()}.bin`),
+    idleMs: 1_000,
+  })
+  await expect(stalled).rejects.toThrow('下载连续 1 秒没有开始或没有进展，授权已撤销')
 })
 
 test('导航一次即作废旧观察，动作无法使用过期编号', async () => {
@@ -2357,7 +2390,7 @@ test('同一页上一次调用的迟到终态不结算本次调用，无授权�
     tabId: tab?.tabId ?? '',
     ref: firstRef(ob),
     absolutePath: target,
-    timeoutMs: 3_000,
+    idleMs: 3_000,
   })
   await until(() => host.arms.has(tab?.tabId ?? ''), '宿主登记下载授权')
   const mine = host.received.findLast((f) => f.op === 'download.arm')?.downloadId
@@ -2401,7 +2434,7 @@ test('两条会话下载到同一路径时后一份授权被拒绝，路径不�
     tabId: tabA?.tabId ?? '',
     ref: firstRef(obA),
     absolutePath: shared,
-    timeoutMs: 5_000,
+    idleMs: 5_000,
   })
   const heldOutcome = failure(held)
   await until(() => host.arms.has(tabA?.tabId ?? ''), '宿主登记 A 的下载授权')
@@ -2413,7 +2446,7 @@ test('两条会话下载到同一路径时后一份授权被拒绝，路径不�
           tabId: tabB?.tabId ?? '',
           ref: firstRef(obB),
           absolutePath: shared,
-          timeoutMs: 5_000,
+          idleMs: 5_000,
         }),
       )
     ).message,
@@ -2424,7 +2457,7 @@ test('两条会话下载到同一路径时后一份授权被拒绝，路径不�
     tabId: tabB?.tabId ?? '',
     ref: firstRef(obB),
     absolutePath: join(dir, 'other.bin'),
-    timeoutMs: 5_000,
+    idleMs: 5_000,
   })
   await until(() => host.arms.has(tabB?.tabId ?? ''), '宿主登记 B 的下载授权')
   expect(host.received.findLast((f) => f.op === 'download.arm')?.path).toBe(join(dir, 'other.bin'))
@@ -2445,7 +2478,7 @@ test('释放撤销未消费的授权，正在等待终态的下载按未确认�
     tabId: tab?.tabId ?? '',
     ref: firstRef(ob),
     absolutePath: join(tmpdir(), 'qywork-never.bin'),
-    timeoutMs: 30_000,
+    idleMs: 30_000,
   })
   // 先注册失败处理再释放：释放会立即终结本次等待，注册晚于释放时会成为未处理的拒绝。
   const outcome = failure(pending)
@@ -2477,7 +2510,7 @@ test('点击发送途中释放，下载同样按未确认终态返回，授权�
       tabId: tab?.tabId ?? '',
       ref: firstRef(ob),
       absolutePath: join(tmpdir(), 'qywork-never-click.bin'),
-      timeoutMs: 30_000,
+      idleMs: 30_000,
     }),
   )
   await until(

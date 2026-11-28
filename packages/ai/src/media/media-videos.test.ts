@@ -123,7 +123,10 @@ function captureUpload(...bytes: Uint8Array[]) {
   const original = globalThis.fetch
   uploadFetch = spyOn(globalThis, 'fetch').mockImplementation((async (url, init) => {
     if (String(url) !== 'https://bucket.oss-cn-beijing.aliyuncs.com/') return original(url, init)
-    const form = init?.body as FormData
+    // 素材上传的表单按流发出（`send` 的上传阶段），按请求头中的分隔符解析。
+    const form = await new Response(init?.body as ConstructorParameters<typeof Response>[0], {
+      headers: new Headers(init?.headers),
+    }).formData()
     const uploaded = Buffer.from(await (form.get('file') as File).arrayBuffer())
     expect(bytes.some((expected) => uploaded.equals(Buffer.from(expected)))).toBe(true)
     seen.push({ method: 'POST', path: '/oss-upload', search: '', headers: {} })

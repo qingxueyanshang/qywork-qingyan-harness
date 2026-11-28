@@ -25,11 +25,10 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS,
 };
 use webview2_com::{
-    take_pwstr, BrowserProcessExitedEventHandler, ContextMenuRequestedEventHandler,
-    DownloadStartingEventHandler, ExecuteScriptCompletedHandler, HistoryChangedEventHandler,
-    NewWindowRequestedEventHandler,
-    SourceChangedEventHandler, StateChangedEventHandler, WindowCloseRequestedEventHandler,
-    ZoomFactorChangedEventHandler,
+    take_pwstr, BrowserProcessExitedEventHandler, BytesReceivedChangedEventHandler,
+    ContextMenuRequestedEventHandler, DownloadStartingEventHandler, ExecuteScriptCompletedHandler,
+    HistoryChangedEventHandler, NewWindowRequestedEventHandler, SourceChangedEventHandler,
+    StateChangedEventHandler, WindowCloseRequestedEventHandler, ZoomFactorChangedEventHandler,
 };
 use windows::core::{w, Interface, BOOL, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -1016,10 +1015,10 @@ fn starting(
     }
 }
 
-/// 把本次身份绑定到下载对象上，终态由该对象上报。
+/// 把本次身份绑定到下载对象上，进展与终态由该对象上报。
 ///
-/// 回调在终态时当场解除：注册与解除都在该下载对象上完成，不保留一个存续到对象析构的闭包。
-/// `IN_PROGRESS` 不是终态，收到时不上报。
+/// 两个回调都在终态时当场解除：注册与解除都在该下载对象上完成，不保留一个存续到对象析构的闭包。
+/// `IN_PROGRESS` 不是终态，收到时不上报终态。进展至多每秒上报一次。
 fn watch_state(
     tab_id: &str,
     operation: &ICoreWebView2DownloadOperation,
@@ -1028,8 +1027,39 @@ fn watch_state(
     let tab = tab_id.to_owned();
     let token = Rc::new(Cell::new(0i64));
     let slot = Rc::clone(&token);
+    let progress_token = Rc::new(Cell::new(0i64));
+    let progress_slot = Rc::clone(&progress_token);
     let mut fresh = 0i64;
+    let mut progress_fresh = 0i64;
     unsafe {
+        let progress_tab = tab.clone();
+        let progress_id = download_id.clone();
+        let reported = Cell::new(None::<std::time::Instant>);
+        operation.add_BytesReceivedChanged(
+            &BytesReceivedChangedEventHandler::create(Box::new(move |op, _| {
+                let Some(op) = op else { return Ok(()) };
+                let now = std::time::Instant::now();
+                if reported
+                    .get()
+                    .is_some_and(|at| now.duration_since(at) < std::time::Duration::from_secs(1))
+                {
+                    return Ok(());
+                }
+                reported.set(Some(now));
+                let mut received = 0i64;
+                op.BytesReceived(&mut received)?;
+                if let Some(host) = super::host() {
+                    host.note_download_progress(
+                        &progress_tab,
+                        received.max(0) as u64,
+                        &progress_id,
+                    );
+                }
+                Ok(())
+            })),
+            &mut progress_fresh,
+        )?;
+        progress_token.set(progress_fresh);
         operation.add_StateChanged(
             &StateChangedEventHandler::create(Box::new(move |op, _| {
                 let Some(op) = op else { return Ok(()) };
@@ -1049,6 +1079,7 @@ fn watch_state(
                 if let Some(host) = super::host() {
                     host.note_download_finished(&tab, path, success, &download_id);
                 }
+                op.remove_BytesReceivedChanged(progress_slot.get())?;
                 op.remove_StateChanged(slot.get())
             })),
             &mut fresh,

@@ -442,6 +442,8 @@ struct Downloads {
     staging: bool,
     /// 按 guid 记录的在途下载。
     pending: HashMap<String, Pending>,
+    /// 按 guid 记录的上一次上报进展的时刻：进展至多每秒上报一次。
+    progressed: HashMap<String, Instant>,
 }
 
 enum Pending {
@@ -834,9 +836,15 @@ impl Instance {
     fn download_progressed(&self, p: &Value) {
         let Some(guid) = p.get("guid").and_then(Value::as_str) else { return };
         let state = p.get("state").and_then(Value::as_str).unwrap_or_default();
+        if state == "inProgress" {
+            let received = p.get("receivedBytes").and_then(Value::as_f64).unwrap_or(0.0);
+            self.report_progress(guid, received);
+            return;
+        }
         if state != "completed" && state != "canceled" {
             return;
         }
+        self.downloads().progressed.remove(guid);
         let Some(pending) = self.downloads().pending.remove(guid) else { return };
         let staged = self.staging.join(guid);
         match pending {
@@ -872,6 +880,33 @@ impl Instance {
         }
         if let Err(e) = self.sync_downloads() {
             log::warn!("下载行为切换失败：{e}");
+        }
+    }
+
+    /// 授权下载的进展，至多每秒上报一次；用户下载不上报。
+    fn report_progress(&self, guid: &str, received: f64) {
+        let target = {
+            let mut downloads = self.downloads();
+            let Some(Pending::Authorized {
+                tab, download_id, ..
+            }) = downloads.pending.get(guid)
+            else {
+                return;
+            };
+            let target = (tab.clone(), download_id.clone());
+            let now = Instant::now();
+            if downloads
+                .progressed
+                .get(guid)
+                .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(1))
+            {
+                return;
+            }
+            downloads.progressed.insert(guid.to_owned(), now);
+            target
+        };
+        if let Some(host) = super::host() {
+            host.note_download_progress(&target.0, received.max(0.0) as u64, &target.1);
         }
     }
 

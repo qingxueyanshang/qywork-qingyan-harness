@@ -96,8 +96,8 @@ function stateText(state: BrowserWaitState, expected: string | undefined): strin
   }
 }
 
-/** 单次下载从触发到写入磁盘的时限。 */
-const DOWNLOAD_TIMEOUT_MS = 120_000
+/** 下载的静默上限：触发之后连续该时长没有开始、或宿主没有上报新的进展即判定失败；数据仍在写入时不中止。 */
+const DOWNLOAD_IDLE_MS = 120_000
 /** 单次上传的文件数上限。 */
 const MAX_UPLOAD_FILES = 10
 /** `type` 单次输入的 Unicode 码点上限。 */
@@ -1376,7 +1376,7 @@ export const browserDownloadTool: ToolSpec = {
         tabId: str(args.tabId, 'tabId'),
         ref: str(args.ref, 'ref'),
         absolutePath,
-        timeoutMs: DOWNLOAD_TIMEOUT_MS,
+        idleMs: DOWNLOAD_IDLE_MS,
       }
       const r = await send(() => browser.download(input))
       if (r.blocked) {

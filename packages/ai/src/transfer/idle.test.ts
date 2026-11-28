@@ -42,7 +42,8 @@ const server = Bun.serve({
         const { done, value } = await reader.read()
         if (done) break
         got += value.byteLength
-        await Bun.sleep(30)
+        // 前一半慢读，总时长长于静默上限；后一半快读：缓冲中剩余的内容排空时客户端不再读取请求流，排空须快于静默上限。
+        if (got < 8 * MB) await Bun.sleep(30)
       }
       return Response.json({ got })
     }
@@ -90,7 +91,7 @@ test('上传持续有进展时不中止；服务端不读取时以 TransferStall
       headers: { 'content-type': up.contentType, 'content-length': String(up.length) },
       body: up.body,
     },
-    1000,
+    2000,
   )
   expect(((await res.json()) as { got: number }).got).toBe(up.length)
 

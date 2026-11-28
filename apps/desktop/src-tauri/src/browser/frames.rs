@@ -144,6 +144,9 @@ pub struct EventFrame {
     pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggested_name: Option<String>,
+    /// `download.progress` 专有：已写入的字节数。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub received_bytes: Option<u64>,
     /// 被消费授权的身份。缺失表示本次下载未命中授权，不得结算任何工具调用。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download_id: Option<String>,
@@ -167,6 +170,7 @@ impl EventFrame {
             success: None,
             reason: None,
             suggested_name: None,
+            received_bytes: None,
             download_id: None,
         }
     }
@@ -354,6 +358,12 @@ mod tests {
         finished.success = Some(true);
         finished.download_id = Some("dl_4".into());
         assert_eq!(serde_json::to_value(&finished).unwrap(), sample("downloadFinished"));
+
+        // 进展携带已写入的字节数与授权的身份，服务端据此重新计时。
+        let mut progress = EventFrame::new(3, 13, "download.progress", "bt_1".into());
+        progress.received_bytes = Some(1_048_576);
+        progress.download_id = Some("dl_4".into());
+        assert_eq!(serde_json::to_value(&progress).unwrap(), sample("downloadProgress"));
     }
 
     /// 缺省字段不得发送为 `null`：接收端的可选字段判定会从「不存在」变为「存在且为空」。

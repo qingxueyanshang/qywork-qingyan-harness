@@ -40,6 +40,7 @@ export const BROWSER_EVENT_KINDS = [
   'closed',
   'control',
   'download.blocked',
+  'download.progress',
   'download.finished',
 ] as const
 export type BrowserEventKind = (typeof BROWSER_EVENT_KINDS)[number]
@@ -219,8 +220,10 @@ export interface BrowserEventFrame {
   success?: boolean
   reason?: DownloadBlockReason
   suggestedName?: string
+  /** `download.progress` 专有：已写入的字节数。宿主至多每秒发送一次。 */
+  receivedBytes?: number
   /**
-   * `download.finished` / `download.blocked` 专有：宿主已消费的授权的身份。
+   * `download.finished` / `download.blocked` / `download.progress` 专有：宿主已消费的授权的身份。
    *
    * 缺失表示本次下载未匹配任何授权（用户页的下载，或 AI 页面上未经授权的下载），
    * 此时该事件不得结算任何工具调用。

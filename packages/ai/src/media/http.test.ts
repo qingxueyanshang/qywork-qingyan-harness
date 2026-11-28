@@ -1593,3 +1593,46 @@ test('百炼临时上传取凭证得到 403：按鉴权失败处理，不重新�
     clock.restore()
   }
 })
+
+/**
+ * 素材上传的表单按流发出、按进展计时：服务端读取得慢、总时长超过静默上限时不中止，表单按声明的长度完整到达。
+ * 原始失败形状：静默计时只在发出请求与收到响应头时重置，上传本身超过 5 分钟即被判定为连接失效。
+ */
+test('素材上传按进展计时：读取持续进行时不中止，表单按声明的长度完整到达', async () => {
+  const slow = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    idleTimeout: 0,
+    async fetch(req) {
+      const reader = req.body!.getReader()
+      let size = 0
+      let head = ''
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!head) head = new TextDecoder().decode(value.subarray(0, 512))
+        size += value.byteLength
+        // 前一半慢读，总时长长于静默上限；后一半快读：缓冲中剩余的内容排空时客户端不再读取请求流，排空须快于静默上限。
+        if (size < 8 * 1024 * 1024) await Bun.sleep(30)
+      }
+      return Response.json({ size, length: Number(req.headers.get('content-length')), head })
+    },
+  })
+  try {
+    const form = new FormData()
+    form.set('key', 'dir/a.mp4')
+    form.set('file', new File([new Uint8Array(16 * 1024 * 1024)], 'a.mp4', { type: 'video/mp4' }))
+    const res = await send(
+      `http://127.0.0.1:${slow.port}/oss`,
+      { method: 'POST', body: form },
+      signal(),
+      { stage: 'upload', idleMs: 2000 },
+    )
+    const got = (await res.json()) as { size: number; length: number; head: string }
+    expect(got.size).toBe(got.length)
+    expect(got.length).toBeGreaterThan(16 * 1024 * 1024)
+    expect(got.head).toContain('name="key"')
+  } finally {
+    slow.stop(true)
+  }
+})

@@ -432,12 +432,13 @@ export interface BrowserPort {
    *
    * `absolutePath` 必须是**已经过路径裁决**的绝对路径：实现方据此向宿主登记一次性
    * 授权，不做工作区判断。目标已存在时宿主拒绝覆盖，结果中带回拦截原因。
+   * `idleMs` 是静默上限：下载开始之前与宿主上报进展的间隔都按它计时，数据仍在写入时不中止，不设总时长。
    */
   download(input: {
     tabId: string
     ref: string
     absolutePath: string
-    timeoutMs: number
+    idleMs: number
   }): Promise<BrowserDownloadResult>
   /**
    * 释放本次执行的全部控制权。可重复调用。

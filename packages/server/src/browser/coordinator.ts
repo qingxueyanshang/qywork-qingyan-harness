@@ -1434,7 +1434,7 @@ export class BrowserCoordinator {
       tabId: string
       ref: string
       absolutePath: string
-      timeoutMs: number
+      idleMs: number
     },
   ): Promise<BrowserDownloadResult> {
     const { control, page } = await this.#pageOf(lease, input.tabId)
@@ -1448,8 +1448,15 @@ export class BrowserCoordinator {
     const outcome = new Promise<Outcome>((resolve) => {
       settle = resolve
     })
+    // 静默计时：宿主每上报一次进展重新计时，数据仍在写入时不判定超时。
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const idle = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => settle?.({ expired: true }), input.idleMs)
+    }
     const off = this.#bridge.onEvent((frame) => {
       if (frame.downloadId !== downloadId) return
+      if (frame.kind === 'download.progress') idle()
       if (frame.kind === 'download.finished' || frame.kind === 'download.blocked') {
         settle?.({ frame })
       }
@@ -1460,10 +1467,10 @@ export class BrowserCoordinator {
       settle?.({ cancelled: reason })
     }
     control.waits.add(abort)
-    const timer = setTimeout(() => settle?.({ expired: true }), input.timeoutMs)
+    idle()
 
     try {
-      await this.#arm(control, input.tabId, input.absolutePath, input.timeoutMs, downloadId)
+      await this.#arm(control, input.tabId, input.absolutePath, input.idleMs, downloadId)
       try {
         await clickForDownload(page, record, input.ref)
       } catch (err) {
@@ -1474,7 +1481,11 @@ export class BrowserCoordinator {
       }
       const out = await outcome
       if ('cancelled' in out) throw new BrowserReleasedError(out.cancelled)
-      if ('expired' in out) throw new BrowserBridgeError('下载未在期限内返回结果，授权已撤销')
+      if ('expired' in out) {
+        throw new BrowserBridgeError(
+          `下载连续 ${Math.round(input.idleMs / 1000)} 秒没有开始或没有进展，授权已撤销`,
+        )
+      }
       const frame = out.frame
       // 终态到达表示授权已被宿主裁决，收尾时无需再次撤销。
       control.arms.delete(downloadId)

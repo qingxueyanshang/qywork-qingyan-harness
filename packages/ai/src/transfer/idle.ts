@@ -23,11 +23,11 @@ export class TransferStalled extends Error {
   }
 }
 
-/** 流经该流的每一块调用 `onChunk`。 */
-function observed(
+/** 流经该流的每一块调用 `onChunk`，读完时调用 `onEnd`。作为请求内容时，Bun 每读取一块即调用一次。 */
+export function observeBody(
   body: ReadableStream<Uint8Array>,
   onChunk: () => void,
-  onEnd: () => void,
+  onEnd: () => void = () => {},
 ): ReadableStream<Uint8Array> {
   return body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
@@ -62,8 +62,7 @@ export async function fetchWithIdle(
   const onAbort = () => abort.abort(signal?.reason)
   signal?.addEventListener('abort', onAbort, { once: true })
   abort.signal.addEventListener('abort', stop, { once: true })
-  const body =
-    init.body instanceof ReadableStream ? observed(init.body, progress, () => {}) : init.body
+  const body = init.body instanceof ReadableStream ? observeBody(init.body, progress) : init.body
   progress()
   let res: Response
   try {

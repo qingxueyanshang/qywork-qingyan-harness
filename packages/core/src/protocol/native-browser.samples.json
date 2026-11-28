@@ -100,6 +100,15 @@
     "reason": "unauthorized",
     "suggestedName": "file.bin"
   },
+  "downloadProgress": {
+    "type": "browser.event",
+    "connectionEpoch": 3,
+    "seq": 13,
+    "kind": "download.progress",
+    "tabId": "bt_1",
+    "receivedBytes": 1048576,
+    "downloadId": "dl_4"
+  },
   "downloadFinished": {
     "type": "browser.event",
     "connectionEpoch": 3,

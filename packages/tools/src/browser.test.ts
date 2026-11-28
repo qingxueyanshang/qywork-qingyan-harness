@@ -1380,7 +1380,7 @@ describe('路径裁决', () => {
     expect(ok.status).toBe('success')
     expect(calls.at(-1)?.input).toMatchObject({
       absolutePath: join(root, 'out.bin'),
-      timeoutMs: 120_000,
+      idleMs: 120_000,
     })
 
     // 文件系统根目录下不存在的目录：不位于家目录或系统目录中。端口是模拟的，不创建文件。
