@@ -3,10 +3,12 @@
  * 命令中的脚本地址换为 `-`，原文经标准输入交给解释器。脚本不写成文件，模型无法读取原文（云端拒绝读取可运行的脚本）。
  *
  * 约束：一条命令只运行一个内置技能脚本，且解释器与脚本地址位于命令开头；其余写法（`cat`、管道中的第二个脚本）拒绝。
- * 脚本须是单个文件：经标准输入运行时没有 `__file__`，也不能引用同一技能中的其他文件。
+ * 入口可以按模块名导入同一技能 `scripts/` 下的其他 Python 文件（云端随入口一并下发）。经标准输入运行时没有 `__file__`：
+ * 脚本不能按路径读取技能中的文件，也不能以子进程运行同技能的其他脚本。
  */
 
 import type { ToolContext, ToolOutcome } from '@qywork/agent'
+import type { CloudSkillScript } from './port.ts'
 import { CLOUD_SKILL_SCHEME, cloudFailure, cloudTarget } from './source.ts'
 
 /** 命令开头的解释器与脚本地址。 */
@@ -48,20 +50,34 @@ export async function builtinScript(
   if (!got.ok) return { ...cloudFailure(got, target), executed: false }
   return {
     command: `${m[1]}-${command.slice(m[0].length)}`,
-    source: launcher(target.path, got.value),
+    source: launcher(got.value),
   }
 }
 
 /**
- * 经标准输入交给解释器的程序：把 `sys.argv[0]` 设为脚本的文件名后编译执行原文，帮助与报错中的程序名是文件名而不是 `-`。
- * 原文以 JSON 字符串字面量嵌入（也是合法的 Python 字符串字面量）；按文件名编译，磁盘上没有该文件，报错不显示源码行。
+ * 经标准输入交给解释器的程序：同目录的脚本由 `sys.meta_path` 中的查找器按模块名从内存加载，入口以 `__main__` 执行；
+ * `sys.argv[0]` 设为入口的文件名，帮助与报错中的程序名是文件名而不是 `-`。
+ * 原文以 JSON 字面量嵌入（也是合法的 Python 字面量）；按文件名编译，磁盘上没有该文件，报错不显示源码行。
+ * 查找器插在 `sys.meta_path` 首位：当前目录中的同名文件不取代技能中的模块，与从磁盘运行时脚本目录排在 `sys.path` 首位的结果相同。
  */
-function launcher(path: string, source: string): string {
-  const name = JSON.stringify(path.split('/').pop() ?? path)
+function launcher(script: CloudSkillScript): string {
+  const modules = Object.fromEntries(
+    Object.entries(script.modules).map(([file, text]) => [file.replace(/\.py$/, ''), text]),
+  )
+  const main = JSON.stringify(script.main)
   return [
-    'import sys',
-    `sys.argv[0] = ${name}`,
-    `exec(compile(${JSON.stringify(source)}, ${name}, 'exec'), {'__name__': '__main__', '__builtins__': __builtins__})`,
+    'import sys, importlib.abc, importlib.util',
+    `_SOURCES = ${JSON.stringify(modules)}`,
+    'class _SkillModules(importlib.abc.MetaPathFinder, importlib.abc.Loader):',
+    '    def find_spec(self, name, path=None, target=None):',
+    '        return importlib.util.spec_from_loader(name, self) if path is None and name in _SOURCES else None',
+    '    def create_module(self, spec):',
+    '        return None',
+    '    def exec_module(self, module):',
+    "        exec(compile(_SOURCES[module.__name__], module.__name__ + '.py', 'exec'), module.__dict__)",
+    'sys.meta_path.insert(0, _SkillModules())',
+    `sys.argv[0] = ${main}`,
+    `exec(compile(_SOURCES[${JSON.stringify(script.main.replace(/\.py$/, ''))}], ${main}, 'exec'), {'__name__': '__main__', '__builtins__': __builtins__})`,
     '',
   ].join('\n')
 }

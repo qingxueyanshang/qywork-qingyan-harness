@@ -27,8 +27,19 @@ export interface CloudSkillPort {
   ): Promise<CloudSkillResult<CloudSkillSegment>>
   /** 按字面文本检索；`prefix` 限定路径前缀，空串为整个技能包。 */
   search(pkg: string, query: string, prefix: string): Promise<CloudSkillResult<CloudSkillMatches>>
-  /** 可运行的脚本（`scripts/` 下的 Python 文件）的原文，只交给解释器的标准输入，不写成文件、不放入工具结果。 */
-  script(pkg: string, path: string): Promise<CloudSkillResult<string>>
+  /**
+   * 运行可运行的脚本（`scripts/` 下的 Python 文件）所需的原文：入口与同目录的全部可运行脚本。
+   * 只交给解释器的标准输入，不写成文件、不放入工具结果。
+   */
+  script(pkg: string, path: string): Promise<CloudSkillResult<CloudSkillScript>>
+}
+
+/** 运行内置技能脚本所需的原文。 */
+export interface CloudSkillScript {
+  /** 入口在 `scripts/` 下的文件名。 */
+  main: string
+  /** 同一版本 `scripts/` 下全部可运行脚本，文件名 → 原文，含入口。 */
+  modules: Record<string, string>
 }
 
 export const CloudSkillPort = definePort<CloudSkillPort>('cloudSkills')

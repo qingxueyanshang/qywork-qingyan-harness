@@ -56,6 +56,7 @@ export {
   type CloudSkillErrorCode,
   CloudSkillPort,
   type CloudSkillResult,
+  type CloudSkillScript,
 } from './cloud-skills/port.ts'
 export { ConversationPort } from './conversation/port.ts'
 export {

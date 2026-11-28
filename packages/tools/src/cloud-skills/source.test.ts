@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readdir } from 'node:fs/promises'
+import { mkdtemp, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -57,10 +57,15 @@ function fakePort(
     },
     async script(_pkg, path) {
       if (opts.fail) return refuse()
-      const text = files[path]
-      return text === undefined
-        ? { ok: false, code: 'skill_file_not_found', message: `没有该脚本：${path}` }
-        : { ok: true, value: text }
+      if (files[path] === undefined) {
+        return { ok: false, code: 'skill_file_not_found', message: `没有该脚本：${path}` }
+      }
+      const modules = Object.fromEntries(
+        Object.entries(files)
+          .filter(([p]) => /^scripts\/[^/]+\.py$/.test(p))
+          .map(([p, text]) => [p.slice('scripts/'.length), text]),
+      )
+      return { ok: true, value: { main: path.slice('scripts/'.length), modules } }
     },
     async read(_pkg, path, start, end) {
       if (opts.fail) return refuse()
@@ -346,6 +351,28 @@ describe('内置技能脚本的运行', () => {
       executed: false,
       errorKind: 'skill_file_not_found',
     })
+  })
+
+  /**
+   * 原始失败形状：技能的脚本之间按模块名导入（入口导入同目录的公共模块），只下发入口时导入失败；
+   * 当前目录恰有同名文件时导入的是那个文件。同目录的脚本随入口一并下发，从内存加载，优先于当前目录中的同名文件。
+   */
+  test('入口按模块名导入同目录的脚本，当前目录中的同名文件不取代技能中的模块', async () => {
+    const shell = commandShell()
+    if (!shell) throw new Error('本机没有可用的 shell')
+    const tool = makeShellTool(shell)
+    const root = await workspace()
+    await writeFile(join(root, 'helper.py'), 'NAME = "工作区中的同名文件"\n')
+    const port = fakePort({
+      'scripts/main.py': 'import helper\nprint("模块", helper.NAME, helper.__name__)\n',
+      'scripts/helper.py': 'NAME = "技能中的模块"\n',
+    })
+    const run = await tool.fn(
+      { command: 'python cloud-skill://demo-pkg/scripts/main.py' },
+      { ...ctx(root, port), signal: new AbortController().signal },
+    )
+    expect(run.status).toBe('success')
+    expect(run.data?.stdout).toContain('模块 技能中的模块 helper')
   })
 })
 

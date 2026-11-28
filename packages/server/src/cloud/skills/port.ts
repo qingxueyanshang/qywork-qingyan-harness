@@ -81,7 +81,7 @@ export function cloudSkillPort(opts: CloudSkillPortOptions): CloudSkillPort {
 
   async function call(
     pkg: string,
-    action: 'files' | 'read' | 'search',
+    action: 'files' | 'read' | 'search' | 'script',
     params: Record<string, string>,
   ): Promise<CloudSkillResult<Record<string, unknown>>> {
     const r = await request(pkg, action, params)
@@ -94,9 +94,18 @@ export function cloudSkillPort(opts: CloudSkillPortOptions): CloudSkillPort {
     packages: opts.packages.map(({ id, name, description }) => ({ id, name, description })),
 
     async script(pkg, path) {
-      const r = await request(pkg, 'script', { path })
+      const r = await call(pkg, 'script', { path })
       if (!r.ok) return r
-      return { ok: true, value: await r.value.text() }
+      const { main, modules } = r.value
+      const sources =
+        modules && typeof modules === 'object' ? (modules as Record<string, unknown>) : {}
+      const valid =
+        typeof main === 'string' &&
+        typeof sources[main] === 'string' &&
+        Object.values(sources).every((text) => typeof text === 'string')
+      return valid
+        ? { ok: true, value: { main, modules: sources as Record<string, string> } }
+        : unavailable('云端技能接口的响应无法解析')
     },
 
     async files(pkg) {
