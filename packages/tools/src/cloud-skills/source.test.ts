@@ -26,6 +26,7 @@ import { editFileTool, listDirTool, readFileTool, writeFileTool } from '../files
 import { commandShell } from '../process/command-shell.ts'
 import { globTool, grepTool } from '../search.ts'
 import { makeShellTool } from '../shell.ts'
+import { readSkillTool } from '../skills.ts'
 import { type CloudSkillErrorCode, CloudSkillPort } from './port.ts'
 
 const PKG = 'demo-pkg'
@@ -281,6 +282,23 @@ describe('读取失败的分类', () => {
       const out = await readFileTool.fn({ path: 'cloud-skill://demo-pkg/a.md' }, ctx(root, port))
       expect([out.status, out.errorKind, out.message]).toEqual(['failure', code, message])
     }
+  })
+})
+
+describe('read_skill 读取内置技能中的其他文件', () => {
+  /**
+   * 原始失败形状：模型按 SKILL.md 中的引用以「技能名/references/…」调用 read_skill，得到「未找到技能」，没有读取实施参考便继续执行。
+   */
+  test('「技能名/相对路径」按行段读取该文件；读取 SKILL.md 的回执给出其他文件与脚本的写法', async () => {
+    const root = await workspace()
+    const port = fakePort({ 'SKILL.md': SKILL_MD, 'references/guide.md': '第一步\n第二步\n' })
+    const file = await readSkillTool.fn({ name: '演示/references/guide.md' }, ctx(root, port))
+    expect(file.status).toBe('success')
+    const marker = parseSkillMarker(((file.data?.texts ?? []) as { text: string }[])[0]?.text ?? '')
+    expect([marker?.path, marker?.start, marker?.end]).toEqual(['references/guide.md', 1, 2])
+    const skill = await readSkillTool.fn({ name: '演示' }, ctx(root, port))
+    expect(skill.message).toContain('read_file 读取「cloud-skill://demo-pkg/<相对路径>」')
+    expect(skill.message).toContain('python cloud-skill://demo-pkg/scripts/<文件>.py 参数')
   })
 })
 

@@ -197,6 +197,19 @@ export const readSkillTool: ToolSpec = {
     if (!wanted) return { status: 'failure', message: '缺少 name' }
 
     const skills = await scanSkills(ctx.workspaceRoot, ctx.port(CloudSkillPort)?.packages ?? [])
+    // 「技能名/相对路径」读取内置技能中的其他文件（参考文档等），与 read_file 读取 `cloud-skill://<技能>/<路径>` 相同。
+    // 模型读取 SKILL.md 中引用的文件时常以这种写法调用本工具；本地技能的文件经 read_file 按目录读取。
+    const slash = wanted.indexOf('/')
+    const owner =
+      slash > 0
+        ? skills.find((s) => s.name === wanted.slice(0, slash) && isCloudSkillDir(s.dir))
+        : undefined
+    if (owner) {
+      const target = cloudTarget(ctx, `${owner.dir}/${wanted.slice(slash + 1)}`)
+      if (!target) return { status: 'failure', message: `本轮无法读取内置技能 ${owner.name}` }
+      if ('status' in target) return target
+      return readCloudFile(ctx, target, {})
+    }
     const hit = skills.find((s) => s.name === wanted || s.dir.endsWith(wanted))
     if (!hit) {
       // 列出可用名称而不是只返回「未找到」：模型给出的名称通常只与实际名称相差一个字，
@@ -220,7 +233,7 @@ export const readSkillTool: ToolSpec = {
         ? {
             ...read,
             message: `${read.message}
-内置技能的脚本以「python ${hit.dir}/scripts/<文件>.py 参数」经 run_command 运行，脚本内容不能读取。`,
+技能中的其他文件用 read_file 读取「${hit.dir}/<相对路径>」；脚本以「python ${hit.dir}/scripts/<文件>.py 参数」经 run_command 运行，脚本内容不能读取。`,
             data: { ...read.data, ...data },
           }
         : read
